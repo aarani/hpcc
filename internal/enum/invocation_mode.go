@@ -6,5 +6,7 @@ const (
 	UnknownMode InvocationMode = iota
 	CompileMode
 	PreprocessMode
+	AssembleMode
 	LinkMode
+	DepOnlyMode
 )
