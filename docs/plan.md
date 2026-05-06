@@ -250,6 +250,53 @@ asking *"is this a boundary auditors recognize?"* Firecracker gives you:
 
 Namespace-based sandboxes (bwrap, nsjail, etc.) are explicitly out of scope.
 
+### 4.1.1 Worker Runtime Abstraction (Linux vs. Windows)
+
+The worker isolates each tenant in a microVM, but the *implementation* of
+"microVM" depends on the host OS:
+
+- **Linux hosts** → Firecracker microVMs running Linux guests. This is the
+  primary target and what the rest of Phase 4 describes.
+- **Windows hosts** → Windows Server containers with **Hyper-V isolation**.
+  Each container runs in its own utility VM (Hyper-V partition), giving the
+  same kernel-boundary property KVM gives us on Linux. Required for MSVC /
+  legacy Windows-only projects where running the toolchain on Linux isn't
+  an option.
+
+A small `Runtime` abstraction in the worker selects the backend based on the
+host OS and the requested image type (Linux OCI image vs. Windows base
+image). Both backends expose the same operations to the rest of hpcc:
+materialize image → boot/restore VM → exec compile job over a control
+channel → snapshot/destroy on idle. The scheduler routes jobs to workers
+that advertise a matching runtime.
+
+**Out of scope for now** — only Linux/Firecracker is implemented in v1.
+Windows support is an explicit follow-up: when it lands, it slots in behind
+the same `Runtime` interface and the gRPC compile RPC, scheduler, cache,
+audit log, and image-digest cache key all stay unchanged.
+
+**Windows gotchas to plan for** when the Windows runtime lands (none of these
+affect v1 or the parser):
+
+- **Path normalization for cache keys.** UNC vs mapped drive (`\\fs\src\foo.cpp`
+  vs `Z:\src\foo.cpp`) and `\\?\` extended-length forms must canonicalize to
+  the same string in the hasher, or two developers compiling the same source
+  via different mounts produce different keys. Couple with `/d1trimfile:` and
+  `/PDBSourcePath:` (MSVC equivalents of `-ffile-prefix-map`) so embedded
+  paths in objects/PDBs don't poison the hash.
+- **MAX_PATH (260) limit.** Monorepo builds blow past this routinely. Workers
+  need `LongPathsEnabled` registry, and the worker may rewrite paths to
+  `\\?\` form before invoking `cl.exe`.
+- **Source mounting into Hyper-V-isolated containers.** Hyper-V containers
+  can't bind-mount host paths the way Linux containers do; SMB-into-container
+  has identity/auth quirks (virtual accounts can't authenticate to shares).
+  Likely shape: stage source onto a local volume the container mounts, with a
+  stable in-container path (e.g. `C:\src`) decoupled from the host path.
+  `--isolation=process` would sidestep this but loses the Hyper-V boundary
+  the bank case demands.
+- **Symlinks vs directory junctions.** Different semantics; pick a
+  resolve-or-don't policy and stick to it for cache-key path canonicalization.
+
 ### 4.2 VM Lifecycle: One VM per Tenant Session, Not per Job
 
 Booting a fresh Firecracker per compile (~125ms) destroys throughput on a
@@ -558,11 +605,19 @@ mutex-protected map of `chan struct{}`.
 
 ### Sandbox Model
 
-**Firecracker, full stop.** Namespace-based sandboxes (bwrap, nsjail, gVisor)
-are out of scope — the deployment target is regulated environments where the
-KVM boundary is the boundary auditors recognize, and maintaining two
-sandbox backends to support a use case we don't have isn't worth the
-complexity.
+**Hardware-virtualized boundary, always.** Namespace-based sandboxes (bwrap,
+nsjail, gVisor) are out of scope — the deployment target is regulated
+environments where the kernel boundary is the boundary auditors recognize.
+
+A `Runtime` abstraction in the worker picks the backend by host OS:
+
+- **Linux** → Firecracker microVMs (primary target, v1).
+- **Windows** → Hyper-V-isolated Windows containers (follow-up; required
+  for MSVC and legacy Windows-only projects).
+
+The scheduler matches jobs to workers by runtime + image digest. Everything
+above the runtime layer (gRPC compile RPC, cache, audit, image-digest
+identity) is OS-agnostic.
 
 ### Compiler/Invocation Split
 
