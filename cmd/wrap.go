@@ -14,11 +14,11 @@ var wrapCmd = &cobra.Command{
 	Short: "Wrap a compiler invocation",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := compiler.Detect(args[0])
+		ctx, err := compiler.NewContext(args[0])
 		if err != nil {
 			return err
 		}
-		return runner.Run(c, args[1:])
+		return runner.Run(ctx, args[1:])
 	},
 	DisableFlagParsing: true,
 }

@@ -3,6 +3,7 @@ module github.com/aarani/hpcc
 go 1.22.1
 
 require (
+	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.12 // indirect
 	github.com/spf13/cobra v1.10.2 // indirect

@@ -1,0 +1,10 @@
+# hpcc config — copy to ~/.config/hpcc/config.toml or set HPCC_CONFIG=<path>.
+# All keys are optional; missing keys take the defaults shown here.
+
+# How preprocessing happens before cache-key computation:
+#   "local"  — client runs the preprocessor, ships preprocessed bytes.
+#              Slow but works in any environment.
+#   "remote" — client only enumerates the dep closure (`-M` / /showIncludes)
+#              and the worker preprocesses. Faster, requires the worker
+#              to have a matching toolchain.
+preprocessing_mode = "local"

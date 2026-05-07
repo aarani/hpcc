@@ -12,8 +12,8 @@ import "github.com/aarani/hpcc/internal/compiler"
 //
 // Today this just parses. The cache lookup, distributed dispatch, and
 // real compiler invocation will all hang off this function as they land.
-func Run(c compiler.Compiler, args []string) error {
-	inv, err := c.Parse(args)
+func Run(ctx *compiler.Context, args []string) error {
+	inv, err := ctx.Compiler.Parse(args)
 	if err != nil {
 		return err
 	}

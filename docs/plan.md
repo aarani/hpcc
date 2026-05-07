@@ -504,16 +504,62 @@ When a cache miss occurs, log exactly why:
 
 ### 5.4 Configuration
 
-Config file: `~/.config/hpcc/config.yaml` (or `/etc/hpcc/config.yaml` for
-system-wide). Settings include:
+**Format: TOML.** Picked over YAML because:
+- No whitespace-sensitivity (YAML's "indent silently broke parsing"
+  failure mode bites teams).
+- No "Norway problem" (`country = no` parsing as boolean).
+- Comments first-class.
+- Familiar from Cargo, ruff, ripgrep, pyproject.toml.
 
-- `cache.dir`, `cache.max_size`, `cache.compression`
-- `remote.backend`, `remote.url`, `remote.timeout_read`, `remote.timeout_write`
-- `scheduler.url`
-- `vm.image` — default container image to use as the build environment
-- `vm.idle_timeout`, `vm.session_timeout`, `vm.memory`, `vm.vcpus`
-- `determinism.auto_inject_flags` (bool)
-- `log.level`, `log.file`
+Picked over JSON because JSON has no comments and is verbose for config.
+
+Config file is loaded from, in order:
+1. `$HPCC_CONFIG` if set (used for tests and dev overrides).
+2. The OS user-config dir: `os.UserConfigDir()` resolves to
+   `~/.config/hpcc/config.toml` on Linux,
+   `~/Library/Application Support/hpcc/config.toml` on macOS,
+   `%AppData%\hpcc\config.toml` on Windows.
+3. (Future) `/etc/hpcc/config.toml` for system-wide defaults.
+
+A missing file is fine — defaults apply. A malformed file is a hard
+error so a typo isn't silently ignored.
+
+Eventual settings, organized as TOML tables:
+
+```toml
+preprocessing_mode = "local"  # "local" | "remote"
+
+[cache]
+dir = "~/.cache/hpcc"
+max_size = "10GB"
+compression = 3
+
+[remote]
+backend = "s3"           # "hpcc-server" | "s3" | "redis"
+url = "..."
+timeout_read = "2s"
+timeout_write = "5s"
+
+[scheduler]
+url = "..."
+
+[vm]
+image = "..."
+idle_timeout = "10m"
+session_timeout = "8h"
+memory = "2GB"
+vcpus = 4
+
+[determinism]
+auto_inject_flags = true
+
+[log]
+level = "info"           # "debug" | "info" | "warn" | "error"
+file = "..."
+```
+
+Implemented today: only `preprocessing_mode`. The rest land as their
+phases do.
 
 ### 5.5 Eviction
 
