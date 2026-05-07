@@ -1,6 +1,15 @@
 package compiler
 
-import "github.com/aarani/hpcc/internal/enum"
+import (
+	"encoding/binary"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"slices"
+
+	"github.com/aarani/hpcc/internal/enum"
+	"github.com/zeebo/blake3"
+)
 
 // Invocation is the parsed form of one compile command. It is pure data,
 // produced by a parser and consumed by a Compiler implementation.
@@ -39,6 +48,86 @@ type Invocation struct {
 // NewInvocation returns an Invocation with maps initialized.
 func NewInvocation() *Invocation {
 	return &Invocation{Defines: map[string]string{}}
+}
+
+// GetBytes computes the cache-key seed for this invocation: a 32-byte
+// BLAKE3-256 digest mixing source content, compiler identity, and the
+// cache-key-relevant flags.
+//
+// Two preprocessing strategies, both producing the same shape of output:
+//
+//   - PreprocessRemote (manifest mode): hash the contents of all input
+//     and dependency files. Used when the worker will preprocess on its
+//     side and we just need to enumerate inputs locally.
+//   - default (preprocess mode): run the preprocessor locally and hash
+//     the resulting source bytes (via the digest already computed in
+//     PreprocessResult — single pass over the bytes, not two).
+//
+// Each chunk written to the hasher is length-prefixed so concatenation
+// can't collide ("ab"+"c" hashes differently from "a"+"bc").
+func (inv *Invocation) CacheKey(ctx Context) ([]byte, error) {
+	if len(inv.Inputs) == 0 {
+		return nil, fmt.Errorf("no input files in invocation")
+	}
+
+	compilerIdentity, err := ctx.Compiler.Identity()
+	if err != nil {
+		return nil, fmt.Errorf("get compiler identity: %w", err)
+	}
+
+	digest := blake3.New()
+	writeChunk := func(data []byte) {
+		var lenbuf [8]byte
+		binary.BigEndian.PutUint64(lenbuf[:], uint64(len(data)))
+		digest.Write(lenbuf[:])
+		digest.Write(data)
+	}
+
+	if ctx.Config.PreprocessingMode == enum.PreprocessRemote {
+		deps, err := ctx.Compiler.FindDependencies(inv)
+		if err != nil {
+			return nil, err
+		}
+		inputs := slices.Clone(inv.Inputs)
+		slices.Sort(inputs)
+		sortedDeps := slices.Clone(deps)
+		slices.Sort(sortedDeps)
+		for _, path := range append(inputs, sortedDeps...) {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return nil, fmt.Errorf("read dependency %q: %w", path, err)
+			}
+			writeChunk(data)
+		}
+	} else {
+		res, err := ctx.Compiler.Preprocess(inv)
+		if err != nil {
+			return nil, err
+		}
+		if res.ExitCode != 0 {
+			return nil, fmt.Errorf("preprocessor exit %d: %s", res.ExitCode, res.Stderr)
+		}
+		// Source bytes are already digested into res.Digest; reuse it
+		// instead of re-hashing the whole preprocessed source.
+		writeChunk(res.Digest[:])
+	}
+
+	writeChunk(compilerIdentity)
+	writeChunk(cacheKeyFlags(inv))
+
+	return digest.Sum(nil), nil
+}
+
+// ComputeHash runs the preprocessor and returns a hex-encoded BLAKE3-256
+// digest of the preprocessed source. The digest is computed during
+// preprocessing (PreprocessResult.Digest) so this is a single pass over the
+// bytes, not two.
+func (inv *Invocation) ComputeHash(ctx Context) (string, error) {
+	res, err := inv.CacheKey(ctx)
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(res), nil
 }
 
 type InvocationResult struct {
