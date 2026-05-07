@@ -5,6 +5,7 @@ package cmd
 
 import (
 	"github.com/aarani/hpcc/internal/compiler"
+	"github.com/aarani/hpcc/internal/runner"
 	"github.com/spf13/cobra"
 )
 
@@ -17,12 +18,7 @@ var wrapCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		inv, err := c.Parse(args[1:])
-		if err != nil {
-			return err
-		}
-		_ = inv // TODO: cache lookup / invoke
-		return nil
+		return runner.Run(c, args[1:])
 	},
 	DisableFlagParsing: true,
 }
