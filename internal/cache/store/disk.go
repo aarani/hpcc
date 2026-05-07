@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/aarani/hpcc/internal"
 )
@@ -72,6 +73,48 @@ func (d *DiskCacheStore) Has(key []byte) (bool, error) {
 		return false, fmt.Errorf("stat cache entry: %w", err)
 	}
 	return info.IsDir(), nil
+}
+
+// Dir returns the root directory of this cache store.
+func (d *DiskCacheStore) Dir() string { return d.dir }
+
+// Stats returns the number of cache entries and their total size in bytes.
+func (d *DiskCacheStore) Stats() (entries int, totalSize int64, err error) {
+	ents, total, err := d.scanEntries()
+	return len(ents), total, err
+}
+
+// Clean evicts cache entries to satisfy the given constraints. If maxSize
+// is positive, LRU entries are removed until total size is at or below it.
+// If maxAge is positive, entries whose newest blob is older than maxAge are
+// removed regardless of size. Both constraints can be applied in one call.
+func (d *DiskCacheStore) Clean(maxSize int64, maxAge time.Duration) error {
+	entries, totalSize, err := d.scanEntries()
+	if err != nil {
+		return err
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].modTime < entries[j].modTime
+	})
+
+	cutoff := int64(0)
+	if maxAge > 0 {
+		cutoff = time.Now().Add(-maxAge).UnixNano()
+	}
+
+	for _, e := range entries {
+		byAge := cutoff > 0 && e.modTime < cutoff
+		bySize := maxSize > 0 && totalSize > maxSize
+		if !byAge && !bySize {
+			break
+		}
+		if err := os.RemoveAll(e.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		totalSize -= e.size
+	}
+	return nil
 }
 
 // entryDir returns the directory that holds all named blobs for the

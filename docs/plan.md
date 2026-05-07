@@ -105,7 +105,7 @@ real compiler with zero overhead.
 - `hpcc stats` — show local cache hit/miss counts, cache size on disk.
 - `hpcc clean` — evict entries (by age, LRU, or to reach a target size).
 
-### Milestone
+### Milestone ✅
 
 `hpcc wrap gcc -c foo.c -o foo.o` compiles on first run, returns the cached
 result on second run with no recompilation.
