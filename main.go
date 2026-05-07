@@ -10,14 +10,13 @@ import (
 	"strings"
 
 	"github.com/aarani/hpcc/cmd"
-	"github.com/aarani/hpcc/internal/compiler"
 	"github.com/aarani/hpcc/internal/runner"
 )
 
 func main() {
 	self := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
 	if self != "hpcc" {
-		if ctx, err := compiler.NewContext(self); err == nil {
+		if ctx, err := runner.NewContext(self); err == nil {
 			// Symlink mode: bypass cobra entirely. Cobra's root-level
 			// flag parser would reject compiler flags like -c before any
 			// subcommand could see them.

@@ -1,44 +1,24 @@
 package compiler
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/aarani/hpcc/internal"
 )
 
-// Context bundles everything the runner / cache layer needs about a
-// single invocation: which compiler is being wrapped, and the loaded
-// config that controls cache/dispatch behavior.
-type Context struct {
-	Compiler Compiler
-	Config   internal.Config
+// CacheBackend is the structural shape of a cache facade. It lives in the
+// compiler package — rather than importing the cache package directly —
+// because the cache package needs to reference Invocation/InvocationResult,
+// and pulling cache into compiler would form an import cycle. Any concrete
+// cache (e.g. cache.V1Cache) satisfies this interface via duck typing.
+type CacheBackend interface {
+	Lookup(inv *Invocation) (*InvocationResult, error)
+	Store(inv *Invocation, res *InvocationResult) error
 }
 
-// NewContext detects the requested compiler, loads the config (from the
-// path in HPCC_CONFIG, or the default user-config-dir location), and
-// returns a ready-to-use Context.
-//
-// A missing config file is fine — defaults apply. A malformed one is
-// surfaced as an error so a typo isn't silently ignored.
-func NewContext(compilerName string) (*Context, error) {
-	path := os.Getenv("HPCC_CONFIG")
-	if path == "" {
-		p, err := internal.DefaultConfigPath()
-		if err != nil {
-			return nil, err
-		}
-		path = p
-	}
-	cfg, err := internal.LoadConfig(path)
-	if err != nil {
-		return nil, err
-	}
-
-	c, err := Detect(compilerName)
-	if err != nil {
-		return nil, fmt.Errorf("detect %q: %w", compilerName, err)
-	}
-
-	return &Context{Compiler: c, Config: cfg}, nil
+// Context bundles everything the runner / cache layer needs about a
+// single invocation: which compiler is being wrapped, the loaded config
+// that controls cache/dispatch behavior, and the cache facade.
+type Context struct {
+	Config   internal.Config
+	Compiler Compiler
+	Cache    CacheBackend
 }

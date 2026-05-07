@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"time"
 
 	"github.com/aarani/hpcc/internal/enum"
 	"github.com/zeebo/blake3"
@@ -130,8 +131,13 @@ func (inv *Invocation) ComputeHash(ctx Context) (string, error) {
 	return hex.EncodeToString(res), nil
 }
 
+// InvocationResult is the captured output of a single compile run. It is
+// what the cache stores on a miss and replays on a hit; the duration is
+// recorded for metadata only and is not part of the cache key.
 type InvocationResult struct {
-	Stdout []byte
-	Stderr []byte
-	Err    error
+	Stdout   []byte
+	Stderr   []byte
+	ExitCode int
+	Duration time.Duration
+	Err      error
 }
