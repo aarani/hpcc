@@ -4,7 +4,11 @@
 // dispatch logic, and error handling live in exactly one place.
 package runner
 
-import "github.com/aarani/hpcc/internal/compiler"
+import (
+	"os"
+
+	"github.com/aarani/hpcc/internal/compiler"
+)
 
 // Run executes a single compiler invocation. The args here are the
 // compiler-side argv (without the compiler name itself) — what the user
@@ -17,6 +21,25 @@ func Run(ctx *compiler.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	_ = inv // TODO: cache lookup → hit replay or invoke
+	result, err := ctx.Cache.Lookup(inv)
+
+	if err != nil || result == nil {
+		result, err = ctx.Compiler.Invoke(inv)
+		if err != nil {
+			return err
+		}
+		ctx.Cache.Store(inv, result)
+	}
+
+	if (inv.Output != "") && (result.Output != nil) {
+		os.WriteFile(inv.Output, result.Output, 0644)
+	}
+	if result.Stdout != nil {
+		os.Stdout.Write(result.Stdout)
+	}
+	if result.Stderr != nil {
+		os.Stderr.Write(result.Stderr)
+	}
+	os.Exit(result.ExitCode)
 	return nil
 }

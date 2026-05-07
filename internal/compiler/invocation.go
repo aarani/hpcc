@@ -135,6 +135,7 @@ func (inv *Invocation) ComputeHash(ctx Context) (string, error) {
 // what the cache stores on a miss and replays on a hit; the duration is
 // recorded for metadata only and is not part of the cache key.
 type InvocationResult struct {
+	Output   []byte
 	Stdout   []byte
 	Stderr   []byte
 	ExitCode int

@@ -1,10 +1,13 @@
 package compiler
 
 import (
-	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"time"
 
 	"github.com/aarani/hpcc/internal/enum"
+	"github.com/zeebo/blake3"
 )
 
 type clangCompiler struct {
@@ -41,9 +44,37 @@ func (c *clangCompiler) FindDependencies(inv *Invocation) ([]string, error) {
 }
 
 func (c *clangCompiler) Invoke(inv *Invocation) (*InvocationResult, error) {
-	return nil, errors.New("clang.Invoke: not implemented")
+	start := time.Now()
+	stdout, stderr, exitCode, err := runCompilerCmd(c.path, inv.RawArgs, nil)
+	if err != nil {
+		return nil, err
+	}
+	result := &InvocationResult{
+		Stdout:   stdout,
+		Stderr:   stderr,
+		ExitCode: exitCode,
+		Duration: time.Since(start),
+	}
+	if inv.Output != "" && exitCode == 0 {
+		data, err := os.ReadFile(inv.Output)
+		if err != nil {
+			return nil, fmt.Errorf("read output %q: %w", inv.Output, err)
+		}
+		result.Output = data
+	}
+	return result, nil
 }
 
 func (c *clangCompiler) Identity() ([]byte, error) {
-	return nil, errors.New("clang.Identity: not implemented")
+	path, err := exec.LookPath(c.path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve compiler path: %w", err)
+	}
+	bin, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read compiler binary: %w", err)
+	}
+	h := blake3.New()
+	h.Write(bin)
+	return h.Sum(nil), nil
 }
