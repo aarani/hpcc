@@ -15,6 +15,30 @@ import (
 // Go fields use the standard tag.
 type Config struct {
 	PreprocessingMode enum.PreprocessingMode `toml:"preprocessing_mode"`
+	Caches            []CacheConfig          `toml:"cache"`
+}
+
+// CacheConfig describes a single cache backend. The Type field selects
+// which backend is used; the remaining fields are type-specific (only the
+// fields relevant to the chosen type need to be set).
+//
+// TOML example (multiple caches):
+//
+//	[[cache]]
+//	type     = "disk"
+//	location = "/tmp/hpcc"
+//	max_size = "10G"
+//
+//	[[cache]]
+//	type     = "disk"
+//	location = "/mnt/fast/hpcc"
+//	max_size = "50G"
+type CacheConfig struct {
+	Type enum.CacheType `toml:"type"`
+
+	// Disk-specific fields.
+	Location string `toml:"location,omitempty"`
+	MaxSize  string `toml:"max_size,omitempty"`
 }
 
 // DefaultConfig returns the values used when no config file is present.

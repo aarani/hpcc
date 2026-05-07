@@ -8,3 +8,24 @@
 #              and the worker preprocesses. Faster, requires the worker
 #              to have a matching toolchain.
 preprocessing_mode = "local"
+
+# Cache backends. Multiple [[cache]] blocks may be specified; they are
+# checked in order. Each block requires a `type` key; the remaining keys
+# are type-specific.
+#
+# Supported types:
+#   "disk" — local filesystem cache.
+#     location — directory to store cached objects.
+#     max_size — upper size limit (e.g. "10G", "500M"). When exceeded
+#                the oldest entries are evicted.
+
+[[cache]]
+type     = "disk"
+location = "/tmp/hpcc"
+max_size = "10G"
+
+# # Uncomment to add a second disk cache (e.g. a larger, slower volume):
+# [[cache]]
+# type     = "disk"
+# location = "/mnt/storage/hpcc"
+# max_size = "50G"
