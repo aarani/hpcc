@@ -69,6 +69,9 @@ func Dispatch(cfg *Config, cwd string, args []string) (*gen.CompileResponse, err
 		return nil, fmt.Errorf("dial daemon: %w", err)
 	}
 	defer conn.Close()
+	if tc, ok := conn.(*net.TCPConn); ok {
+		_ = tc.SetNoDelay(true)
+	}
 
 	if err := writeFrame(conn, []byte(cfg.AuthToken)); err != nil {
 		return nil, fmt.Errorf("send auth: %w", err)

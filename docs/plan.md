@@ -8,6 +8,18 @@ user-supplied compilation on shared hardware is politically untenable.
 
 ---
 
+## Status
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| [Phase 1](#phase-1-core-compiler-wrapping) | Core Compiler Wrapping | Done |
+| [Phase 2](#phase-2-daemon-architecture) | Daemon Architecture | Done |
+| [Phase 3](#phase-3-remote-cache) | Remote Cache | Not started |
+| [Phase 4](#phase-4-distributed-compilation-in-per-tenant-vms) | Distributed Compilation in Per-Tenant VMs | Not started |
+| [Phase 5](#phase-5-observability--polish) | Observability & Polish | Not started |
+
+---
+
 ## Phase 1: Core Compiler Wrapping
 
 The foundation. Get a single-machine cache loop working end-to-end.
@@ -173,7 +185,7 @@ If the daemon is not running, the client falls back to compiling directly
 (with local cache still available in-process). Never fail a build because the
 daemon is down.
 
-### Milestone
+### Milestone ✅
 
 `make -j16` with the daemon running deduplicates identical translation units
 and reports stats from a single process.

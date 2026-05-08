@@ -316,6 +316,7 @@ func (d *DefaultDaemon) Run(force bool) error {
 					log.Println(fmt.Errorf("accept: %w", err))
 					continue
 				}
+				_ = conn.SetNoDelay(true)
 
 				go func() {
 					if err := d.handleConnection(conn); err != nil {
