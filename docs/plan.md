@@ -125,11 +125,15 @@ invocations share state efficiently.
   exist on Windows 10+ but tooling/library support is uneven, and the wrapper
   has to run on every dev machine. Loopback-only binding keeps the surface
   area equivalent to a Unix socket: no off-host reachability.
-- A small **port handshake file** (`$XDG_RUNTIME_DIR/hpcc/daemon.json` on
-  Linux, `~/Library/Application Support/hpcc/daemon.json` on macOS,
-  `%LocalAppData%\hpcc\daemon.json` on Windows) records `{port, pid,
-  auth_token}` so the wrapper can find the daemon without a fixed port. File
-  permissions: `0600` (Unix) / current-user ACL (Windows).
+- A small **port handshake file** at `<UserConfigDir>/hpcc/daemon.json`
+  (resolved via Go's `os.UserConfigDir()` —
+  `~/.config/hpcc/daemon.json` on Linux,
+  `~/Library/Application Support/hpcc/daemon.json` on macOS,
+  `%AppData%\hpcc\daemon.json` on Windows) records `{port, pid,
+  auth_token}` so the wrapper can find the daemon without a fixed port.
+  Same lookup path as the config file (§5.4) — one directory per user, no
+  separate runtime-vs-config split. File permissions: `0600` (Unix) /
+  current-user ACL (Windows).
 - Per-connection auth: wrapper reads the token from the handshake file and
   presents it on connect. Cheap defense against another local user
   connecting to the loopback port on a shared machine.
