@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package protocol;
+
+option go_package = "./gen";
+
+message CompileRequest {
+  string cwd = 1;
+  repeated string args = 2;
+}
+
+message CompileResponse {
+  int32 exit_code = 1;
+  bytes stdout = 2;
+  bytes stderr = 3;
+}
