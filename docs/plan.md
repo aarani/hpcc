@@ -179,46 +179,38 @@ and reports stats from a single process.
 ## Phase 3: Remote Cache
 
 Share cached artifacts across machines so a team doesn't recompile the same
-code.
+code. The remote cache is just another `Store` implementation — no custom
+server binary. Point hpcc at an S3-compatible bucket and it works.
 
-### 3.1 Cache Backend Interface
+### 3.1 S3 Store
 
-```go
-type RemoteCache interface {
-    Get(ctx context.Context, key string) (*CacheEntry, error)
-    Put(ctx context.Context, key string, entry *CacheEntry) error
-    Contains(ctx context.Context, key string) (bool, error)
-}
-```
+A new `Store` implementation (`internal/cache/store/s3.go`) that speaks the
+S3 A
+A new `Store` implementation (`internal/cache/store/s3.go`) that speaks the
+S3 API. Works with AWS S3, MinIO, R2, GCS (via S3 compatibility), etc.PI. Works with AWS S3, MinIO, R2, GCS (via S3 compatibility), etc.
 
-Implement at least two backends:
-- **hpcc server** — a dedicated HTTP cache server (simple blob store).
-- **S3-compatible** — works with AWS S3, MinIO, R2, etc.
+Key layout mirrors the local disk store: `<first 2 hex>/<full key>/<name>`
+as object keys inside the configured bucket/prefix.
 
-### 3.2 Why HTTP, not gRPC
+Operations map directly:
+- `Get` → `GetObject`
+- `Put` → `PutObject`
+- `Has` → `HeadObject`
 
-The cache is blob movement keyed by content hash. **HTTP `GET`/`PUT`/`HEAD` on
-a CAS key is the exact shape S3, MinIO, R2, GCS, and every CDN already speak.**
-Switching to gRPC here means your `hpcc-server` has to proxy every blob and
-becomes a permanent scaling bottleneck. Wins from HTTP:
+No custom protocol, no proxy server, no extra binary. The user already
+runs their object store; hpcc just writes to it.
 
-- Drop-in S3 compatibility, no protocol code.
-- Signed URLs so clients pull blobs directly from object storage.
-- HTTP/2 multiplexing if you want it.
-- `curl` debugging.
-- Range requests, ETag dedup, conditional GETs.
+### 3.2 Lookup Order
 
-The one credible alternative is the **Bazel Remote Execution API** (gRPC +
-bytestream). Pick that only if interop with Bazel/Buck2/BuildBuddy is a goal.
-
-### 3.3 Lookup Order
+The runner walks stores in config order (typically local disk first, then
+S3). On hit from a remote store, backfill to earlier (local) stores.
 
 1. Local disk cache
-2. Remote cache
+2. S3 remote cache
 3. Compile (locally or distributed — see Phase 4)
-4. Push result to both local and remote
+4. Push result to all configured stores
 
-### 3.4 Failure Handling
+### 3.3 Failure Handling
 
 - Remote cache operations have a configurable timeout (default: 2s reads, 5s
   writes).
@@ -226,18 +218,10 @@ bytestream). Pick that only if interop with Bazel/Buck2/BuildBuddy is a goal.
 - Write failures are non-fatal — the build succeeds, the artifact just isn't
   shared.
 
-### 3.5 Authentication
+### 3.4 Authentication
 
-- hpcc server: mTLS or bearer token.
-- S3: standard AWS credential chain.
-
-### 3.6 hpcc Server
-
-- Standalone binary or subcommand:
-  `hpcc server --listen :9090 --storage /var/lib/hpcc`.
-- API: `PUT /cache/<key>`, `GET /cache/<key>`, `HEAD /cache/<key>`.
-- Storage: local filesystem (same CAS layout as the client) with configurable
-  max size and LRU eviction.
+Standard AWS credential chain (env vars, `~/.aws`, instance profile, etc.).
+No hpcc-specific auth layer.
 
 ### Milestone
 
@@ -599,7 +583,6 @@ cmd/
   stats.go          — hpcc stats
   clean.go          — hpcc clean
   inspect.go        — hpcc inspect
-  server.go         — hpcc server (remote cache server)
   scheduler.go      — hpcc scheduler
   worker.go         — hpcc worker
 internal/
@@ -613,12 +596,10 @@ internal/
   hasher/
     hasher.go       — compute cache keys (preprocess and manifest modes)
   cache/
-    local.go        — local disk cache (CAS)
-    remote.go       — RemoteCache interface
-    s3.go           — S3 backend
-    server.go       — hpcc-server backend (HTTP client)
-    entry.go        — CacheEntry type
-    eviction.go     — LRU eviction
+    store/
+      store.go      — Store interface
+      disk.go       — local disk cache (CAS)
+      s3.go         — S3-compatible remote store
   daemon/
     daemon.go       — main loop, loopback TCP listener
     handshake.go    — write/read daemon.json (port, pid, auth token)
@@ -699,7 +680,7 @@ parser from a flag spec table, not a giant switch.
 | Hop | Protocol | Why |
 |---|---|---|
 | Wrapper ↔ daemon (local) | Length-prefixed protobuf over loopback TCP (`127.0.0.1`) with a per-daemon auth token | Wrapper invoked thousands of times per build; gRPC runtime is too heavy for the hot path. TCP (over Unix sockets) for portability — the wrapper has to run on Windows too |
-| Cache (Phase 3) | HTTP `GET`/`PUT`/`HEAD` | S3-compatible, signed URLs, CDN-friendly |
+| Cache (Phase 3) | S3 API (`GetObject`/`PutObject`/`HeadObject`) | Direct to object storage, no proxy; works with AWS S3, MinIO, R2, GCS |
 | Control plane (scheduler/worker/client compile) | gRPC unary `Compile` | Per-call zstd, multiplexing, cancellation, mTLS, deadlines |
 | In-VM agent | gRPC over vsock | Same proto, no network device |
 | Telemetry sidecar (later, optional) | Kafka | Append-only event log of compilations for dashboards/audit |
@@ -724,7 +705,7 @@ timezone, hostname inside the VM. Document LTO/PGO caveats.
 
 - Daemon listens on loopback TCP only (`127.0.0.1`); a per-daemon auth token
   in a `0600` handshake file gates connections.
-- Remote cache server requires authentication.
+- Remote cache uses S3 auth (AWS credential chain).
 - Workers run compilations in Firecracker VMs with no network device.
 - Image rootfs is read-only, optionally dm-verity signed.
 - Per-VM audit log: image digest, source digest, flag set, output digest,
@@ -767,8 +748,7 @@ timezone, hostname inside the VM. Document LTO/PGO caveats.
 12. `internal/protocol/compile.proto` — define the wire format once.
 13. `internal/daemon/` — daemon + loopback TCP (length-prefixed proto).
 14. `cmd/start.go`, `cmd/stop.go`, `cmd/status.go`.
-15. `internal/cache/remote.go` + `internal/cache/server.go` +
-    `cmd/server.go` — remote cache backends and standalone server.
+15. `internal/cache/store/s3.go` — S3-compatible remote store.
 16. Manifest-mode hashing alongside `internal/compiler/cache_key.go`.
 17. `internal/worker/image/` — OCI → rootfs conversion + cache.
 18. `internal/worker/vmpool/` — Firecracker lifecycle, snapshot, eviction.
