@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/aarani/hpcc/internal/compiler"
 	"github.com/aarani/hpcc/internal/daemon/client"
 	"github.com/aarani/hpcc/internal/runner"
@@ -26,6 +28,7 @@ import (
 type DefaultDaemon struct {
 	Contexts  sync.Map
 	AuthToken string
+	compiles  singleflight.Group
 }
 
 func NewDefaultDaemon() *DefaultDaemon {
@@ -225,21 +228,41 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 
 	log.Printf("compile: %s -> %s", cmd, inv.Output)
 
-	result, err := context.Cache.Lookup(inv)
+	hash, hashErr := inv.ComputeHash(*context)
 
-	if err != nil || result == nil {
+	compile := func() (any, error) {
+		result, lookupErr := context.Cache.Lookup(inv)
+		if lookupErr == nil && result != nil {
+			log.Printf("compile: %s cache hit", inv.Output)
+			return result, nil
+		}
 		log.Printf("compile: %s cache miss, invoking compiler", inv.Output)
-		result, err = context.Compiler.Invoke(inv)
+		result, err := context.Compiler.Invoke(inv)
 		if err != nil {
-			log.Println(fmt.Errorf("invoke: %w", err))
-			d.writeErrorResponse(conn, writeMu, fmt.Sprintf("invoke: %v", err), 1)
-			return
+			return nil, err
 		}
 		_ = context.Cache.Store(inv, result)
-	} else {
-		log.Printf("compile: %s cache hit", inv.Output)
+		return result, nil
 	}
 
+	var val any
+	var shared bool
+	if hashErr != nil {
+		val, err = compile()
+	} else {
+		val, err, shared = d.compiles.Do(hash, compile)
+	}
+
+	if err != nil {
+		log.Println(fmt.Errorf("compile: %w", err))
+		d.writeErrorResponse(conn, writeMu, fmt.Sprintf("compile: %v", err), 1)
+		return
+	}
+
+	result := val.(*compiler.InvocationResult)
+	if shared {
+		log.Printf("compile: %s deduped", inv.Output)
+	}
 	log.Printf("compile: %s exit=%d", inv.Output, result.ExitCode)
 
 	if inv.Output != "" && result.Output != nil {
