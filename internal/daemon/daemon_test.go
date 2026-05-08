@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -410,4 +411,214 @@ func TestDaemonGracefulDisconnect(t *testing.T) {
 	}
 
 	time.Sleep(50 * time.Millisecond)
+}
+
+// countingCompiler wraps a real Compiler and counts Invoke calls.
+// An optional delay is injected into Invoke so concurrent requests
+// overlap long enough for singleflight to coalesce them.
+type countingCompiler struct {
+	compiler.Compiler
+	invokeCount atomic.Int32
+	invokeDelay time.Duration
+}
+
+func (c *countingCompiler) Invoke(inv *compiler.Invocation) (*compiler.InvocationResult, error) {
+	c.invokeCount.Add(1)
+	if c.invokeDelay > 0 {
+		time.Sleep(c.invokeDelay)
+	}
+	return c.Compiler.Invoke(inv)
+}
+
+func setupCountingContext(t *testing.T, delay time.Duration) (*compiler.Context, *countingCompiler) {
+	t.Helper()
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	ds, err := store.NewDiskCacheStore(cacheDir, "100M")
+	if err != nil {
+		t.Fatal(err)
+	}
+	real, err := compiler.Detect("clang")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cc := &countingCompiler{Compiler: real, invokeDelay: delay}
+	ctx := &compiler.Context{
+		Compiler: cc,
+		Config:   internal.Config{PreprocessingMode: enum.PreprocessLocal},
+	}
+	ctx.Cache = cache.NewV1Cache(ctx, []store.Store{ds})
+	return ctx, cc
+}
+
+func TestDaemonDedupIdenticalRequests(t *testing.T) {
+	clangAvailable(t)
+	ctx, cc := setupCountingContext(t, 200*time.Millisecond)
+	d := NewDefaultDaemon()
+	d.Contexts.Store("clang", ctx)
+
+	l := startTestDaemon(t, d)
+
+	dir := t.TempDir()
+	src := writeSource(t, dir, "dedup.c", "int dedup(void) { return 0; }\n")
+	out := filepath.Join(dir, "dedup.o")
+
+	req := &gen.CompileRequest{
+		Args: []string{"clang", "-c", src, "-o", out},
+	}
+
+	const n = 3
+	resps := make([]*gen.CompileResponse, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			conn := dialDaemon(t, l)
+			sendCompileRequest(t, conn, req)
+			resps[i] = readCompileResponse(t, conn)
+		}()
+	}
+	wg.Wait()
+
+	for i, resp := range resps {
+		if resp.ExitCode != 0 {
+			t.Errorf("request %d: expected exit 0, got %d: %s", i, resp.ExitCode, resp.Stderr)
+		}
+	}
+
+	if got := cc.invokeCount.Load(); got != 1 {
+		t.Errorf("expected 1 compiler invocation (dedup), got %d", got)
+	}
+}
+
+func TestDaemonDedupDifferentSourcesNotCoalesced(t *testing.T) {
+	clangAvailable(t)
+	ctx, cc := setupCountingContext(t, 200*time.Millisecond)
+	d := NewDefaultDaemon()
+	d.Contexts.Store("clang", ctx)
+
+	l := startTestDaemon(t, d)
+	dir := t.TempDir()
+
+	srcA := writeSource(t, dir, "a.c", "int a(void) { return 1; }\n")
+	outA := filepath.Join(dir, "a.o")
+	srcB := writeSource(t, dir, "b.c", "int b(void) { return 2; }\n")
+	outB := filepath.Join(dir, "b.o")
+
+	var wg sync.WaitGroup
+	resps := make([]*gen.CompileResponse, 2)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		conn := dialDaemon(t, l)
+		sendCompileRequest(t, conn, &gen.CompileRequest{
+			Args: []string{"clang", "-c", srcA, "-o", outA},
+		})
+		resps[0] = readCompileResponse(t, conn)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		conn := dialDaemon(t, l)
+		sendCompileRequest(t, conn, &gen.CompileRequest{
+			Args: []string{"clang", "-c", srcB, "-o", outB},
+		})
+		resps[1] = readCompileResponse(t, conn)
+	}()
+
+	wg.Wait()
+
+	for i, resp := range resps {
+		if resp.ExitCode != 0 {
+			t.Errorf("request %d: expected exit 0, got %d: %s", i, resp.ExitCode, resp.Stderr)
+		}
+	}
+
+	if got := cc.invokeCount.Load(); got != 2 {
+		t.Errorf("expected 2 compiler invocations (different sources), got %d", got)
+	}
+}
+
+func TestDaemonDedupErrorPropagation(t *testing.T) {
+	clangAvailable(t)
+	ctx, cc := setupCountingContext(t, 200*time.Millisecond)
+	d := NewDefaultDaemon()
+	d.Contexts.Store("clang", ctx)
+
+	l := startTestDaemon(t, d)
+
+	dir := t.TempDir()
+	src := writeSource(t, dir, "bad.c", "this is not valid C\n")
+	out := filepath.Join(dir, "bad.o")
+
+	req := &gen.CompileRequest{
+		Args: []string{"clang", "-c", src, "-o", out},
+	}
+
+	const n = 3
+	resps := make([]*gen.CompileResponse, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			conn := dialDaemon(t, l)
+			sendCompileRequest(t, conn, req)
+			resps[i] = readCompileResponse(t, conn)
+		}()
+	}
+	wg.Wait()
+
+	for i, resp := range resps {
+		if resp.ExitCode == 0 {
+			t.Errorf("request %d: expected non-zero exit for bad source", i)
+		}
+		if len(resp.Stderr) == 0 {
+			t.Errorf("request %d: expected stderr output", i)
+		}
+	}
+
+	if got := cc.invokeCount.Load(); got != 1 {
+		t.Errorf("expected 1 compiler invocation (dedup even on error), got %d", got)
+	}
+}
+
+func TestDaemonDedupSequentialNotCoalesced(t *testing.T) {
+	clangAvailable(t)
+	ctx, cc := setupCountingContext(t, 0)
+	d := NewDefaultDaemon()
+	d.Contexts.Store("clang", ctx)
+
+	l := startTestDaemon(t, d)
+
+	dir := t.TempDir()
+	src := writeSource(t, dir, "seq.c", "int seq(void) { return 0; }\n")
+	out := filepath.Join(dir, "seq.o")
+
+	req := &gen.CompileRequest{
+		Args: []string{"clang", "-c", src, "-o", out},
+	}
+
+	conn := dialDaemon(t, l)
+	sendCompileRequest(t, conn, req)
+	resp1 := readCompileResponse(t, conn)
+	if resp1.ExitCode != 0 {
+		t.Fatalf("first request failed: %s", resp1.Stderr)
+	}
+
+	// Second request after first completes — singleflight should not
+	// coalesce; the second hits the cache instead.
+	os.Remove(out)
+	conn2 := dialDaemon(t, l)
+	sendCompileRequest(t, conn2, req)
+	resp2 := readCompileResponse(t, conn2)
+	if resp2.ExitCode != 0 {
+		t.Fatalf("second request failed: %s", resp2.Stderr)
+	}
+
+	if got := cc.invokeCount.Load(); got != 1 {
+		t.Errorf("expected 1 compiler invocation (second should be cache hit), got %d", got)
+	}
 }
