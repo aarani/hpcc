@@ -1,5 +1,7 @@
 package store
 
+import "time"
+
 // Store is a content-addressable store keyed by an opaque (typically
 // hash) byte key. Each key maps to a small set of named blobs, so a
 // single cache entry can hold the compiler artifact alongside its
@@ -25,4 +27,10 @@ type Store interface {
 
 	// Has reports whether any blob exists for the given key.
 	Has(key []byte) (bool, error)
+
+	Stats() (entries int, totalSize int64, err error)
+
+	Clean(maxSize int64, maxAge time.Duration) error
+
+	Dir() string
 }

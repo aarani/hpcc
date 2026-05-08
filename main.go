@@ -21,7 +21,7 @@ func main() {
 			// flag parser would reject compiler flags like -c before any
 			// subcommand could see them.
 			if err := runner.Run(ctx, os.Args[1:]); err != nil {
-				fmt.Fprintln(os.Stderr, "hpcc:", err)
+				_, _ = fmt.Fprintln(os.Stderr, "hpcc:", err)
 				os.Exit(1)
 			}
 			return

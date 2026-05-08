@@ -13,7 +13,7 @@ import (
 // Unlike NewContext, this does not require a compiler name — it is used
 // by cache-management commands (stats, clean) that operate on stores
 // directly.
-func LoadStores() ([]*store.DiskCacheStore, error) {
+func LoadStores() ([]store.Store, error) {
 	path := os.Getenv("HPCC_CONFIG")
 	if path == "" {
 		p, err := internal.DefaultConfigPath()
@@ -27,7 +27,7 @@ func LoadStores() ([]*store.DiskCacheStore, error) {
 		return nil, err
 	}
 
-	var stores []*store.DiskCacheStore
+	var stores []store.Store
 	for _, cacheCfg := range cfg.Caches {
 		switch cacheCfg.Type {
 		case enum.CacheDisk:
