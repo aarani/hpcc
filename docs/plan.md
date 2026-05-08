@@ -119,18 +119,35 @@ invocations share state efficiently.
 
 ### 2.1 Daemon Process
 
-- `hpcc start` — launch the daemon in the background, listening on a Unix socket
-  (`$XDG_RUNTIME_DIR/hpcc/sock` or `/tmp/hpcc.sock`).
+- `hpcc start` — launch the daemon in the background, listening on a **TCP
+  socket bound to loopback** (`127.0.0.1:<port>`, default `:9080`). TCP keeps
+  the daemon portable across Linux, macOS, and Windows — Unix domain sockets
+  exist on Windows 10+ but tooling/library support is uneven, and the wrapper
+  has to run on every dev machine. Loopback-only binding keeps the surface
+  area equivalent to a Unix socket: no off-host reachability.
+- A small **port handshake file** (`$XDG_RUNTIME_DIR/hpcc/daemon.json` on
+  Linux, `~/Library/Application Support/hpcc/daemon.json` on macOS,
+  `%LocalAppData%\hpcc\daemon.json` on Windows) records `{port, pid,
+  auth_token}` so the wrapper can find the daemon without a fixed port. File
+  permissions: `0600` (Unix) / current-user ACL (Windows).
+- Per-connection auth: wrapper reads the token from the handshake file and
+  presents it on connect. Cheap defense against another local user
+  connecting to the loopback port on a shared machine.
 - `hpcc stop` — gracefully shut down the daemon.
 - `hpcc status` — report whether the daemon is running, uptime, active
   compilations, cache stats.
 
 ### 2.2 Client-Server Protocol
 
-**Length-prefixed protobuf over the Unix socket** — *not* gRPC. The wrapper
-binary is invoked thousands of times per build and must start fast and stay
-small; pulling in the gRPC runtime is overkill for local IPC. Same `.proto`
-files as the Phase 4 control plane, just a thinner client.
+**Length-prefixed protobuf over a loopback TCP connection** — *not* gRPC. The
+wrapper binary is invoked thousands of times per build and must start fast
+and stay small; pulling in the gRPC runtime is overkill for local IPC. Same
+`.proto` files as the Phase 4 control plane, just a thinner client.
+
+Connection setup: wrapper reads `daemon.json`, dials `127.0.0.1:<port>`,
+sends a one-byte version + the auth token as the first framed message, then
+proceeds with normal request/response. Disable Nagle (`TCP_NODELAY`) — these
+are short, latency-sensitive RPCs.
 
 Messages:
 - `CompileRequest` — compiler path, args, working directory, environment subset.
@@ -603,7 +620,8 @@ internal/
     entry.go        — CacheEntry type
     eviction.go     — LRU eviction
   daemon/
-    daemon.go       — main loop, Unix socket listener
+    daemon.go       — main loop, loopback TCP listener
+    handshake.go    — write/read daemon.json (port, pid, auth token)
     handler.go      — handle compile requests, stats, clean
     dedup.go        — in-flight deduplication
   protocol/
@@ -680,7 +698,7 @@ parser from a flag spec table, not a giant switch.
 
 | Hop | Protocol | Why |
 |---|---|---|
-| Wrapper ↔ daemon (local) | Length-prefixed protobuf over Unix socket | Wrapper invoked thousands of times per build; gRPC runtime is too heavy for the hot path |
+| Wrapper ↔ daemon (local) | Length-prefixed protobuf over loopback TCP (`127.0.0.1`) with a per-daemon auth token | Wrapper invoked thousands of times per build; gRPC runtime is too heavy for the hot path. TCP (over Unix sockets) for portability — the wrapper has to run on Windows too |
 | Cache (Phase 3) | HTTP `GET`/`PUT`/`HEAD` | S3-compatible, signed URLs, CDN-friendly |
 | Control plane (scheduler/worker/client compile) | gRPC unary `Compile` | Per-call zstd, multiplexing, cancellation, mTLS, deadlines |
 | In-VM agent | gRPC over vsock | Same proto, no network device |
@@ -704,7 +722,8 @@ timezone, hostname inside the VM. Document LTO/PGO caveats.
 
 ### Security
 
-- Daemon listens on a Unix socket with filesystem permissions — no network.
+- Daemon listens on loopback TCP only (`127.0.0.1`); a per-daemon auth token
+  in a `0600` handshake file gates connections.
 - Remote cache server requires authentication.
 - Workers run compilations in Firecracker VMs with no network device.
 - Image rootfs is read-only, optionally dm-verity signed.
@@ -715,24 +734,44 @@ timezone, hostname inside the VM. Document LTO/PGO caveats.
 
 ## Build Order
 
-If you're working on this solo, this is the recommended order:
+### Done so far
 
-1. `internal/compiler/grammar.go` + `parser.go` — flag spec tables and parser
-2. `internal/compiler/detect.go` — compiler detection
-3. `internal/compiler/invocation.go` — Invocation type
-4. `internal/compiler/preprocess.go` — `-E` and `-M` modes
-5. `internal/compiler/invoke.go` — run compiler, capture output
-6. `internal/hasher/hasher.go` — preprocess-mode hashing first
-7. `internal/cache/entry.go`, `internal/cache/local.go` — local CAS
-8. `cmd/wrap.go` — wire it together
-9. End-to-end test: `hpcc wrap gcc -c foo.c -o foo.o`
-10. `internal/protocol/compile.proto` — define the wire format once
-11. `internal/daemon/` — daemon + Unix socket (length-prefixed proto)
-12. `cmd/start.go`, `cmd/stop.go`, `cmd/status.go`
-13. `internal/cache/remote.go` + `internal/cache/server.go` + `cmd/server.go`
-14. Manifest-mode hashing in `internal/hasher/`
-15. `internal/worker/image/` — OCI → rootfs conversion + cache
-16. `internal/worker/vmpool/` — Firecracker lifecycle, snapshot, eviction
-17. `internal/worker/agent/` — in-VM gRPC agent over vsock
-18. `internal/scheduler/` — gRPC, tenant routing, image matching
-19. Polish: stats, inspect, explain, config, eviction
+1. **GNU + MSVC parsers** — `internal/compiler/grammar.go`,
+   `grammar_msvc.go`, `parser.go`, `parser_msvc.go` (+ `parser_test.go`,
+   `parser_msvc_test.go`). Flag spec tables driving both grammars.
+2. **Compiler detection** — `internal/compiler/detect.go` (+
+   `detect_test.go`). Identify the toolchain from `argv[0]`.
+3. **Compiler/Invocation types** — `internal/compiler/compiler.go`,
+   `invocation.go`, `clang.go` (+ `clang_test.go`), `cl.go`. Stateless
+   strategy + parsed-argv data shape.
+4. **Preprocess / dep-gen** — `internal/compiler/preprocess.go` (+
+   `preprocess_test.go`). `-E` and `-M` invocations.
+5. **Cache-key hashing** — `internal/compiler/cache_key.go` (+
+   `cache_key_test.go`). Preprocess-mode hashing.
+6. **Drop-in wrapper CLI** — `main.go`, `cmd/root.go`, `cmd/wrap.go`.
+   `hpcc wrap <compiler> [args...]` and symlinked-name dispatch.
+7. **Context plumbing** — `internal/compiler/context.go`. `context.Context`
+   threaded through compiler entry points.
+8. **Cache configuration + enums** — `internal/config.go`,
+   `internal/filesize.go`, `internal/cache/cache.go`, `internal/cache/v1.go`,
+   `internal/enum/{cache_type,family,invocation_mode,language,preprocessing_mode}.go`.
+9. **Disk cache store** — `internal/cache/store/store.go`,
+   `internal/cache/store/disk.go`. CAS layout on disk.
+10. **Runner** — `internal/runner/runner.go`, `stores.go`, `context.go`
+    (+ `runner_test.go`). Glue between parsed invocation, hasher, cache
+    store, and the real compiler.
+11. **Stats + clean commands** — `cmd/stats.go`, `cmd/clean.go`.
+
+### Remaining
+
+12. `internal/protocol/compile.proto` — define the wire format once.
+13. `internal/daemon/` — daemon + loopback TCP (length-prefixed proto).
+14. `cmd/start.go`, `cmd/stop.go`, `cmd/status.go`.
+15. `internal/cache/remote.go` + `internal/cache/server.go` +
+    `cmd/server.go` — remote cache backends and standalone server.
+16. Manifest-mode hashing alongside `internal/compiler/cache_key.go`.
+17. `internal/worker/image/` — OCI → rootfs conversion + cache.
+18. `internal/worker/vmpool/` — Firecracker lifecycle, snapshot, eviction.
+19. `internal/worker/agent/` — in-VM gRPC agent over vsock.
+20. `internal/scheduler/` — gRPC, tenant routing, image matching.
+21. Polish: inspect, explain, eviction, Prometheus endpoints.
