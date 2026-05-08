@@ -131,12 +131,15 @@ invocations share state efficiently.
 
 ### 2.1 Daemon Process
 
-- `hpcc start` — launch the daemon in the background, listening on a **TCP
-  socket bound to loopback** (`127.0.0.1:<port>`, default `:9080`). TCP keeps
-  the daemon portable across Linux, macOS, and Windows — Unix domain sockets
-  exist on Windows 10+ but tooling/library support is uneven, and the wrapper
-  has to run on every dev machine. Loopback-only binding keeps the surface
-  area equivalent to a Unix socket: no off-host reachability.
+- `hpcc start` — run the daemon as a **foreground process**, listening on a
+  **TCP socket bound to loopback** (`127.0.0.1:<port>`, default `:9080`).
+  Foreground execution keeps the process model simple: the user (or a
+  process supervisor like systemd, launchd, or a container entrypoint)
+  owns the lifecycle. TCP keeps the daemon portable across Linux, macOS,
+  and Windows — Unix domain sockets exist on Windows 10+ but
+  tooling/library support is uneven, and the wrapper has to run on every
+  dev machine. Loopback-only binding keeps the surface area equivalent to
+  a Unix socket: no off-host reachability.
 - A small **port handshake file** at `<UserConfigDir>/hpcc/daemon.json`
   (resolved via Go's `os.UserConfigDir()` —
   `~/.config/hpcc/daemon.json` on Linux,
@@ -149,9 +152,9 @@ invocations share state efficiently.
 - Per-connection auth: wrapper reads the token from the handshake file and
   presents it on connect. Cheap defense against another local user
   connecting to the loopback port on a shared machine.
-- `hpcc stop` — gracefully shut down the daemon.
-- `hpcc status` — report whether the daemon is running, uptime, active
-  compilations, cache stats.
+- Graceful shutdown via `SIGINT` / `SIGTERM` (Unix) or `Ctrl-C` (all
+  platforms). No separate `stop` command needed — the process supervisor
+  or the user's terminal handles it.
 
 ### 2.2 Client-Server Protocol
 
@@ -593,9 +596,7 @@ phases do.
 cmd/
   root.go           — base cobra command
   wrap.go           — hpcc wrap <compiler> [args...]
-  start.go          — hpcc start (daemon)
-  stop.go           — hpcc stop
-  status.go         — hpcc status
+  start.go          — hpcc start (foreground daemon)
   stats.go          — hpcc stats
   clean.go          — hpcc clean
   inspect.go        — hpcc inspect
@@ -758,16 +759,21 @@ timezone, hostname inside the VM. Document LTO/PGO caveats.
     (+ `runner_test.go`). Glue between parsed invocation, hasher, cache
     store, and the real compiler.
 11. **Stats + clean commands** — `cmd/stats.go`, `cmd/clean.go`.
+12. **Wire protocol** — `internal/protocol/compile.proto` (+
+    `gen/compile.pb.go`). Length-prefixed protobuf messages for the
+    daemon ↔ client path.
+13. **Daemon + client** — `internal/daemon/daemon.go` (+
+    `daemon_test.go`), `internal/daemon/client/client.go`. Loopback TCP
+    listener, handshake file, per-connection auth, singleflight-based
+    deduplication of identical in-flight compilations (§2.3),
+    `TCP_NODELAY` on all connections. `cmd/start.go` launches the daemon.
 
 ### Remaining
 
-12. `internal/protocol/compile.proto` — define the wire format once.
-13. `internal/daemon/` — daemon + loopback TCP (length-prefixed proto).
-14. `cmd/start.go`, `cmd/stop.go`, `cmd/status.go`.
-15. `internal/cache/store/s3.go` — S3-compatible remote store.
-16. Manifest-mode hashing alongside `internal/compiler/cache_key.go`.
-17. `internal/worker/image/` — OCI → rootfs conversion + cache.
-18. `internal/worker/vmpool/` — Firecracker lifecycle, snapshot, eviction.
-19. `internal/worker/agent/` — in-VM gRPC agent over vsock.
-20. `internal/scheduler/` — gRPC, tenant routing, image matching.
-21. Polish: inspect, explain, eviction, Prometheus endpoints.
+14. `internal/cache/store/s3.go` — S3-compatible remote store.
+15. Manifest-mode hashing alongside `internal/compiler/cache_key.go`.
+16. `internal/worker/image/` — OCI → rootfs conversion + cache.
+17. `internal/worker/vmpool/` — Firecracker lifecycle, snapshot, eviction.
+18. `internal/worker/agent/` — in-VM gRPC agent over vsock.
+19. `internal/scheduler/` — gRPC, tenant routing, image matching.
+20. Polish: inspect, explain, eviction, Prometheus endpoints.

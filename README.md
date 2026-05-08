@@ -70,10 +70,11 @@ Two-grammar (GNU + MSVC) spec-table parser, compiler detection from
 cache, drop-in symlink wrapper, `hpcc wrap / stats / clean`.
 
 ### Phase 2 — Daemon Architecture ✅
-Long-running daemon over loopback TCP with a per-daemon auth token,
-length-prefixed protobuf (not gRPC — the wrapper is on the hot path),
-in-flight deduplication by cache key, daemon-down fallback. `hpcc start /
-stop / status`.
+Long-running foreground process over loopback TCP with a per-daemon auth
+token, length-prefixed protobuf (not gRPC — the wrapper is on the hot
+path), in-flight deduplication by cache key, daemon-down fallback.
+`hpcc start` runs the daemon in the foreground; lifecycle is managed by
+the user's terminal or a process supervisor (systemd, launchd, etc.).
 
 ### Phase 3 — Remote Cache
 S3-compatible blob store as a `Store` implementation (AWS S3, MinIO, R2,
