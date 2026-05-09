@@ -40,6 +40,9 @@ multi-tenant, and on the audit trail.**
   header* or *which flag* changed. Not a debug log you have to grep.
 - **Per-call zstd on the wire.** Preprocessed C++ compresses 5–10×; this is
   the single largest perf lever and it's on by default.
+- **Paranoid mode** (`paranoid = true`): cache reads and writes happen
+  only on the worker — clients never touch the cache stores, never hold
+  remote-store credentials. A compromised laptop cannot poison the cache.
 - **Hyper-V isolated Windows containers** behind the same `Runtime`
   interface — MSVC on shared workers with a kernel boundary, which is
   unsolved in OSS today.
