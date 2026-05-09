@@ -88,9 +88,10 @@ credential chain. No custom server binary.
 The differentiated phase. Firecracker microVMs on Linux (Hyper-V containers
 on Windows, follow-up). One VM per tenant session, snapshot on idle, LRU
 eviction. OCI image → ext4 rootfs conversion cached by digest. Server-side
-preprocessing (`shared_root` / `cas` / `preprocessed` modes). gRPC control
-plane with per-call zstd, mTLS, cancellation. Scheduler with tenant→VM
-affinity and image-digest matching. Per-job audit log.
+preprocessing (`shared_root` / `cas` / `preprocessed` modes). Route-only
+scheduler (returns a worker address + TLS trust info, never touches compile
+payloads); client dials the worker directly over gRPC with per-call zstd,
+mTLS, and cancellation. Per-job audit log.
 
 ### Phase 5 — Observability & Polish
 `hpcc inspect <hash>` and `hpcc explain <file>` with structured miss

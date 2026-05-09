@@ -430,32 +430,71 @@ needs flag injection:
 The Debian Reproducible Builds project has solved most of this; hpcc just
 auto-injects the flags.
 
-### 4.8 Scheduler
+### 4.8 Scheduler (Route-Only)
 
-- Central coordinator: `hpcc scheduler --listen :9091`.
-- Workers connect and register: image digests they have rootfs for, free vCPU,
-  current load.
-- Scheduler routes jobs based on:
+The scheduler is a **lookup service**, not a relay. It never touches
+compile request payloads or artifact bytes. The hot path (compile RPC)
+goes directly from the client daemon to the worker.
+
+- `hpcc scheduler --listen :9091`.
+- Workers connect and register: image digests they have rootfs for, free
+  vCPU, current load.
+- Client daemon calls `scheduler.Route(RouteRequest)` — a lightweight RPC
+  containing `(tenant_id, image_digest)`. Scheduler returns a
+  `RouteResponse` with the selected worker's address and TLS trust info
+  (see below).
+- Client daemon dials the worker directly and calls
+  `worker.Compile(CompileRequest)`.
+
+**Worker TLS trust.** The client already trusts the scheduler (mTLS), so
+the scheduler brokers trust to workers. The `RouteResponse` includes a
+`tls` field with one of two modes:
+
+- **`system`** — use the OS trust store. Workers have certs signed by a CA
+  the OS already trusts (e.g. an internal corporate CA in the system
+  roots). Simple for orgs that already run internal PKI.
+- **`fingerprint`** — the scheduler sends the worker's certificate
+  SHA-256 fingerprint in the `RouteResponse`. The client pins that
+  fingerprint when dialing the worker. Workers register their cert
+  fingerprint at connect time; the scheduler already has it. No PKI
+  infrastructure needed — the scheduler is the authority.
+
+Config on the scheduler side: `[scheduler] worker_tls = "system"` or
+`"fingerprint"` (default: `"fingerprint"`).
+- Routing decisions based on:
   - Tenant → VM affinity (sticky routing — same tenant lands on the same VM).
   - Image digest match (worker has the rootfs).
   - Current load / available capacity.
   - Optional: network proximity (RTT-based scoring).
-- Spinning up a new VM for an unseen `(tenant, image)` pair is the scheduler's
-  responsibility, not the worker's.
+- Spinning up a new VM for an unseen `(tenant, image)` pair: the scheduler
+  tells the worker to prepare via the heartbeat stream, then returns the
+  worker address to the client once the VM is ready.
+
+This keeps the scheduler off the data path. It handles ~1 KB route
+lookups, not multi-MB artifact transfers. A single scheduler can serve
+thousands of concurrent compiles without becoming a bottleneck.
 
 ### 4.9 Worker
 
 - `hpcc worker --scheduler <addr>` — connects to the scheduler, manages local
   Firecracker pool.
 - Maintains per-tenant VMs, snapshots on idle, evicts under pressure.
-- Routes incoming jobs to the right VM via vsock to its `hpcc-agent`.
-- Receives compile result back over vsock; returns it to the scheduler/client.
+- Receives `Compile` RPCs **directly from client daemons** (not via the
+  scheduler). Routes each job to the right VM via vsock to its
+  `hpcc-agent`.
+- Reports state to the scheduler via the heartbeat stream (load, active
+  VMs, image digests).
 
 ### 4.10 Wire Protocol: gRPC for the Control Plane
 
-For scheduler↔worker, daemon↔scheduler, and client↔worker compile RPC: **gRPC
-unary `Compile(CompileRequest) returns (CompileResponse)`.** Reasons specific
-to this hop:
+Two distinct hops:
+
+**Scheduler (routing):** `scheduler.Route(RouteRequest) returns
+(RouteResponse)` — lightweight lookup, no compile payload.
+
+**Worker (compile):** `worker.Compile(CompileRequest) returns
+(CompileResponse)` — client dials the worker directly. gRPC reasons
+specific to this hop:
 
 - Per-RPC zstd compression. Preprocessed C++ (when the `preprocessed`
   fallback mode kicks in) compresses ~5–10×. **This is the largest single
@@ -477,11 +516,11 @@ telemetry/audit sidecar — not in v1.)
 ### 4.11 Failure Handling
 
 - No workers available / scheduler unreachable: compile locally.
-- Worker fails mid-job: scheduler reassigns to another worker; hpcc retries
-  on local as last resort.
+- Worker fails mid-job: client retries via `scheduler.Route()` to get a
+  different worker; falls back to local compile as last resort.
 - Per-job timeout (configurable, default 60s).
 - VM crash mid-job: the worker resurrects the VM from its snapshot (or cold
-  boot) and the scheduler retries the job.
+  boot) and the client retries the RPC.
 
 ### 4.12 Audit Trail
 
@@ -672,8 +711,7 @@ internal/
                       worker, agent)
     *.pb.go         — generated code
   scheduler/
-    scheduler.go    — job assignment, worker pool
-    worker_conn.go  — connection to a worker
+    scheduler.go    — route-only coordinator, worker registry
     routing.go      — tenant→VM affinity, image-digest matching
   worker/
     worker.go       — host-side worker
@@ -743,7 +781,8 @@ parser from a flag spec table, not a giant switch.
 |---|---|---|
 | Wrapper ↔ daemon (local) | Length-prefixed protobuf over loopback TCP (`127.0.0.1`) with a per-daemon auth token | Wrapper invoked thousands of times per build; gRPC runtime is too heavy for the hot path. TCP (over Unix sockets) for portability — the wrapper has to run on Windows too |
 | Cache (Phase 3) | S3 API (`GetObject`/`PutObject`/`HeadObject`) | Direct to object storage, no proxy; works with AWS S3, MinIO, R2, GCS |
-| Control plane (scheduler/worker/client compile) | gRPC unary `Compile` | Per-call zstd, multiplexing, cancellation, mTLS, deadlines |
+| Daemon → scheduler (routing) | gRPC unary `Route` | Lightweight lookup (~1 KB), returns worker address. Scheduler never touches compile payloads |
+| Daemon → worker (compile) | gRPC unary `Compile` | Client dials worker directly. Per-call zstd, multiplexing, cancellation, mTLS, deadlines |
 | In-VM agent | gRPC over vsock | Same proto, no network device |
 | Telemetry sidecar (later, optional) | Kafka | Append-only event log of compilations for dashboards/audit |
 
@@ -772,6 +811,12 @@ timezone, hostname inside the VM. Document LTO/PGO caveats.
 - Image rootfs is read-only, optionally dm-verity signed.
 - Per-VM audit log: image digest, source digest, flag set, output digest,
   duration, exit code, tenant/scheduler/worker/VM IDs.
+- **Client→scheduler**: mTLS. Client trusts the scheduler's CA.
+- **Client→worker**: trust brokered by the scheduler. `RouteResponse`
+  carries either `system` (use OS trust store / internal PKI) or
+  `fingerprint` (scheduler sends the worker cert's SHA-256 fingerprint,
+  client pins it). No separate PKI needed in fingerprint mode — the
+  scheduler is the trust root (§4.8).
 - **Paranoid mode** (`paranoid = true`): all cache reads/writes happen on
   the worker side only — clients never touch the cache stores and never
   hold remote-store credentials. Prevents cache poisoning by compromised
