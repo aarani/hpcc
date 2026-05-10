@@ -8,6 +8,18 @@ user-supplied compilation on shared hardware is politically untenable.
 
 ---
 
+## Status
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| [Phase 1](#phase-1-core-compiler-wrapping) | Core Compiler Wrapping | Done |
+| [Phase 2](#phase-2-daemon-architecture) | Daemon Architecture | Done |
+| [Phase 3](#phase-3-remote-cache) | Remote Cache | Not started |
+| [Phase 4](#phase-4-distributed-compilation-in-per-tenant-vms) | Distributed Compilation in Per-Tenant VMs | Not started |
+| [Phase 5](#phase-5-observability--polish) | Observability & Polish | Not started |
+
+---
+
 ## Phase 1: Core Compiler Wrapping
 
 The foundation. Get a single-machine cache loop working end-to-end.
@@ -119,23 +131,30 @@ invocations share state efficiently.
 
 ### 2.1 Daemon Process
 
-- `hpcc start` — launch the daemon in the background, listening on a **TCP
-  socket bound to loopback** (`127.0.0.1:<port>`, default `:9080`). TCP keeps
-  the daemon portable across Linux, macOS, and Windows — Unix domain sockets
-  exist on Windows 10+ but tooling/library support is uneven, and the wrapper
-  has to run on every dev machine. Loopback-only binding keeps the surface
-  area equivalent to a Unix socket: no off-host reachability.
-- A small **port handshake file** (`$XDG_RUNTIME_DIR/hpcc/daemon.json` on
-  Linux, `~/Library/Application Support/hpcc/daemon.json` on macOS,
-  `%LocalAppData%\hpcc\daemon.json` on Windows) records `{port, pid,
-  auth_token}` so the wrapper can find the daemon without a fixed port. File
-  permissions: `0600` (Unix) / current-user ACL (Windows).
+- `hpcc start` — run the daemon as a **foreground process**, listening on a
+  **TCP socket bound to loopback** (`127.0.0.1:<port>`, default `:9080`).
+  Foreground execution keeps the process model simple: the user (or a
+  process supervisor like systemd, launchd, or a container entrypoint)
+  owns the lifecycle. TCP keeps the daemon portable across Linux, macOS,
+  and Windows — Unix domain sockets exist on Windows 10+ but
+  tooling/library support is uneven, and the wrapper has to run on every
+  dev machine. Loopback-only binding keeps the surface area equivalent to
+  a Unix socket: no off-host reachability.
+- A small **port handshake file** at `<UserConfigDir>/hpcc/daemon.json`
+  (resolved via Go's `os.UserConfigDir()` —
+  `~/.config/hpcc/daemon.json` on Linux,
+  `~/Library/Application Support/hpcc/daemon.json` on macOS,
+  `%AppData%\hpcc\daemon.json` on Windows) records `{port, pid,
+  auth_token}` so the wrapper can find the daemon without a fixed port.
+  Same lookup path as the config file (§5.4) — one directory per user, no
+  separate runtime-vs-config split. File permissions: `0600` (Unix) /
+  current-user ACL (Windows).
 - Per-connection auth: wrapper reads the token from the handshake file and
   presents it on connect. Cheap defense against another local user
   connecting to the loopback port on a shared machine.
-- `hpcc stop` — gracefully shut down the daemon.
-- `hpcc status` — report whether the daemon is running, uptime, active
-  compilations, cache stats.
+- Graceful shutdown via `SIGINT` / `SIGTERM` (Unix) or `Ctrl-C` (all
+  platforms). No separate `stop` command needed — the process supervisor
+  or the user's terminal handles it.
 
 ### 2.2 Client-Server Protocol
 
@@ -169,7 +188,7 @@ If the daemon is not running, the client falls back to compiling directly
 (with local cache still available in-process). Never fail a build because the
 daemon is down.
 
-### Milestone
+### Milestone ✅
 
 `make -j16` with the daemon running deduplicates identical translation units
 and reports stats from a single process.
@@ -329,14 +348,22 @@ by image digest, and boots VMs from it.
 
 ### 4.4 VM Layout
 
+Firecracker supports **virtio-blk** and **vsock** — it does not support
+virtio-fs. Source and cache are passed into the VM as block devices.
+
 For each running VM:
 
-- **Read-only base rootfs** (per image digest, shared across VMs).
-- **Per-VM ephemeral overlay** for `/tmp`, `/var`, build scratch.
-- **virtio-fs** mount of the project source tree (read-only) and output dir
-  (read-write).
-- **virtio-fs** mount of the shared compile cache (read-write, `noexec`) so
-  cache hits work across tenants without exposing other tenants' source.
+- **`/dev/vda`** — Read-only base rootfs (ext4, per image digest, shared
+  across VMs) + per-VM **overlayfs** writable upper (tmpfs) for `/tmp`,
+  `/var`, build scratch.
+- **`/dev/vdb`** — **squashfs** image of the project source + build tree
+  (read-only). Rebuilt by the worker when the source tree changes.
+  `mksquashfs` is fast on typical source trees (sub-second for most C++
+  projects) and squashfs is compressed, so the block device stays small.
+  Mounted read-only at `/src` inside the guest.
+- **`/dev/vdc`** — ext4 scratch volume for build outputs (read-write).
+  Mounted at `/out` inside the guest. The worker reads artifacts from
+  here after the compile completes.
 - **vsock** for the control plane — a small static `hpcc-agent` binary baked
   into the rootfs receives `Compile(...)` RPCs and runs the toolchain.
 - **No virtio-net.** Compiles don't need network. No exfiltration argument.
@@ -354,10 +381,11 @@ happen *there*, not on the client. Wins:
 
 Three modes negotiated per-job:
 
-1. **`shared_root`** — worker VM mounts the same source tree the client sees
-   (via virtio-fs from a shared volume). Client sends `(source_path, flags,
-   cwd)`; worker preprocesses + compiles. Realistic in container-pinned
-   bank environments.
+1. **`shared_root`** — worker packages the source tree into a squashfs
+   image and attaches it as a virtio-blk device. Client sends
+   `(source_path, flags, cwd)`; worker preprocesses + compiles.
+   Realistic in container-pinned bank environments where workers have
+   access to the same source volume.
 2. **`cas`** — heterogeneous case. Client runs `gcc -M` to discover the
    include closure, digests each input, sends `(source_digest,
    header_digests[], flags)`. Worker pulls missing digests from the shared
@@ -375,10 +403,11 @@ hpcc intercepts a compile invocation:
 - Code-generator outputs (protoc, moc, flex) exist (they're produced by
   prior ninja steps on the driving machine).
 
-All those files live in `build/` on disk. The VM sees them via virtio-fs
-mount of the source+build tree. **No special handling needed.** The only
-edge case is `add_custom_command` that needs network during build — rare
-and considered bad practice in any sandboxed setup.
+All those files live in `build/` on disk. The worker packages both the
+source and build trees into the squashfs image attached to the VM as
+`/dev/vdb`. **No special handling needed.** The only edge case is
+`add_custom_command` that needs network during build — rare and
+considered bad practice in any sandboxed setup.
 
 Document explicitly: "the hpcc VM has no internet access; configure and
 codegen run on the driving machine before the build starts."
@@ -401,32 +430,71 @@ needs flag injection:
 The Debian Reproducible Builds project has solved most of this; hpcc just
 auto-injects the flags.
 
-### 4.8 Scheduler
+### 4.8 Scheduler (Route-Only)
 
-- Central coordinator: `hpcc scheduler --listen :9091`.
-- Workers connect and register: image digests they have rootfs for, free vCPU,
-  current load.
-- Scheduler routes jobs based on:
+The scheduler is a **lookup service**, not a relay. It never touches
+compile request payloads or artifact bytes. The hot path (compile RPC)
+goes directly from the client daemon to the worker.
+
+- `hpcc scheduler --listen :9091`.
+- Workers connect and register: image digests they have rootfs for, free
+  vCPU, current load.
+- Client daemon calls `scheduler.Route(RouteRequest)` — a lightweight RPC
+  containing `(tenant_id, image_digest)`. Scheduler returns a
+  `RouteResponse` with the selected worker's address and TLS trust info
+  (see below).
+- Client daemon dials the worker directly and calls
+  `worker.Compile(CompileRequest)`.
+
+**Worker TLS trust.** The client already trusts the scheduler (mTLS), so
+the scheduler brokers trust to workers. The `RouteResponse` includes a
+`tls` field with one of two modes:
+
+- **`system`** — use the OS trust store. Workers have certs signed by a CA
+  the OS already trusts (e.g. an internal corporate CA in the system
+  roots). Simple for orgs that already run internal PKI.
+- **`fingerprint`** — the scheduler sends the worker's certificate
+  SHA-256 fingerprint in the `RouteResponse`. The client pins that
+  fingerprint when dialing the worker. Workers register their cert
+  fingerprint at connect time; the scheduler already has it. No PKI
+  infrastructure needed — the scheduler is the authority.
+
+Config on the scheduler side: `[scheduler] worker_tls = "system"` or
+`"fingerprint"` (default: `"fingerprint"`).
+- Routing decisions based on:
   - Tenant → VM affinity (sticky routing — same tenant lands on the same VM).
   - Image digest match (worker has the rootfs).
   - Current load / available capacity.
   - Optional: network proximity (RTT-based scoring).
-- Spinning up a new VM for an unseen `(tenant, image)` pair is the scheduler's
-  responsibility, not the worker's.
+- Spinning up a new VM for an unseen `(tenant, image)` pair: the scheduler
+  tells the worker to prepare via the heartbeat stream, then returns the
+  worker address to the client once the VM is ready.
+
+This keeps the scheduler off the data path. It handles ~1 KB route
+lookups, not multi-MB artifact transfers. A single scheduler can serve
+thousands of concurrent compiles without becoming a bottleneck.
 
 ### 4.9 Worker
 
 - `hpcc worker --scheduler <addr>` — connects to the scheduler, manages local
   Firecracker pool.
 - Maintains per-tenant VMs, snapshots on idle, evicts under pressure.
-- Routes incoming jobs to the right VM via vsock to its `hpcc-agent`.
-- Receives compile result back over vsock; returns it to the scheduler/client.
+- Receives `Compile` RPCs **directly from client daemons** (not via the
+  scheduler). Routes each job to the right VM via vsock to its
+  `hpcc-agent`.
+- Reports state to the scheduler via the heartbeat stream (load, active
+  VMs, image digests).
 
 ### 4.10 Wire Protocol: gRPC for the Control Plane
 
-For scheduler↔worker, daemon↔scheduler, and client↔worker compile RPC: **gRPC
-unary `Compile(CompileRequest) returns (CompileResponse)`.** Reasons specific
-to this hop:
+Two distinct hops:
+
+**Scheduler (routing):** `scheduler.Route(RouteRequest) returns
+(RouteResponse)` — lightweight lookup, no compile payload.
+
+**Worker (compile):** `worker.Compile(CompileRequest) returns
+(CompileResponse)` — client dials the worker directly. gRPC reasons
+specific to this hop:
 
 - Per-RPC zstd compression. Preprocessed C++ (when the `preprocessed`
   fallback mode kicks in) compresses ~5–10×. **This is the largest single
@@ -448,11 +516,11 @@ telemetry/audit sidecar — not in v1.)
 ### 4.11 Failure Handling
 
 - No workers available / scheduler unreachable: compile locally.
-- Worker fails mid-job: scheduler reassigns to another worker; hpcc retries
-  on local as last resort.
+- Worker fails mid-job: client retries via `scheduler.Route()` to get a
+  different worker; falls back to local compile as last resort.
 - Per-job timeout (configurable, default 60s).
 - VM crash mid-job: the worker resurrects the VM from its snapshot (or cold
-  boot) and the scheduler retries the job.
+  boot) and the client retries the RPC.
 
 ### 4.12 Audit Trail
 
@@ -464,6 +532,40 @@ For each compile job, log:
 
 This is the table format banks want to see — every artifact is reproducible
 from its row.
+
+### 4.13 Paranoid Mode (Server-Side-Only Caching)
+
+In the default model the client daemon has read-write access to the cache
+stores (local disk, S3). A compromised or malicious client can poison the
+cache — write a trojaned `.o` under a valid cache key and every subsequent
+consumer of that key gets the bad artifact.
+
+**`paranoid = true`** (config flag) moves all cache reads and writes to the
+worker side of the boundary:
+
+- The **client never reads or writes the cache.** It sends the compile
+  request to the scheduler and receives the artifact bytes back in the
+  `CompileResponse`. That's it.
+- The **worker** (inside the VM or on the worker host, outside the VM) is
+  the only process that calls `Store.Get` / `Store.Put`. Cache stores are
+  configured on the worker, not the client.
+- Cache keys are computed **server-side** from server-side preprocessing
+  output, so the client cannot influence what key an artifact is stored
+  under.
+- The S3 / remote store credentials live on the worker fleet, never on
+  developer laptops.
+
+Trade-offs:
+- Every compile is a network round-trip — no local cache hits, higher
+  latency for repeated builds on the same machine.
+- Workers need enough bandwidth to return artifacts to every client.
+- Falls back to a local uncached compile if the scheduler is unreachable
+  (same as §4.11).
+
+This is the mode banks will run. In lower-trust environments it can be
+combined with **signed artifacts**: the worker signs the `(cache_key,
+output_digest)` tuple and the client verifies the signature before
+writing the `.o` to disk, so even the wire path is tamper-evident.
 
 ### Milestone
 
@@ -543,6 +645,7 @@ timeout_write = "5s"
 
 [scheduler]
 url = "..."
+paranoid = false         # true = cache only on workers, never on client
 
 [vm]
 image = "..."
@@ -577,9 +680,7 @@ phases do.
 cmd/
   root.go           — base cobra command
   wrap.go           — hpcc wrap <compiler> [args...]
-  start.go          — hpcc start (daemon)
-  stop.go           — hpcc stop
-  status.go         — hpcc status
+  start.go          — hpcc start (foreground daemon)
   stats.go          — hpcc stats
   clean.go          — hpcc clean
   inspect.go        — hpcc inspect
@@ -610,8 +711,7 @@ internal/
                       worker, agent)
     *.pb.go         — generated code
   scheduler/
-    scheduler.go    — job assignment, worker pool
-    worker_conn.go  — connection to a worker
+    scheduler.go    — route-only coordinator, worker registry
     routing.go      — tenant→VM affinity, image-digest matching
   worker/
     worker.go       — host-side worker
@@ -681,7 +781,8 @@ parser from a flag spec table, not a giant switch.
 |---|---|---|
 | Wrapper ↔ daemon (local) | Length-prefixed protobuf over loopback TCP (`127.0.0.1`) with a per-daemon auth token | Wrapper invoked thousands of times per build; gRPC runtime is too heavy for the hot path. TCP (over Unix sockets) for portability — the wrapper has to run on Windows too |
 | Cache (Phase 3) | S3 API (`GetObject`/`PutObject`/`HeadObject`) | Direct to object storage, no proxy; works with AWS S3, MinIO, R2, GCS |
-| Control plane (scheduler/worker/client compile) | gRPC unary `Compile` | Per-call zstd, multiplexing, cancellation, mTLS, deadlines |
+| Daemon → scheduler (routing) | gRPC unary `Route` | Lightweight lookup (~1 KB), returns worker address. Scheduler never touches compile payloads |
+| Daemon → worker (compile) | gRPC unary `Compile` | Client dials worker directly. Per-call zstd, multiplexing, cancellation, mTLS, deadlines |
 | In-VM agent | gRPC over vsock | Same proto, no network device |
 | Telemetry sidecar (later, optional) | Kafka | Append-only event log of compilations for dashboards/audit |
 
@@ -710,6 +811,16 @@ timezone, hostname inside the VM. Document LTO/PGO caveats.
 - Image rootfs is read-only, optionally dm-verity signed.
 - Per-VM audit log: image digest, source digest, flag set, output digest,
   duration, exit code, tenant/scheduler/worker/VM IDs.
+- **Client→scheduler**: mTLS. Client trusts the scheduler's CA.
+- **Client→worker**: trust brokered by the scheduler. `RouteResponse`
+  carries either `system` (use OS trust store / internal PKI) or
+  `fingerprint` (scheduler sends the worker cert's SHA-256 fingerprint,
+  client pins it). No separate PKI needed in fingerprint mode — the
+  scheduler is the trust root (§4.8).
+- **Paranoid mode** (`paranoid = true`): all cache reads/writes happen on
+  the worker side only — clients never touch the cache stores and never
+  hold remote-store credentials. Prevents cache poisoning by compromised
+  developer machines (§4.13).
 
 ---
 
@@ -742,16 +853,21 @@ timezone, hostname inside the VM. Document LTO/PGO caveats.
     (+ `runner_test.go`). Glue between parsed invocation, hasher, cache
     store, and the real compiler.
 11. **Stats + clean commands** — `cmd/stats.go`, `cmd/clean.go`.
+12. **Wire protocol** — `internal/protocol/compile.proto` (+
+    `gen/compile.pb.go`). Length-prefixed protobuf messages for the
+    daemon ↔ client path.
+13. **Daemon + client** — `internal/daemon/daemon.go` (+
+    `daemon_test.go`), `internal/daemon/client/client.go`. Loopback TCP
+    listener, handshake file, per-connection auth, singleflight-based
+    deduplication of identical in-flight compilations (§2.3),
+    `TCP_NODELAY` on all connections. `cmd/start.go` launches the daemon.
 
 ### Remaining
 
-12. `internal/protocol/compile.proto` — define the wire format once.
-13. `internal/daemon/` — daemon + loopback TCP (length-prefixed proto).
-14. `cmd/start.go`, `cmd/stop.go`, `cmd/status.go`.
-15. `internal/cache/store/s3.go` — S3-compatible remote store.
-16. Manifest-mode hashing alongside `internal/compiler/cache_key.go`.
-17. `internal/worker/image/` — OCI → rootfs conversion + cache.
-18. `internal/worker/vmpool/` — Firecracker lifecycle, snapshot, eviction.
-19. `internal/worker/agent/` — in-VM gRPC agent over vsock.
-20. `internal/scheduler/` — gRPC, tenant routing, image matching.
-21. Polish: inspect, explain, eviction, Prometheus endpoints.
+14. `internal/cache/store/s3.go` — S3-compatible remote store.
+15. Manifest-mode hashing alongside `internal/compiler/cache_key.go`.
+16. `internal/worker/image/` — OCI → rootfs conversion + cache.
+17. `internal/worker/vmpool/` — Firecracker lifecycle, snapshot, eviction.
+18. `internal/worker/agent/` — in-VM gRPC agent over vsock.
+19. `internal/scheduler/` — gRPC, tenant routing, image matching.
+20. Polish: inspect, explain, eviction, Prometheus endpoints.
