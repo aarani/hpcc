@@ -35,18 +35,34 @@ max_size = "10G"
 # max_size = "50G"
 
 # # Uncomment to enable an S3-compatible remote cache. Works with AWS S3,
-# # MinIO, R2, GCS via the S3-compat layer, etc. Region is optional when
-# # using AWS endpoints; required when pointing at a custom endpoint.
-# # access_key/secret_key are optional too — leave empty to use the AWS
-# # credential chain (env, ~/.aws, instance profile).
+# # MinIO, R2, GCS-via-S3, etc.
+# #
+# # region:    leave empty for AWS (the credential chain supplies it);
+# #            "auto" for Cloudflare R2; any non-empty string for MinIO
+# #            (the value is only used to satisfy the SDK's signing
+# #            requirement on custom endpoints).
+# # endpoint:  set for non-AWS backends; leave empty for AWS S3.
+# # access_key/secret_key: leave empty to use the AWS credential chain
+# #            (env vars, ~/.aws, instance profile, IRSA, etc.). Setting
+# #            them inline is for dev/test only — production deployments
+# #            should mount creds via the chain.
+# # max_size:  optional. Leave empty to disable in-process eviction (use
+# #            S3 lifecycle policies for retention instead). When set,
+# #            eviction is watermark-gated: hpcc only scans + deletes
+# #            when its in-memory size estimate overshoots by 10%.
+# # auto_create: dev/MinIO convenience — attempts CreateBucket if the
+# #            bucket isn't reachable at startup. Default false; in
+# #            production the bucket should be provisioned by infra and
+# #            the worker shouldn't even hold CreateBucket IAM perms.
 # [[cache]]
-# type       = "s3"
-# bucket     = "hpcc-cache"
-# region     = "auto"
-# endpoint   = "http://localhost:9000"   # MinIO or other S3-compatible URL
-# max_size   = "10G"
-# access_key = "testuser"
-# secret_key = "testpassword"
+# type        = "s3"
+# bucket      = "hpcc-cache"
+# region      = ""
+# endpoint    = "http://localhost:9000"   # MinIO or other S3-compatible URL
+# max_size    = "10G"
+# access_key  = "testuser"
+# secret_key  = "testpassword"
+# auto_create = true
 
 # Distributed compilation. When `enabled = true`, the daemon routes each
 # compile through the scheduler to a worker; on any failure (network,
