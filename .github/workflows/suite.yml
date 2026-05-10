@@ -1,0 +1,131 @@
+name: Build & Test Suite
+
+on:
+  push:
+    branches: [ "main", "feat/**" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.26.3'
+
+    - name: Install clang
+      run: sudo apt-get update && sudo apt-get install -y clang
+
+    - name: Build
+      run: go build -v ./...
+
+    - name: Test
+      run: go test -v ./...
+
+  image-store:
+    name: Image store integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.26.3'
+
+      - name: Start containerd
+        run: |
+          # GitHub-hosted Ubuntu runners install the `containerd.io` package
+          # as part of the Docker setup. The systemd unit isn't always
+          # active by default — make sure it is, then loosen the socket
+          # permissions so the unprivileged runner user can dial it without
+          # sudo (the socket is normally root:root 0600).
+          sudo systemctl start containerd
+          sudo systemctl --no-pager status containerd
+          sudo chmod 666 /run/containerd/containerd.sock
+          ls -l /run/containerd/containerd.sock
+
+      - name: Probe containerd
+        run: |
+          # Sanity-check the socket is actually serving the gRPC API before
+          # the test job runs — otherwise the failure mode is a confusing
+          # connection-refused inside Go.
+          sudo ctr version
+
+      - name: Run integration tests
+        env:
+          # Default path matches what the test code already expects, but
+          # set it explicitly so this workflow remains valid if the test
+          # default ever changes.
+          CONTAINERD_ADDRESS: /run/containerd/containerd.sock
+        # Integration tests are behind the `integration` build tag so
+        # the regular CI's `go test ./...` doesn't even compile them.
+        run: go test -tags=integration -count=1 -v ./internal/worker/image/
+
+  firecracker-runtime:
+    name: Firecracker runtime e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.26.3'
+
+      - name: Enable KVM group perms
+        # Default Ubuntu udev rules give /dev/kvm to the `kvm` group only;
+        # firecracker runs as the dropped jailer uid (nobody by default in
+        # this test) which isn't in that group. Mode 0666 + static_node is
+        # the standard runner workaround for this.
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Install firecracker + jailer
+        # Pinned to a known-working release. The release archive layout
+        # is `release-<version>-<arch>/{firecracker,jailer}-<version>-<arch>`.
+        run: |
+          set -euo pipefail
+          VERSION=v1.15.1
+          ARCH=$(uname -m)
+          curl -fSL "https://github.com/firecracker-microvm/firecracker/releases/download/${VERSION}/firecracker-${VERSION}-${ARCH}.tgz" \
+            -o /tmp/fc.tgz
+          mkdir -p /tmp/fc
+          tar -xzf /tmp/fc.tgz -C /tmp/fc
+          sudo install -m 0755 "/tmp/fc/release-${VERSION}-${ARCH}/firecracker-${VERSION}-${ARCH}" /usr/local/bin/firecracker
+          sudo install -m 0755 "/tmp/fc/release-${VERSION}-${ARCH}/jailer-${VERSION}-${ARCH}"      /usr/local/bin/jailer
+          firecracker --version
+          jailer --version
+
+      - name: Download test kernel
+        # Firecracker publishes CI-validated kernels under spec.ccfc.min.
+        # We only need a vmlinux that boots — the rootfs is built in-test
+        # from a public busybox image so we don't need a published rootfs.
+        run: |
+          set -euo pipefail
+          ARCH=$(uname -m)
+          mkdir -p /tmp/fcassets
+          curl -fSL "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/${ARCH}/vmlinux-6.1.155" \
+            -o /tmp/fcassets/vmlinux
+          ls -l /tmp/fcassets/vmlinux
+
+      - name: Run firecracker runtime e2e
+        # `sudo -E` because jailer needs root for cgroup setup and
+        # chroot. We pass through PATH so `go` resolves, and the
+        # GOPATH/GOMODCACHE so go test reuses the runner's module cache.
+        env:
+          HPCC_FIRECRACKER_BIN: /usr/local/bin/firecracker
+          HPCC_JAILER_BIN: /usr/local/bin/jailer
+          HPCC_TEST_KERNEL: /tmp/fcassets/vmlinux
+        run: |
+          sudo -E env "PATH=$PATH" \
+            go test -tags=integration -count=1 -v -timeout=10m \
+              -run TestFirecracker_.*_Integration \
+              ./internal/worker/runtime/...

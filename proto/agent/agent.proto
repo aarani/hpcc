@@ -1,0 +1,102 @@
+// Wire schema between the host-side runner (Firecracker driver) and
+// the in-VM hpcc-agent. One bidirectional streaming RPC per Exec:
+// the host sends a header followed by input-file chunks, the agent
+// streams stdio + the result + output-file chunks back.
+//
+// Streaming both directions is what lets the agent avoid buffering
+// whole input files in RAM (peak memory is bounded by chunk size,
+// not by sum-of-sizes), and lets the runner pipe stdio out to the
+// gRPC client without waiting for the whole compile.
+
+syntax = "proto3";
+
+package hpcc.agent.v1;
+
+option go_package = "github.com/aarani/hpcc/proto/agent;agent";
+
+service AgentService {
+  // Exec runs one compiler invocation inside the guest. The first
+  // ExecClientFrame must carry an ExecHeader; subsequent frames carry
+  // input-file chunks until the client half-closes the stream. The
+  // agent then runs the compiler, streams stdio frames, sends one
+  // ExecResult, and streams output-file chunks before closing.
+  rpc Exec(stream ExecClientFrame) returns (stream ExecServerFrame);
+}
+
+// ExecClientFrame is one of: an ExecHeader (sent first, exactly
+// once), or an InputFile chunk. Frames carrying an InputFile may
+// arrive in any order across files — the agent demultiplexes by
+// `path`. When the client half-closes the stream the agent treats
+// every staged file as complete.
+message ExecClientFrame {
+  oneof frame {
+    ExecHeader header = 1;
+    InputFile  input  = 2;
+  }
+}
+
+message ExecHeader {
+  // Caller-chosen identifier; surfaces in the agent's logs and the
+  // staging directory name (/run/hpcc/src/<exec_id>/).
+  string exec_id = 1;
+
+  // Fully-resolved argv. argv[0] is the binary the agent execve's;
+  // /src and /out paths are already in their in-VM form.
+  repeated string argv = 2;
+
+  // Environment for the compiler process (KEY=VALUE form). Empty
+  // means "inherit none" — the agent does not propagate its own env.
+  repeated string env = 3;
+
+  // Working directory for the compiler, in-VM path. Empty means the
+  // staging dir for this Exec.
+  string cwd = 4;
+
+  // Output paths the agent should read back from
+  // /run/hpcc/out/<exec_id>/ once the compiler exits, and stream as
+  // OutputFile frames. Paths are relative to that staging dir.
+  repeated string outputs = 5;
+}
+
+// InputFile is one chunk of one input file. The agent writes chunks
+// in arrival order into /run/hpcc/src/<exec_id>/<path>; on `eof` it
+// closes the fd. Setting `eof = true` with empty `chunk` is the
+// way to materialize a zero-byte file.
+message InputFile {
+  string path  = 1;
+  bytes  chunk = 2;
+  bool   eof   = 3;
+}
+
+// ExecServerFrame is one of: a stdio chunk produced by the running
+// compiler, the final ExecResult (sent exactly once, after the
+// process exits), or an OutputFile chunk. Stdio frames may interleave
+// freely; OutputFile frames only appear after ExecResult.
+message ExecServerFrame {
+  oneof frame {
+    StdioChunk stdio  = 1;
+    ExecResult result = 2;
+    OutputFile output = 3;
+  }
+}
+
+message StdioChunk {
+  enum Stream {
+    STDOUT = 0;
+    STDERR = 1;
+  }
+  Stream stream = 1;
+  bytes  bytes  = 2;
+}
+
+message ExecResult {
+  // Process exit code. Negative values are reserved for runner-
+  // synthesized failures (signal kills, agent-side errors).
+  int32 exit_code = 1;
+}
+
+message OutputFile {
+  string path  = 1;
+  bytes  chunk = 2;
+  bool   eof   = 3;
+}

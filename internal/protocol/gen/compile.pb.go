@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v7.34.1
-// source: internal/protocol/compile.proto
+// source: compile.proto
 
 package gen
 
@@ -22,16 +22,18 @@ const (
 )
 
 type CompileRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Cwd           string                 `protobuf:"bytes,1,opt,name=cwd,proto3" json:"cwd,omitempty"`
-	Args          []string               `protobuf:"bytes,2,rep,name=args,proto3" json:"args,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Cwd   string                 `protobuf:"bytes,1,opt,name=cwd,proto3" json:"cwd,omitempty"`
+	Args  []string               `protobuf:"bytes,2,rep,name=args,proto3" json:"args,omitempty"`
+	// For remote compilation only
+	Descriptor_   *RemoteDescriptor `protobuf:"bytes,3,opt,name=descriptor,proto3,oneof" json:"descriptor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CompileRequest) Reset() {
 	*x = CompileRequest{}
-	mi := &file_internal_protocol_compile_proto_msgTypes[0]
+	mi := &file_compile_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -43,7 +45,7 @@ func (x *CompileRequest) String() string {
 func (*CompileRequest) ProtoMessage() {}
 
 func (x *CompileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protocol_compile_proto_msgTypes[0]
+	mi := &file_compile_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -56,7 +58,7 @@ func (x *CompileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompileRequest.ProtoReflect.Descriptor instead.
 func (*CompileRequest) Descriptor() ([]byte, []int) {
-	return file_internal_protocol_compile_proto_rawDescGZIP(), []int{0}
+	return file_compile_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *CompileRequest) GetCwd() string {
@@ -73,18 +75,296 @@ func (x *CompileRequest) GetArgs() []string {
 	return nil
 }
 
-type CompileResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ExitCode      int32                  `protobuf:"varint,1,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
-	Stdout        []byte                 `protobuf:"bytes,2,opt,name=stdout,proto3" json:"stdout,omitempty"`
-	Stderr        []byte                 `protobuf:"bytes,3,opt,name=stderr,proto3" json:"stderr,omitempty"`
+func (x *CompileRequest) GetDescriptor_() *RemoteDescriptor {
+	if x != nil {
+		return x.Descriptor_
+	}
+	return nil
+}
+
+type RemoteDescriptor struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	TenantId       string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	ImageDigest    string                 `protobuf:"bytes,2,opt,name=image_digest,json=imageDigest,proto3" json:"image_digest,omitempty"`
+	SchedulerToken string                 `protobuf:"bytes,3,opt,name=scheduler_token,json=schedulerToken,proto3" json:"scheduler_token,omitempty"`
+	SourceMode     SourceMode             `protobuf:"varint,4,opt,name=source_mode,json=sourceMode,proto3,enum=protocol.SourceMode" json:"source_mode,omitempty"`
+	// Types that are valid to be assigned to SourceSettings:
+	//
+	//	*RemoteDescriptor_Preprocessed
+	//	*RemoteDescriptor_Cas
+	SourceSettings isRemoteDescriptor_SourceSettings `protobuf_oneof:"source_settings"`
+	// Full OCI image reference, e.g. "ghcr.io/foo/toolchain@sha256:abc..."
+	// or "registry.example.com/team/toolchain:v1.2.3". Used by the worker
+	// to pull the image if it's not already in the local snapshotter.
+	// image_digest remains the canonical identity for routing, cache keys,
+	// and audit; image_ref is the pullable address.
+	ImageRef      string `protobuf:"bytes,8,opt,name=image_ref,json=imageRef,proto3" json:"image_ref,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
+func (x *RemoteDescriptor) Reset() {
+	*x = RemoteDescriptor{}
+	mi := &file_compile_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoteDescriptor) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoteDescriptor) ProtoMessage() {}
+
+func (x *RemoteDescriptor) ProtoReflect() protoreflect.Message {
+	mi := &file_compile_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoteDescriptor.ProtoReflect.Descriptor instead.
+func (*RemoteDescriptor) Descriptor() ([]byte, []int) {
+	return file_compile_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *RemoteDescriptor) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *RemoteDescriptor) GetImageDigest() string {
+	if x != nil {
+		return x.ImageDigest
+	}
+	return ""
+}
+
+func (x *RemoteDescriptor) GetSchedulerToken() string {
+	if x != nil {
+		return x.SchedulerToken
+	}
+	return ""
+}
+
+func (x *RemoteDescriptor) GetSourceMode() SourceMode {
+	if x != nil {
+		return x.SourceMode
+	}
+	return SourceMode_SOURCE_MODE_UNSPECIFIED
+}
+
+func (x *RemoteDescriptor) GetSourceSettings() isRemoteDescriptor_SourceSettings {
+	if x != nil {
+		return x.SourceSettings
+	}
+	return nil
+}
+
+func (x *RemoteDescriptor) GetPreprocessed() *PreprocessedDescriptor {
+	if x != nil {
+		if x, ok := x.SourceSettings.(*RemoteDescriptor_Preprocessed); ok {
+			return x.Preprocessed
+		}
+	}
+	return nil
+}
+
+func (x *RemoteDescriptor) GetCas() *CasDescriptor {
+	if x != nil {
+		if x, ok := x.SourceSettings.(*RemoteDescriptor_Cas); ok {
+			return x.Cas
+		}
+	}
+	return nil
+}
+
+func (x *RemoteDescriptor) GetImageRef() string {
+	if x != nil {
+		return x.ImageRef
+	}
+	return ""
+}
+
+type isRemoteDescriptor_SourceSettings interface {
+	isRemoteDescriptor_SourceSettings()
+}
+
+type RemoteDescriptor_Preprocessed struct {
+	Preprocessed *PreprocessedDescriptor `protobuf:"bytes,6,opt,name=preprocessed,proto3,oneof"`
+}
+
+type RemoteDescriptor_Cas struct {
+	Cas *CasDescriptor `protobuf:"bytes,7,opt,name=cas,proto3,oneof"`
+}
+
+func (*RemoteDescriptor_Preprocessed) isRemoteDescriptor_SourceSettings() {}
+
+func (*RemoteDescriptor_Cas) isRemoteDescriptor_SourceSettings() {}
+
+type PreprocessedDescriptor struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	PreprocessedSource []byte                 `protobuf:"bytes,1,opt,name=preprocessed_source,json=preprocessedSource,proto3" json:"preprocessed_source,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *PreprocessedDescriptor) Reset() {
+	*x = PreprocessedDescriptor{}
+	mi := &file_compile_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PreprocessedDescriptor) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PreprocessedDescriptor) ProtoMessage() {}
+
+func (x *PreprocessedDescriptor) ProtoReflect() protoreflect.Message {
+	mi := &file_compile_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PreprocessedDescriptor.ProtoReflect.Descriptor instead.
+func (*PreprocessedDescriptor) Descriptor() ([]byte, []int) {
+	return file_compile_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *PreprocessedDescriptor) GetPreprocessedSource() []byte {
+	if x != nil {
+		return x.PreprocessedSource
+	}
+	return nil
+}
+
+type CasDescriptor struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	InputRefs     []*BlobRef             `protobuf:"bytes,1,rep,name=input_refs,json=inputRefs,proto3" json:"input_refs,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CasDescriptor) Reset() {
+	*x = CasDescriptor{}
+	mi := &file_compile_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CasDescriptor) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CasDescriptor) ProtoMessage() {}
+
+func (x *CasDescriptor) ProtoReflect() protoreflect.Message {
+	mi := &file_compile_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CasDescriptor.ProtoReflect.Descriptor instead.
+func (*CasDescriptor) Descriptor() ([]byte, []int) {
+	return file_compile_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *CasDescriptor) GetInputRefs() []*BlobRef {
+	if x != nil {
+		return x.InputRefs
+	}
+	return nil
+}
+
+type BlobRef struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`     // relative path in the source tree
+	Digest        []byte                 `protobuf:"bytes,2,opt,name=digest,proto3" json:"digest,omitempty"` // BLAKE3 digest
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BlobRef) Reset() {
+	*x = BlobRef{}
+	mi := &file_compile_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BlobRef) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BlobRef) ProtoMessage() {}
+
+func (x *BlobRef) ProtoReflect() protoreflect.Message {
+	mi := &file_compile_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BlobRef.ProtoReflect.Descriptor instead.
+func (*BlobRef) Descriptor() ([]byte, []int) {
+	return file_compile_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *BlobRef) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *BlobRef) GetDigest() []byte {
+	if x != nil {
+		return x.Digest
+	}
+	return nil
+}
+
+type CompileResponse struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	ExitCode int32                  `protobuf:"varint,1,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	Stdout   []byte                 `protobuf:"bytes,2,opt,name=stdout,proto3" json:"stdout,omitempty"`
+	Stderr   []byte                 `protobuf:"bytes,3,opt,name=stderr,proto3" json:"stderr,omitempty"`
+	// For remote compilation only
+	OutputArtifact []byte       `protobuf:"bytes,4,opt,name=output_artifact,json=outputArtifact,proto3,oneof" json:"output_artifact,omitempty"`
+	CacheKey       *string      `protobuf:"bytes,5,opt,name=cache_key,json=cacheKey,proto3,oneof" json:"cache_key,omitempty"`
+	Audit          *AuditRecord `protobuf:"bytes,6,opt,name=audit,proto3,oneof" json:"audit,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
 func (x *CompileResponse) Reset() {
 	*x = CompileResponse{}
-	mi := &file_internal_protocol_compile_proto_msgTypes[1]
+	mi := &file_compile_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -96,7 +376,7 @@ func (x *CompileResponse) String() string {
 func (*CompileResponse) ProtoMessage() {}
 
 func (x *CompileResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protocol_compile_proto_msgTypes[1]
+	mi := &file_compile_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -109,7 +389,7 @@ func (x *CompileResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompileResponse.ProtoReflect.Descriptor instead.
 func (*CompileResponse) Descriptor() ([]byte, []int) {
-	return file_internal_protocol_compile_proto_rawDescGZIP(), []int{1}
+	return file_compile_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *CompileResponse) GetExitCode() int32 {
@@ -133,64 +413,280 @@ func (x *CompileResponse) GetStderr() []byte {
 	return nil
 }
 
-var File_internal_protocol_compile_proto protoreflect.FileDescriptor
+func (x *CompileResponse) GetOutputArtifact() []byte {
+	if x != nil {
+		return x.OutputArtifact
+	}
+	return nil
+}
 
-const file_internal_protocol_compile_proto_rawDesc = "" +
+func (x *CompileResponse) GetCacheKey() string {
+	if x != nil && x.CacheKey != nil {
+		return *x.CacheKey
+	}
+	return ""
+}
+
+func (x *CompileResponse) GetAudit() *AuditRecord {
+	if x != nil {
+		return x.Audit
+	}
+	return nil
+}
+
+type AuditRecord struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	SchedulerId   string                 `protobuf:"bytes,2,opt,name=scheduler_id,json=schedulerId,proto3" json:"scheduler_id,omitempty"`
+	WorkerId      string                 `protobuf:"bytes,3,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	VmId          string                 `protobuf:"bytes,4,opt,name=vm_id,json=vmId,proto3" json:"vm_id,omitempty"`
+	ImageDigest   string                 `protobuf:"bytes,5,opt,name=image_digest,json=imageDigest,proto3" json:"image_digest,omitempty"`
+	SourceDigest  []byte                 `protobuf:"bytes,6,opt,name=source_digest,json=sourceDigest,proto3" json:"source_digest,omitempty"`
+	OutputDigest  []byte                 `protobuf:"bytes,7,opt,name=output_digest,json=outputDigest,proto3" json:"output_digest,omitempty"`
+	CacheKey      string                 `protobuf:"bytes,8,opt,name=cache_key,json=cacheKey,proto3" json:"cache_key,omitempty"`
+	Flags         []string               `protobuf:"bytes,9,rep,name=flags,proto3" json:"flags,omitempty"`
+	ExitCode      int32                  `protobuf:"varint,10,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	DurationMs    int64                  `protobuf:"varint,11,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
+	Timestamp     int64                  `protobuf:"varint,12,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AuditRecord) Reset() {
+	*x = AuditRecord{}
+	mi := &file_compile_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AuditRecord) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AuditRecord) ProtoMessage() {}
+
+func (x *AuditRecord) ProtoReflect() protoreflect.Message {
+	mi := &file_compile_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AuditRecord.ProtoReflect.Descriptor instead.
+func (*AuditRecord) Descriptor() ([]byte, []int) {
+	return file_compile_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *AuditRecord) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *AuditRecord) GetSchedulerId() string {
+	if x != nil {
+		return x.SchedulerId
+	}
+	return ""
+}
+
+func (x *AuditRecord) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *AuditRecord) GetVmId() string {
+	if x != nil {
+		return x.VmId
+	}
+	return ""
+}
+
+func (x *AuditRecord) GetImageDigest() string {
+	if x != nil {
+		return x.ImageDigest
+	}
+	return ""
+}
+
+func (x *AuditRecord) GetSourceDigest() []byte {
+	if x != nil {
+		return x.SourceDigest
+	}
+	return nil
+}
+
+func (x *AuditRecord) GetOutputDigest() []byte {
+	if x != nil {
+		return x.OutputDigest
+	}
+	return nil
+}
+
+func (x *AuditRecord) GetCacheKey() string {
+	if x != nil {
+		return x.CacheKey
+	}
+	return ""
+}
+
+func (x *AuditRecord) GetFlags() []string {
+	if x != nil {
+		return x.Flags
+	}
+	return nil
+}
+
+func (x *AuditRecord) GetExitCode() int32 {
+	if x != nil {
+		return x.ExitCode
+	}
+	return 0
+}
+
+func (x *AuditRecord) GetDurationMs() int64 {
+	if x != nil {
+		return x.DurationMs
+	}
+	return 0
+}
+
+func (x *AuditRecord) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
+var File_compile_proto protoreflect.FileDescriptor
+
+const file_compile_proto_rawDesc = "" +
 	"\n" +
-	"\x1finternal/protocol/compile.proto\x12\bprotocol\"6\n" +
+	"\rcompile.proto\x12\bprotocol\x1a\venums.proto\"\x86\x01\n" +
 	"\x0eCompileRequest\x12\x10\n" +
 	"\x03cwd\x18\x01 \x01(\tR\x03cwd\x12\x12\n" +
-	"\x04args\x18\x02 \x03(\tR\x04args\"^\n" +
+	"\x04args\x18\x02 \x03(\tR\x04args\x12?\n" +
+	"\n" +
+	"descriptor\x18\x03 \x01(\v2\x1a.protocol.RemoteDescriptorH\x00R\n" +
+	"descriptor\x88\x01\x01B\r\n" +
+	"\v_descriptor\"\xea\x02\n" +
+	"\x10RemoteDescriptor\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12!\n" +
+	"\fimage_digest\x18\x02 \x01(\tR\vimageDigest\x12'\n" +
+	"\x0fscheduler_token\x18\x03 \x01(\tR\x0eschedulerToken\x125\n" +
+	"\vsource_mode\x18\x04 \x01(\x0e2\x14.protocol.SourceModeR\n" +
+	"sourceMode\x12F\n" +
+	"\fpreprocessed\x18\x06 \x01(\v2 .protocol.PreprocessedDescriptorH\x00R\fpreprocessed\x12+\n" +
+	"\x03cas\x18\a \x01(\v2\x17.protocol.CasDescriptorH\x00R\x03cas\x12\x1b\n" +
+	"\timage_ref\x18\b \x01(\tR\bimageRefB\x11\n" +
+	"\x0fsource_settingsJ\x04\b\x05\x10\x06R\vshared_root\"I\n" +
+	"\x16PreprocessedDescriptor\x12/\n" +
+	"\x13preprocessed_source\x18\x01 \x01(\fR\x12preprocessedSource\"A\n" +
+	"\rCasDescriptor\x120\n" +
+	"\n" +
+	"input_refs\x18\x01 \x03(\v2\x11.protocol.BlobRefR\tinputRefs\"5\n" +
+	"\aBlobRef\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\x12\x16\n" +
+	"\x06digest\x18\x02 \x01(\fR\x06digest\"\x8c\x02\n" +
 	"\x0fCompileResponse\x12\x1b\n" +
 	"\texit_code\x18\x01 \x01(\x05R\bexitCode\x12\x16\n" +
 	"\x06stdout\x18\x02 \x01(\fR\x06stdout\x12\x16\n" +
-	"\x06stderr\x18\x03 \x01(\fR\x06stderrB\aZ\x05./genb\x06proto3"
+	"\x06stderr\x18\x03 \x01(\fR\x06stderr\x12,\n" +
+	"\x0foutput_artifact\x18\x04 \x01(\fH\x00R\x0eoutputArtifact\x88\x01\x01\x12 \n" +
+	"\tcache_key\x18\x05 \x01(\tH\x01R\bcacheKey\x88\x01\x01\x120\n" +
+	"\x05audit\x18\x06 \x01(\v2\x15.protocol.AuditRecordH\x02R\x05audit\x88\x01\x01B\x12\n" +
+	"\x10_output_artifactB\f\n" +
+	"\n" +
+	"_cache_keyB\b\n" +
+	"\x06_audit\"\xfb\x02\n" +
+	"\vAuditRecord\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12!\n" +
+	"\fscheduler_id\x18\x02 \x01(\tR\vschedulerId\x12\x1b\n" +
+	"\tworker_id\x18\x03 \x01(\tR\bworkerId\x12\x13\n" +
+	"\x05vm_id\x18\x04 \x01(\tR\x04vmId\x12!\n" +
+	"\fimage_digest\x18\x05 \x01(\tR\vimageDigest\x12#\n" +
+	"\rsource_digest\x18\x06 \x01(\fR\fsourceDigest\x12#\n" +
+	"\routput_digest\x18\a \x01(\fR\foutputDigest\x12\x1b\n" +
+	"\tcache_key\x18\b \x01(\tR\bcacheKey\x12\x14\n" +
+	"\x05flags\x18\t \x03(\tR\x05flags\x12\x1b\n" +
+	"\texit_code\x18\n" +
+	" \x01(\x05R\bexitCode\x12\x1f\n" +
+	"\vduration_ms\x18\v \x01(\x03R\n" +
+	"durationMs\x12\x1c\n" +
+	"\ttimestamp\x18\f \x01(\x03R\ttimestampB\aZ\x05./genb\x06proto3"
 
 var (
-	file_internal_protocol_compile_proto_rawDescOnce sync.Once
-	file_internal_protocol_compile_proto_rawDescData []byte
+	file_compile_proto_rawDescOnce sync.Once
+	file_compile_proto_rawDescData []byte
 )
 
-func file_internal_protocol_compile_proto_rawDescGZIP() []byte {
-	file_internal_protocol_compile_proto_rawDescOnce.Do(func() {
-		file_internal_protocol_compile_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_internal_protocol_compile_proto_rawDesc), len(file_internal_protocol_compile_proto_rawDesc)))
+func file_compile_proto_rawDescGZIP() []byte {
+	file_compile_proto_rawDescOnce.Do(func() {
+		file_compile_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_compile_proto_rawDesc), len(file_compile_proto_rawDesc)))
 	})
-	return file_internal_protocol_compile_proto_rawDescData
+	return file_compile_proto_rawDescData
 }
 
-var file_internal_protocol_compile_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
-var file_internal_protocol_compile_proto_goTypes = []any{
-	(*CompileRequest)(nil),  // 0: protocol.CompileRequest
-	(*CompileResponse)(nil), // 1: protocol.CompileResponse
+var file_compile_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_compile_proto_goTypes = []any{
+	(*CompileRequest)(nil),         // 0: protocol.CompileRequest
+	(*RemoteDescriptor)(nil),       // 1: protocol.RemoteDescriptor
+	(*PreprocessedDescriptor)(nil), // 2: protocol.PreprocessedDescriptor
+	(*CasDescriptor)(nil),          // 3: protocol.CasDescriptor
+	(*BlobRef)(nil),                // 4: protocol.BlobRef
+	(*CompileResponse)(nil),        // 5: protocol.CompileResponse
+	(*AuditRecord)(nil),            // 6: protocol.AuditRecord
+	(SourceMode)(0),                // 7: protocol.SourceMode
 }
-var file_internal_protocol_compile_proto_depIdxs = []int32{
-	0, // [0:0] is the sub-list for method output_type
-	0, // [0:0] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+var file_compile_proto_depIdxs = []int32{
+	1, // 0: protocol.CompileRequest.descriptor:type_name -> protocol.RemoteDescriptor
+	7, // 1: protocol.RemoteDescriptor.source_mode:type_name -> protocol.SourceMode
+	2, // 2: protocol.RemoteDescriptor.preprocessed:type_name -> protocol.PreprocessedDescriptor
+	3, // 3: protocol.RemoteDescriptor.cas:type_name -> protocol.CasDescriptor
+	4, // 4: protocol.CasDescriptor.input_refs:type_name -> protocol.BlobRef
+	6, // 5: protocol.CompileResponse.audit:type_name -> protocol.AuditRecord
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
-func init() { file_internal_protocol_compile_proto_init() }
-func file_internal_protocol_compile_proto_init() {
-	if File_internal_protocol_compile_proto != nil {
+func init() { file_compile_proto_init() }
+func file_compile_proto_init() {
+	if File_compile_proto != nil {
 		return
 	}
+	file_enums_proto_init()
+	file_compile_proto_msgTypes[0].OneofWrappers = []any{}
+	file_compile_proto_msgTypes[1].OneofWrappers = []any{
+		(*RemoteDescriptor_Preprocessed)(nil),
+		(*RemoteDescriptor_Cas)(nil),
+	}
+	file_compile_proto_msgTypes[5].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_protocol_compile_proto_rawDesc), len(file_internal_protocol_compile_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_compile_proto_rawDesc), len(file_compile_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_internal_protocol_compile_proto_goTypes,
-		DependencyIndexes: file_internal_protocol_compile_proto_depIdxs,
-		MessageInfos:      file_internal_protocol_compile_proto_msgTypes,
+		GoTypes:           file_compile_proto_goTypes,
+		DependencyIndexes: file_compile_proto_depIdxs,
+		MessageInfos:      file_compile_proto_msgTypes,
 	}.Build()
-	File_internal_protocol_compile_proto = out.File
-	file_internal_protocol_compile_proto_goTypes = nil
-	file_internal_protocol_compile_proto_depIdxs = nil
+	File_compile_proto = out.File
+	file_compile_proto_goTypes = nil
+	file_compile_proto_depIdxs = nil
 }

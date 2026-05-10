@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aarani/hpcc/internal"
+	hpccconfig "github.com/aarani/hpcc/internal/config"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -32,7 +32,7 @@ type S3CacheStore struct {
 // Provide region for signing when using a custom endpoint; region may be
 // empty when using the default AWS endpoints.
 func NewS3CacheStore(bucket, maxSize, region, endpoint, accessKey, secretKey string) (*S3CacheStore, error) {
-	sz, err := internal.ParseSize(maxSize)
+	sz, err := hpccconfig.ParseSize(maxSize)
 	if err != nil {
 		return nil, fmt.Errorf("s3 cache max_size: %w", err)
 	}

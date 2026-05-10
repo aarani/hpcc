@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aarani/hpcc/internal"
 	"github.com/aarani/hpcc/internal/cache"
+	"github.com/aarani/hpcc/internal/config"
 	"github.com/aarani/hpcc/internal/cache/store"
 	"github.com/aarani/hpcc/internal/compiler"
 	"github.com/aarani/hpcc/internal/enum"
@@ -41,7 +41,7 @@ func setupTestContext(t *testing.T) *compiler.Context {
 	}
 	ctx := &compiler.Context{
 		Compiler: c,
-		Config:   internal.Config{PreprocessingMode: enum.PreprocessLocal},
+		Config:   &config.Config{PreprocessingMode: enum.PreprocessLocal},
 	}
 	ctx.Cache = cache.NewV1Cache(ctx, []store.Store{ds})
 	return ctx
@@ -444,7 +444,7 @@ func setupCountingContext(t *testing.T, delay time.Duration) (*compiler.Context,
 	cc := &countingCompiler{Compiler: real, invokeDelay: delay}
 	ctx := &compiler.Context{
 		Compiler: cc,
-		Config:   internal.Config{PreprocessingMode: enum.PreprocessLocal},
+		Config:   &config.Config{PreprocessingMode: enum.PreprocessLocal},
 	}
 	ctx.Cache = cache.NewV1Cache(ctx, []store.Store{ds})
 	return ctx, cc

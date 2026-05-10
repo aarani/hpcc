@@ -1,12 +1,10 @@
 package runner
 
 import (
-	"fmt"
 	"os"
 
-	"github.com/aarani/hpcc/internal"
 	"github.com/aarani/hpcc/internal/cache/store"
-	"github.com/aarani/hpcc/internal/enum"
+	"github.com/aarani/hpcc/internal/config"
 )
 
 // LoadStores loads the config and returns the configured cache stores.
@@ -16,36 +14,15 @@ import (
 func LoadStores() ([]store.Store, error) {
 	path := os.Getenv("HPCC_CONFIG")
 	if path == "" {
-		p, err := internal.DefaultConfigPath()
+		p, err := config.DefaultConfigPath()
 		if err != nil {
 			return nil, err
 		}
 		path = p
 	}
-	cfg, err := internal.LoadConfig(path)
+	cfg, err := config.LoadConfig(path)
 	if err != nil {
 		return nil, err
 	}
-
-	var stores []store.Store
-	for _, cacheCfg := range cfg.Caches {
-		switch cacheCfg.Type {
-		case enum.CacheDisk:
-			ds, err := store.NewDiskCacheStore(cacheCfg.Location, cacheCfg.MaxSize)
-			if err != nil {
-				return nil, fmt.Errorf("init disk cache: %w", err)
-			}
-			stores = append(stores, ds)
-		case enum.CacheS3:
-			ss, err := store.NewS3CacheStore(cacheCfg.Bucket, cacheCfg.MaxSize, cacheCfg.Region, cacheCfg.Endpoint, cacheCfg.AccessKey, cacheCfg.SecretKey)
-			if err != nil {
-				return nil, fmt.Errorf("init s3 cache: %w", err)
-			}
-			stores = append(stores, ss)
-		default:
-			return nil, fmt.Errorf("unsupported cache type %q", cacheCfg.Type)
-		}
-	}
-	
-	return stores, nil
+	return store.FromConfig(cfg.Caches)
 }

@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package protocol;
+
+option go_package = "./gen";
+
+import "messages.proto";
+
+service SchedulerService {
+  rpc Authenticate(AuthRequest) returns (AuthResponse);
+  rpc Route(RouteRequest) returns (RouteResponse);
+  rpc RegisterWorker(RegisterWorkerRequest) returns (RegisterWorkerResponse);
+  rpc Heartbeat(WorkerHeartbeat) returns (HeartbeatResponse);
+}

@@ -44,6 +44,14 @@ type Invocation struct {
 
 	// RawArgs is the argv we were given, after @file expansion.
 	RawArgs []string
+
+	// PreprocessedDigest, if non-nil, is the BLAKE3-256 of the
+	// already-preprocessed source bytes. CacheKey treats it as a
+	// substitute for running the preprocessor: skip FindDependencies,
+	// skip Preprocess, mix this digest in directly. Set by the worker
+	// for PREPROCESSED-mode requests where the client shipped
+	// preprocessed bytes inline; nil otherwise.
+	PreprocessedDigest *[32]byte
 }
 
 // NewInvocation returns an Invocation with maps initialized.
@@ -66,14 +74,20 @@ func NewInvocation() *Invocation {
 //
 // Each chunk written to the hasher is length-prefixed so concatenation
 // can't collide ("ab"+"c" hashes differently from "a"+"bc").
-func (inv *Invocation) CacheKey(ctx Context) ([]byte, error) {
+func (inv *Invocation) CacheKey(ctx *Context) ([]byte, error) {
 	if len(inv.Inputs) == 0 {
 		return nil, fmt.Errorf("no input files in invocation")
 	}
 
-	compilerIdentity, err := ctx.Compiler.Identity()
-	if err != nil {
-		return nil, fmt.Errorf("get compiler identity: %w", err)
+	var compilerIdentity []byte
+	if ctx.IdentityOverride != nil {
+		compilerIdentity = ctx.IdentityOverride
+	} else {
+		id, err := ctx.Compiler.Identity()
+		if err != nil {
+			return nil, fmt.Errorf("get compiler identity: %w", err)
+		}
+		compilerIdentity = id
 	}
 
 	digest := blake3.New()
@@ -84,7 +98,15 @@ func (inv *Invocation) CacheKey(ctx Context) ([]byte, error) {
 		digest.Write(data)
 	}
 
-	if ctx.Config.PreprocessingMode == enum.PreprocessRemote {
+	switch {
+	case inv.PreprocessedDigest != nil:
+		// Short-circuit: the source was preprocessed elsewhere and the
+		// caller already handed us the digest of those bytes. Mix it
+		// in directly — no preprocessor invocation, no dep walking.
+		// This is the worker path for PREPROCESSED source mode.
+		writeChunk(inv.PreprocessedDigest[:])
+
+	case ctx.Config.PreprocessingMode == enum.PreprocessRemote:
 		deps, err := ctx.Compiler.FindDependencies(inv)
 		if err != nil {
 			return nil, err
@@ -100,7 +122,8 @@ func (inv *Invocation) CacheKey(ctx Context) ([]byte, error) {
 			}
 			writeChunk(data)
 		}
-	} else {
+
+	default:
 		res, err := ctx.Compiler.Preprocess(inv)
 		if err != nil {
 			return nil, err
@@ -123,7 +146,7 @@ func (inv *Invocation) CacheKey(ctx Context) ([]byte, error) {
 // digest of the preprocessed source. The digest is computed during
 // preprocessing (PreprocessResult.Digest) so this is a single pass over the
 // bytes, not two.
-func (inv *Invocation) ComputeHash(ctx Context) (string, error) {
+func (inv *Invocation) ComputeHash(ctx *Context) (string, error) {
 	res, err := inv.CacheKey(ctx)
 	if err != nil {
 		return "", err

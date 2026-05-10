@@ -11,8 +11,12 @@ import (
 )
 
 type clangCompiler struct {
-	name string // "clang" or "clang++"
-	path string // argv[0] as the user supplied it
+	// name is the normalized argv[0] basename: "clang", "clang++",
+	// "cc", or "c++". Drives C-vs-C++ selection in the preprocessed
+	// rewriter; the actual binary on PATH is whatever the user named.
+	name string
+	path string   // argv[0] as the user supplied it
+	exec Executor // LocalExecutor by default; worker swaps in Task.Exec
 }
 
 func (c *clangCompiler) Name() string        { return c.name }
@@ -24,7 +28,7 @@ func (c *clangCompiler) Parse(args []string) (*Invocation, error) {
 
 func (c *clangCompiler) Preprocess(inv *Invocation) (*PreprocessResult, error) {
 	args := append([]string{"-E"}, stripGNUModeAndOutput(inv.RawArgs)...)
-	return runPreprocessor(c.path, args)
+	return runPreprocessor(c.exec, c.path, args)
 }
 
 func (c *clangCompiler) FindDependencies(inv *Invocation) ([]string, error) {
@@ -33,7 +37,7 @@ func (c *clangCompiler) FindDependencies(inv *Invocation) ([]string, error) {
 	// Use -MM later if/when we want to elide system headers (e.g. when
 	// the toolchain identity already pins them via image digest).
 	args := append([]string{"-M"}, stripGNUModeAndOutput(inv.RawArgs)...)
-	stdout, stderr, exitCode, err := runCompilerCmd(c.path, args, nil)
+	stdout, stderr, exitCode, err := runCompilerCmd(c.exec, c.path, args, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +49,7 @@ func (c *clangCompiler) FindDependencies(inv *Invocation) ([]string, error) {
 
 func (c *clangCompiler) Invoke(inv *Invocation) (*InvocationResult, error) {
 	start := time.Now()
-	stdout, stderr, exitCode, err := runCompilerCmd(c.path, inv.RawArgs, nil)
+	stdout, stderr, exitCode, err := runCompilerCmd(c.exec, c.path, inv.RawArgs, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -56,13 +60,18 @@ func (c *clangCompiler) Invoke(inv *Invocation) (*InvocationResult, error) {
 		Duration: time.Since(start),
 	}
 	if inv.Output != "" && exitCode == 0 {
-		data, err := os.ReadFile(inv.Output)
+		data, err := c.exec.ReadOutput(inv.Output)
 		if err != nil {
 			return nil, fmt.Errorf("read output %q: %w", inv.Output, err)
 		}
 		result.Output = data
 	}
 	return result, nil
+}
+
+func (c *clangCompiler) RewriteForPreprocessed(inv *Invocation, srcPath string) (*Invocation, error) {
+	lang := gnuPreprocessedLanguage(c.name, inv)
+	return rewriteGNUForPreprocessed(inv, srcPath, lang), nil
 }
 
 func (c *clangCompiler) Identity() ([]byte, error) {

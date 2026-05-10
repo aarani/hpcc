@@ -24,10 +24,11 @@ with the recorded stdout, stderr, and exit code. On a miss, the work is
 either run locally or dispatched to a worker that compiles inside a
 hardware-virtualized sandbox, then the result is cached for next time.
 
-hpcc supports clang and cl.exe today, and is designed to be invoked either
-explicitly (` + "`hpcc wrap clang -c foo.c -o foo.o`" + `) or as a drop-in
-replacement via symlink (` + "`ln -s hpcc clang`" + `). Build systems like
-make, ninja, and cmake see no difference from the underlying compiler.`,
+hpcc supports clang, clang++, the POSIX cc / c++ drivers, and cl.exe
+today, and is designed to be invoked either explicitly
+(` + "`hpcc wrap clang -c foo.c -o foo.o`" + `) or as a drop-in replacement
+via symlink (` + "`ln -s hpcc clang`" + `). Build systems like make, ninja,
+and cmake see no difference from the underlying compiler.`,
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
