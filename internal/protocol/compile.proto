@@ -1,5 +1,7 @@
 syntax = "proto3";
 
+import "enums.proto";
+
 package protocol;
 
 option go_package = "./gen";
@@ -7,10 +9,65 @@ option go_package = "./gen";
 message CompileRequest {
   string cwd = 1;
   repeated string args = 2;
+  // For remote compilation only
+  optional RemoteDescriptor descriptor = 3;
+}
+
+message RemoteDescriptor {
+  string tenant_id = 1;
+  string image_digest = 2;
+  string scheduler_token = 3;
+  SourceMode source_mode = 4;
+  oneof source_settings {
+    PreprocessedDescriptor preprocessed = 6;
+    CasDescriptor cas = 7;
+  }
+  // Tag 5 was SharedRootDescriptor; reserved so we never accidentally
+  // recycle it for a different message type and decode old bytes wrong.
+  reserved 5;
+  reserved "shared_root";
+  // Full OCI image reference, e.g. "ghcr.io/foo/toolchain@sha256:abc..."
+  // or "registry.example.com/team/toolchain:v1.2.3". Used by the worker
+  // to pull the image if it's not already in the local snapshotter.
+  // image_digest remains the canonical identity for routing, cache keys,
+  // and audit; image_ref is the pullable address.
+  string image_ref = 8;
+}
+
+message PreprocessedDescriptor {
+  bytes preprocessed_source = 1;
+}
+
+message CasDescriptor {
+  repeated BlobRef input_refs = 1;
+}
+
+message BlobRef {
+  string path = 1;        // relative path in the source tree
+  bytes digest = 2;       // BLAKE3 digest
 }
 
 message CompileResponse {
   int32 exit_code = 1;
   bytes stdout = 2;
   bytes stderr = 3;
+  // For remote compilation only
+  optional bytes output_artifact = 4;
+  optional string cache_key = 5;
+  optional AuditRecord audit = 6;
+}
+
+message AuditRecord {
+  string tenant_id = 1;
+  string scheduler_id = 2;
+  string worker_id = 3;
+  string vm_id = 4;
+  string image_digest = 5;
+  bytes source_digest = 6;
+  bytes output_digest = 7;
+  string cache_key = 8;
+  repeated string flags = 9;
+  int32 exit_code = 10;
+  int64 duration_ms = 11;
+  int64 timestamp = 12;
 }

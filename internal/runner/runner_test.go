@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/aarani/hpcc/internal"
 	"github.com/aarani/hpcc/internal/cache"
+	"github.com/aarani/hpcc/internal/config"
 	"github.com/aarani/hpcc/internal/cache/store"
 	"github.com/aarani/hpcc/internal/compiler"
 	"github.com/aarani/hpcc/internal/enum"
@@ -36,7 +36,7 @@ func setupContext(t *testing.T) *compiler.Context {
 
 	ctx := &compiler.Context{
 		Compiler: c,
-		Config:   internal.Config{PreprocessingMode: enum.PreprocessLocal},
+		Config:   &config.Config{PreprocessingMode: enum.PreprocessLocal},
 	}
 	ctx.Cache = cache.NewV1Cache(ctx, []store.Store{ds})
 	return ctx

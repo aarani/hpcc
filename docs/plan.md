@@ -15,7 +15,7 @@ user-supplied compilation on shared hardware is politically untenable.
 | [Phase 1](#phase-1-core-compiler-wrapping) | Core Compiler Wrapping | Done |
 | [Phase 2](#phase-2-daemon-architecture) | Daemon Architecture | Done |
 | [Phase 3](#phase-3-remote-cache) | Remote Cache | Not started |
-| [Phase 4](#phase-4-distributed-compilation-in-per-tenant-vms) | Distributed Compilation in Per-Tenant VMs | Not started |
+| [Phase 4](#phase-4-distributed-compilation-in-per-tenant-vms) | Distributed Compilation in Per-Tenant VMs | In progress |
 | [Phase 5](#phase-5-observability--polish) | Observability & Polish | Not started |
 
 ---
@@ -204,9 +204,7 @@ server binary. Point hpcc at an S3-compatible bucket and it works.
 ### 3.1 S3 Store
 
 A new `Store` implementation (`internal/cache/store/s3.go`) that speaks the
-S3 A
-A new `Store` implementation (`internal/cache/store/s3.go`) that speaks the
-S3 API. Works with AWS S3, MinIO, R2, GCS (via S3 compatibility), etc.PI. Works with AWS S3, MinIO, R2, GCS (via S3 compatibility), etc.
+S3 API. Works with AWS S3, MinIO, R2, GCS (via S3 compatibility), etc.
 
 Key layout mirrors the local disk store: `<first 2 hex>/<full key>/<name>`
 as object keys inside the configured bucket/prefix.
@@ -251,11 +249,36 @@ cache hit for the same file without compiling.
 
 ## Phase 4: Distributed Compilation in Per-Tenant VMs
 
-Farm out compilation to remote workers, isolated in **Firecracker microVMs**,
-to parallelize beyond local CPU count and provide a defensible isolation
-boundary for regulated environments.
+**Progress so far:**
 
-### 4.1 Why Firecracker
+- **Wired up:** §4.1.1 Runtime abstraction (`internal/worker/runtime`,
+  with `DangerouslyExecOnHost` as the dev backend and `Firecracker` as
+  the production backend); §4.3 image→rootfs pipeline (`rootfs.Store`
+  pulls user images, injects `/.hpcc/agent`, writes ext4 with a
+  copy-fallback for hardlink-heavy images); §4.4 *partial* — Firecracker
+  boots under jailer with hpcc's kernel, the prepared rootfs as
+  `/dev/vda`, no NIC; §4.8 route-only scheduler; §4.9 worker (Compile
+  RPC, image catalogue + idle eviction, per-tenant container pool with
+  idle/session TTLs); §4.13 paranoid-mode plumbing on the worker.
+  Boot is covered by an integration test that downloads firecracker +
+  jailer, applies the standard `/dev/kvm` udev relax, and runs under
+  `sudo` on the GitHub Actions Ubuntu runner.
+- **Next:** §4.3.1 + §4.4 vsock — write the in-VM `hpcc-agent` and the
+  host-side client, configure a vsock device on the Firecracker VM, and
+  replace `Firecracker.Exec`'s "not implemented" stub. Without this,
+  real compiles still go through `DangerouslyExecOnHost`.
+- **After that:** §4.4 source/output drives (per-RPC `/src` and `/out`
+  attached as virtio-blk at Exec time); §4.2 snapshot/restore on idle
+  timeout; §4.5 server-side preprocessing dispatched through the agent;
+  §4.1.1 the Windows hcsshim path; §4.11 VM-crash reaping with
+  scheduler reroute.
+
+
+Farm out compilation to remote workers, isolated in **raw Firecracker
+microVMs driven directly by hpcc**, to parallelize beyond local CPU count
+and provide a defensible isolation boundary for regulated environments.
+
+### 4.1 Why Raw Firecracker
 
 The target deployment is regulated enterprises (banks, finance) where the
 security review isn't asking *"is this technically sufficient?"* — it's
@@ -264,36 +287,97 @@ asking *"is this a boundary auditors recognize?"* Firecracker gives you:
 - A separate kernel + KVM boundary. Hard to argue with.
 - Clean per-tenant isolation: Alice's compile cannot touch Bob's source via
   shared `/proc`, page-cache side channels, or kernel CVE.
-- Trivial network policy: **the VM has no NIC.** No exfiltration argument
-  to have.
+- Trivial network policy: **the VM has no NIC.** No virtio-net device is
+  attached, so there is no exfiltration argument to have.
 - Per-VM lifecycle events make a clean audit trail.
 
-Namespace-based sandboxes (bwrap, nsjail, etc.) are explicitly out of scope.
+#### Why not gVisor
+
+gVisor is a userspace kernel intercepting syscalls. Technically strong, but
+it is **not** the boundary a bank security review recognises. The
+differentiator hpcc sells — *separate kernel, KVM boundary* — is exactly what
+gVisor is not, regardless of the engineering merits. Switching to gVisor
+would torch the pitch. Namespace-based sandboxes (bwrap, nsjail) are out for
+the same reason.
+
+#### Why not firecracker-containerd
+
+firecracker-containerd is an AWS-published shim that drives Firecracker via
+containerd. On paper it would buy hpcc:
+
+- OCI image → ext4 rootfs via the devmapper snapshotter — no rootfs builder
+  to own.
+- `Task.Exec` per compile, with a guest agent already handling stdio + exit
+  codes — no bespoke vsock RPC server inside the VM.
+- A "swap shim for hcsshim and the Windows backend just works" story.
+
+In practice the project has stagnated: the devmapper snapshotter is creaky,
+release cadence is effectively dead, and depending on it now is depending on
+unmaintained infrastructure. For a project whose entire bet is *long-lived,
+auditable, defensible in regulated environments,* building on stagnant
+orchestration is the wrong direction. Better to own a small amount of code
+we control than carry someone else's abandonware.
+
+#### What raw Firecracker costs us
+
+The trade is real. We take on:
+
+- **OCI image → rootfs pipeline.** Pull layers (`go-containerregistry`),
+  flatten, `mkfs.ext4` onto a sparse file. Bounded scope, ~few hundred lines.
+  See §4.3.
+- **In-VM agent over vsock.** A tiny static binary inside the guest that
+  speaks one RPC: "exec this argv with this env in this cwd, stream stdio
+  back, return exit code, support cancellation." Replaces what
+  firecracker-containerd's guest agent did. The pause binary already shipped
+  (§4.3.1) collapses into the same agent. See §4.4.
+- **Direct Firecracker VMM API driver.** `vmlinux` boot, drives, vsock —
+  nothing exotic. No CNI, no network device.
+- **No "containerd everywhere" framing for Windows.** Windows still uses
+  containerd + hcsshim (Hyper-V isolation); the unification point between
+  the two backends moves from *the containerd API* to *hpcc's `Runtime`
+  interface* (§4.1.1).
+
+What we keep — and these are the things that matter — is the entire security
+pitch: KVM boundary, no-NIC story, per-job audit trail,
+image-digest-as-toolchain-identity. A bank's security review is asking about
+the boundary, not who orchestrates it.
+
+#### What raw Firecracker buys back
+
+Items that were downgraded under firecracker-containerd come back:
+
+- **Snapshot/restore for VM warm-up.** Driving Firecracker directly puts the
+  §4.2 "snapshot-on-idle, ~10ms restore" approach back on the table instead
+  of the "warm in RAM, cold-boot on resume" fallback.
+- **Tighter control over kernel + boot config.** No shim opinions to fight.
+- **One fewer moving part on the worker host** — no containerd daemon, no
+  shim, no devmapper pool to babysit on Linux.
 
 ### 4.1.1 Worker Runtime Abstraction (Linux vs. Windows)
 
-The worker isolates each tenant in a microVM, but the *implementation* of
-"microVM" depends on the host OS:
+The two host OSes get different drivers, unified behind hpcc's `Runtime`
+interface (`internal/worker/runtime/runtime.go`):
 
-- **Linux hosts** → Firecracker microVMs running Linux guests. This is the
-  primary target and what the rest of Phase 4 describes.
-- **Windows hosts** → Windows Server containers with **Hyper-V isolation**.
-  Each container runs in its own utility VM (Hyper-V partition), giving the
-  same kernel-boundary property KVM gives us on Linux. Required for MSVC /
-  legacy Windows-only projects where running the toolchain on Linux isn't
-  an option.
+- **Linux hosts** → raw Firecracker driver. Each per-tenant container is
+  one Firecracker microVM with a Linux guest. hpcc owns the image→rootfs
+  builder (§4.3), VMM lifecycle, and the in-VM agent (§4.4). Primary
+  target for v1.
+- **Windows hosts** → containerd + **hcsshim runtime** with
+  `--isolation=hyperv` → each container runs in its own utility VM
+  (Hyper-V partition), giving the same kernel-boundary property KVM gives
+  us on Linux. Required for MSVC / legacy Windows-only projects.
 
-A small `Runtime` abstraction in the worker selects the backend based on the
-host OS and the requested image type (Linux OCI image vs. Windows base
-image). Both backends expose the same operations to the rest of hpcc:
-materialize image → boot/restore VM → exec compile job over a control
-channel → snapshot/destroy on idle. The scheduler routes jobs to workers
-that advertise a matching runtime.
+The unification point is hpcc's `Runtime` interface (Start container, Exec,
+Stop) — not the orchestrator. The two backends share nothing below that
+interface, but everything above (gRPC compile RPC, scheduler, cache, audit
+log, pause+agent injection, image-digest cache key) is OS-agnostic. The
+scheduler routes jobs to workers that advertise a matching runtime + image
+digest.
 
-**Out of scope for now** — only Linux/Firecracker is implemented in v1.
-Windows support is an explicit follow-up: when it lands, it slots in behind
-the same `Runtime` interface and the gRPC compile RPC, scheduler, cache,
-audit log, and image-digest cache key all stay unchanged.
+**Out of scope for now** — only the Linux/Firecracker backend is implemented
+in v1. Windows support is an explicit follow-up: when it lands, it slots in
+behind the same `Runtime` interface and nothing above the runtime layer
+changes.
 
 **Windows gotchas to plan for** when the Windows runtime lands (none of these
 affect v1 or the parser):
@@ -322,51 +406,116 @@ affect v1 or the parser):
 Booting a fresh Firecracker per compile (~125ms) destroys throughput on a
 build with thousands of invocations. Instead:
 
-- **One VM per active tenant session**, reused across many compiles.
-- **Idle timeout** (e.g. 5–15 min) → snapshot to disk via Firecracker's
-  snapshot/restore (~10–50ms restore vs. ~125ms cold boot).
-- **LRU eviction** of snapshots under disk pressure.
-- **Hard session timeout** (e.g. shift change, N hours) → blow the VM away.
-  Long-lived per-tenant state accumulates and someone will eventually ask
-  what's in it.
+- **One long-running VM per active tenant session.** On Linux this is a
+  Firecracker microVM with the hpcc-agent (§4.3.1) as PID 1, blocking on
+  the agent loop with zero CPU between compiles. On Windows this is a
+  Hyper-V utility VM under hcsshim, with the pause binary as PID 1.
+- **Per-compile work** is dispatched as one Exec into the running VM —
+  Linux via the in-VM agent over vsock, Windows via containerd `Task.Exec`
+  — `execve`-ing the toolchain directly with a fully-resolved argv. No
+  shell required in the user's image.
+- **Idle timeout** (e.g. 5–15 min) → snapshot the VM and unload it from
+  memory; ~10ms restore on next demand. Driving Firecracker directly makes
+  this practical (under firecracker-containerd it had been downgraded to
+  "warm in RAM, cold-boot on resume" because the snapshot/restore story was
+  rough). The Hyper-V backend uses its own equivalent state-save mechanism
+  or falls back to cold boot.
+- **LRU eviction** of warm/snapshotted VMs under memory or disk pressure.
+- **Hard session timeout** (e.g. shift change, N hours) → blow the VM away,
+  discard the snapshot. Long-lived per-tenant state accumulates and someone
+  will eventually ask what's in it.
 
 ### 4.3 Container Image as the Build Environment
 
-The user supplies their toolchain by handing hpcc a **container image**.
-hpcc converts it to a Firecracker rootfs once, caches the converted rootfs
-by image digest, and boots VMs from it.
+The user supplies their toolchain by handing hpcc a **container image**
+(any OCI-compatible registry: Docker Hub, GHCR, ECR, internal mirrors).
 
-- Conversion path: OCI image → flatten layers → `mkfs.ext4` → rootfs blob.
-  Tools to crib from: `firecracker-containerd`, Weaveworks Ignite, Kata
-  Containers. Or DIY in ~50 lines of shell.
+On the **Linux/Firecracker** path the worker pulls layers (via
+`go-containerregistry`), flattens them in order, and materializes the
+result as an ext4 filesystem on a sparse file — a Firecracker rootfs drive.
+No containerd, no devmapper. The prepared rootfs is cached on disk keyed by
+`(user image digest + injected agent layer digest)`. On the
+**Windows/hcsshim** path containerd's image pull + snapshotter does the
+equivalent.
+
 - **Image digest is the toolchain identity** for cache keys. Same image used
-  by 50 developers → one rootfs on disk, one toolchain identity in the cache.
-- Conversion is seconds-to-minutes for a fat C++ toolchain image; cache
-  aggressively, pre-warm on push if possible.
-- The kernel is **hpcc's**, not the image's — Firecracker boots with a kernel
-  you provide.
+  by 50 developers → one prepared rootfs on the worker, one toolchain
+  identity in the cache.
+- The kernel is **hpcc's**, not the image's — the worker boots the microVM
+  with a `vmlinux` hpcc provides, ignoring whatever kernel the image might
+  ship.
+
+#### 4.3.1 Pause-and-Agent Injection
+
+The VM needs a long-running PID 1 that (a) stays alive between compiles
+and (b) accepts Exec requests from the worker host. User images can be
+anything — distroless, scratch — so hpcc cannot rely on `sh`, `sleep`, or
+any other host-provided binary being present.
+
+Instead, hpcc injects one tiny static binary into every prepared image,
+which fills both roles:
+
+- **Linux**: a statically-linked `hpcc-agent` (~1MB). Acts as the long-running
+  PID 1 (blocks on the agent loop, exits cleanly on SIGTERM, reaps zombies),
+  and listens on a vsock port for `Exec(argv, env, cwd)` requests from the
+  worker host. Forks/execs the toolchain, streams stdout/stderr back over
+  the same vsock connection, returns the exit code, supports cancellation.
+  Replaces what firecracker-containerd's guest agent did under the previous
+  design; the standalone pause binary collapses into this same agent.
+- **Windows**: `hpcc-pause.exe` only — Windows uses containerd `Task.Exec`
+  via hcsshim, so no in-VM agent is needed; the pause binary plays the
+  Kubernetes-style "stay alive as PID 1" role.
+
+Injection happens at image-prep time on the worker: hpcc writes
+`/.hpcc/agent` (or `/.hpcc/pause.exe`) into the prepared rootfs and sets
+the VM's init/entrypoint to it. The user's image bytes are not modified —
+on Linux the prepared rootfs is a separate artifact built per
+`(user image digest, agent digest)` pair; on Windows the same digest-based
+identity rule applies via the snapshotter content store. Either way, the
+worker-side image digest folds in the injected binary so two workers
+running the "same" user image with hpcc's injection produce the same
+effective digest.
+
+This makes the design **image-agnostic**: hpcc works with any OCI image
+the user wants to bring, including minimal/distroless images that have no
+shell at all.
 
 ### 4.4 VM Layout
 
-Firecracker supports **virtio-blk** and **vsock** — it does not support
-virtio-fs. Source and cache are passed into the VM as block devices.
+On **Linux/Firecracker** each per-tenant microVM is configured directly via
+the Firecracker VMM API:
 
-For each running VM:
+- **Rootfs drive** — the prepared rootfs from §4.3, attached read-only.
+  Per-VM scratch (writable upper for `/tmp`, build scratch) is a separate
+  in-memory tmpfs or a per-VM thin overlay.
+- **Source drive** — the project source + build tree, exposed inside the
+  VM at `/src` (read-only). Packaged as a separate virtio-blk drive (a
+  worker-built ext4 or squashfs image, rebuilt when the source tree
+  changes).
+- **Output drive** — `/out` inside the VM, a writable virtio-blk volume the
+  worker reads artifacts from after each compile.
+- **Init** — `/.hpcc/agent` (the pause+agent binary, §4.3.1), kept alive
+  for the life of the VM and serving Exec requests over vsock.
+- **Vsock** — one virtio-vsock device. The worker's host-side agent client
+  speaks to the in-VM agent over a CID/port pair. Vsock is the only
+  host↔guest channel.
+- **No network.** No virtio-net device is configured; there is nothing for
+  the guest to talk to off-host. No exfiltration argument to have.
 
-- **`/dev/vda`** — Read-only base rootfs (ext4, per image digest, shared
-  across VMs) + per-VM **overlayfs** writable upper (tmpfs) for `/tmp`,
-  `/var`, build scratch.
-- **`/dev/vdb`** — **squashfs** image of the project source + build tree
-  (read-only). Rebuilt by the worker when the source tree changes.
-  `mksquashfs` is fast on typical source trees (sub-second for most C++
-  projects) and squashfs is compressed, so the block device stays small.
-  Mounted read-only at `/src` inside the guest.
-- **`/dev/vdc`** — ext4 scratch volume for build outputs (read-write).
-  Mounted at `/out` inside the guest. The worker reads artifacts from
-  here after the compile completes.
-- **vsock** for the control plane — a small static `hpcc-agent` binary baked
-  into the rootfs receives `Compile(...)` RPCs and runs the toolchain.
-- **No virtio-net.** Compiles don't need network. No exfiltration argument.
+On **Windows/hcsshim** the equivalent OCI runtime spec is handed to
+containerd: the user's image (with `hpcc-pause.exe` injected) as the
+container rootfs, source/output mounted as Hyper-V container volumes at
+`C:\src` and `C:\out` (see §4.1.1 caveats — staged onto a local volume),
+`hpcc-pause.exe` as the entrypoint, `--network none`-equivalent.
+
+The control plane between the worker host and inside-the-VM compile
+processes is:
+
+- **Linux**: hpcc-agent vsock RPC. One method, `Exec(argv, env, cwd)`,
+  with stdio streaming, exit code, and cancellation. Owned by hpcc end-to-end.
+- **Windows**: containerd's task API (`Task.Exec` against an hcsshim-managed
+  Hyper-V container) — process spawn, stdio capture, exit codes, signals.
+  hpcc does not ship a Windows in-VM agent.
 
 ### 4.5 Server-Side Preprocessing
 
@@ -379,20 +528,24 @@ happen *there*, not on the client. Wins:
   canonical bytes, raising cache hit rate dramatically.
 - **CPU offload** from developer laptops to the build farm.
 
-Three modes negotiated per-job:
+Two modes negotiated per-job:
 
-1. **`shared_root`** — worker packages the source tree into a squashfs
-   image and attaches it as a virtio-blk device. Client sends
-   `(source_path, flags, cwd)`; worker preprocesses + compiles.
-   Realistic in container-pinned bank environments where workers have
-   access to the same source volume.
-2. **`cas`** — heterogeneous case. Client runs `gcc -M` to discover the
+1. **`cas`** — preferred. Client runs `gcc -M` to discover the
    include closure, digests each input, sends `(source_digest,
    header_digests[], flags)`. Worker pulls missing digests from the shared
    CAS, materializes a synthetic input root, compiles. Reuses the Phase 3
-   blob store as the CAS.
-3. **`preprocessed`** — fallback. Client preprocesses locally and ships
-   bytes. Same RPC, just a populated `preprocessed_source` field.
+   blob store as the CAS. Produces canonical bytes server-side, so the
+   cache key is portable across developers.
+2. **`preprocessed`** — fallback. Client preprocesses locally and ships
+   bytes. Same RPC, just a populated `preprocessed_source` field. Used
+   when the client can't reach the CAS or doesn't trust it.
+
+(A `shared_root` mode that mounted the host tree directly into the
+worker container was scoped earlier and dropped — too coupled to a
+specific deployment topology, and the trust story for "client
+filesystem appears in the worker's VM" was hard to defend in a
+multi-tenant setup. CAS gives us the same canonicalization win
+without the mount-shape constraint.)
 
 ### 4.6 Build-System Compatibility (CMake/ninja/make)
 
@@ -404,8 +557,8 @@ hpcc intercepts a compile invocation:
   prior ninja steps on the driving machine).
 
 All those files live in `build/` on disk. The worker packages both the
-source and build trees into the squashfs image attached to the VM as
-`/dev/vdb`. **No special handling needed.** The only edge case is
+source and build trees into the source volume mounted at `/src`
+(§4.4). **No special handling needed.** The only edge case is
 `add_custom_command` that needs network during build — rare and
 considered bad practice in any sandboxed setup.
 
@@ -437,38 +590,33 @@ compile request payloads or artifact bytes. The hot path (compile RPC)
 goes directly from the client daemon to the worker.
 
 - `hpcc scheduler --listen :9091`.
-- Workers connect and register: image digests they have rootfs for, free
-  vCPU, current load.
+- Workers register on startup (`RegisterWorker`) and send periodic
+  heartbeats (`Heartbeat`) — both unary RPCs. The scheduler never
+  initiates a connection to a worker.
 - Client daemon calls `scheduler.Route(RouteRequest)` — a lightweight RPC
   containing `(tenant_id, image_digest)`. Scheduler returns a
-  `RouteResponse` with the selected worker's address and TLS trust info
-  (see below).
-- Client daemon dials the worker directly and calls
-  `worker.Compile(CompileRequest)`.
-
-**Worker TLS trust.** The client already trusts the scheduler (mTLS), so
-the scheduler brokers trust to workers. The `RouteResponse` includes a
-`tls` field with one of two modes:
-
-- **`system`** — use the OS trust store. Workers have certs signed by a CA
-  the OS already trusts (e.g. an internal corporate CA in the system
-  roots). Simple for orgs that already run internal PKI.
-- **`fingerprint`** — the scheduler sends the worker's certificate
-  SHA-256 fingerprint in the `RouteResponse`. The client pins that
-  fingerprint when dialing the worker. Workers register their cert
-  fingerprint at connect time; the scheduler already has it. No PKI
-  infrastructure needed — the scheduler is the authority.
-
-Config on the scheduler side: `[scheduler] worker_tls = "system"` or
-`"fingerprint"` (default: `"fingerprint"`).
+  `RouteResponse` with:
+  - **`worker_address`** — where to dial.
+  - **`token`** — a JWT signed by the scheduler containing the task
+    claims (`tenant_id`, `image_digest`, `worker_id`, `exp`).
+  - **`cert_fingerprint`** — SHA-256 of the worker's TLS certificate
+    (registered by the worker at startup). The client pins this when
+    dialing.
+- Client daemon dials the worker directly, presents the JWT (as gRPC
+  metadata), and calls `worker.Compile(CompileRequest)`.
+- Worker verifies the JWT signature against the scheduler's public key,
+  which it receives in the `AuthResponse` when it first authenticates to
+  the scheduler. The signing keypair (Ed25519) is generated randomly at
+  scheduler startup — no key file to manage, no deployment step. On
+  scheduler restart, workers re-authenticate and get the new public key;
+  in-flight JWTs from the old key expire naturally (short TTL). After
+  authentication, no ongoing scheduler↔worker connection is required for
+  authorization — the JWT is self-contained.
 - Routing decisions based on:
   - Tenant → VM affinity (sticky routing — same tenant lands on the same VM).
   - Image digest match (worker has the rootfs).
   - Current load / available capacity.
   - Optional: network proximity (RTT-based scoring).
-- Spinning up a new VM for an unseen `(tenant, image)` pair: the scheduler
-  tells the worker to prepare via the heartbeat stream, then returns the
-  worker address to the client once the VM is ready.
 
 This keeps the scheduler off the data path. It handles ~1 KB route
 lookups, not multi-MB artifact transfers. A single scheduler can serve
@@ -476,12 +624,21 @@ thousands of concurrent compiles without becoming a bottleneck.
 
 ### 4.9 Worker
 
-- `hpcc worker --scheduler <addr>` — connects to the scheduler, manages local
-  Firecracker pool.
-- Maintains per-tenant VMs, snapshots on idle, evicts under pressure.
+- `hpcc worker --scheduler <addr>` — connects to the scheduler, drives
+  per-tenant sandboxes via the `Runtime` interface.
+  - **Linux**: raw Firecracker driver. Owns image pull, rootfs build,
+    Firecracker VMM lifecycle, and the host-side end of the vsock agent
+    channel.
+  - **Windows**: containerd + hcsshim with Hyper-V isolation (follow-up).
+- Maintains per-tenant VMs, snapshots on idle timeout (Linux), evicts
+  under memory pressure.
 - Receives `Compile` RPCs **directly from client daemons** (not via the
-  scheduler). Routes each job to the right VM via vsock to its
-  `hpcc-agent`.
+  scheduler). For each job, sends an Exec into the right per-tenant VM
+  with a fully-resolved argv; captures stdio + exit code via the agent
+  channel (Linux) or containerd's process API (Windows).
+- Prepares user images on first use: pulls the OCI image, flattens
+  layers, builds the rootfs with the agent injected (§4.3.1), computes
+  the worker-side image digest.
 - Reports state to the scheduler via the heartbeat stream (load, active
   VMs, image digests).
 
@@ -501,9 +658,12 @@ specific to this hop:
   perf lever; flip it on.**
 - HTTP/2 multiplexing. Hundreds of concurrent in-flight jobs over one
   connection per worker.
-- First-class cancellation — `ctx.Cancel()` propagates and kills the in-VM
-  compiler. Build aborts feel snappy.
-- mTLS in one line. Auditor-friendly.
+- First-class cancellation — `ctx.Cancel()` propagates through the worker
+  to the in-VM Exec (vsock RPC on Linux, `Task.Exec` context on Windows),
+  which kills the compiler in the guest. Build aborts feel snappy.
+- Server-auth TLS in one line; cert-fingerprint pinning is the client's
+  job (§4.8). Auditor-friendly without the operational tax of a
+  client-cert PKI — the JWT carried in metadata is the actual auth.
 - Per-call deadlines map to the job timeout cleanly.
 - Don't stream stdout/stderr. Compilers don't produce progressive output;
   buffer and return at the end.
@@ -519,8 +679,9 @@ telemetry/audit sidecar — not in v1.)
 - Worker fails mid-job: client retries via `scheduler.Route()` to get a
   different worker; falls back to local compile as last resort.
 - Per-job timeout (configurable, default 60s).
-- VM crash mid-job: the worker resurrects the VM from its snapshot (or cold
-  boot) and the client retries the RPC.
+- VM crash mid-job: the runtime surfaces a VM-exit event (Firecracker VMM
+  on Linux, containerd task-exit on Windows); the worker reaps the dead
+  VM, cold-boots a new one for the tenant, and the client retries the RPC.
 
 ### 4.12 Audit Trail
 
@@ -567,12 +728,80 @@ combined with **signed artifacts**: the worker signs the `(cache_key,
 output_digest)` tuple and the client verifies the signature before
 writing the `.o` to disk, so even the wire path is tamper-evident.
 
+### 4.14 Rootfs Extraction Hardening (Follow-up)
+
+The §4.3 image→rootfs pipeline runs against **attacker-controlled OCI
+image bytes** — the entire multi-tenancy story assumes the tenant is
+hostile, so the bytes flowing through `crane.Pull` → `mutate.Extract`
+→ tar extraction → `mkfs.ext4 -d` are not trusted. The current
+implementation (`internal/worker/image/rootfs/rootfs.go`) is mostly
+safe but has known gaps that should be closed before this lands in a
+production deployment.
+
+Threat surface, by stage:
+
+- **`crane.Pull` + `mutate.Extract`** (in-process Go, vetted by the
+  ecosystem). Low risk.
+- **`tar -xpf` of the spooled flattened tar.** The soft underbelly.
+  Depending on which `tar` implementation is in `$PATH`, a malicious
+  image can attempt:
+  - **Path traversal** — entries named `../../etc/foo`. GNU tar 1.30+
+    blocks by default; older tars and some BSD/busybox variants
+    don't.
+  - **Symlink racing** — first entry creates `etc -> /etc`, second
+    writes `etc/passwd`. Modern GNU tar refuses to follow; older
+    versions had bugs here.
+  - **Hardlink attacks** — `linkname=/etc/shadow`. GNU tar checks
+    that link targets resolve inside the extraction tree.
+  - **suid/sgid escalation** — `tar -xpf` preserves modes. A
+    root-owned suid binary briefly living under our staging dir is a
+    local-priv-escalation vector for any sibling process under the
+    worker user.
+  - **Device-node creation** — TypeChar/TypeBlock entries with
+    mknod. As root, tar will create them under staging.
+  - **Tar bombs** — uncompressed flattened OCI tars can be
+    arbitrarily large. We don't currently cap.
+- **`mkfs.ext4 -d`.** Narrow surface — libext2fs reads our (now
+  populated) staging dir and writes a fresh ext4. Doesn't exec
+  staging contents, doesn't interpret tar headers. e2fsprogs CVEs
+  cluster on the *parse* side (mounting/fsck'ing malicious ext4),
+  not the format side. Worst plausible failure: malformed ext4 that
+  fails to mount in the guest — noisy, not silent compromise.
+
+Mitigations, ranked by impact / cost:
+
+1. **Deployment-side**: mount the rootfs cache dir's parent on tmpfs
+   with `nosuid,nodev,noexec`. Even if tar is tricked into dropping
+   a suid binary or device node under staging, it can't be
+   exploited. mkfs.ext4 only reads from staging — `noexec` doesn't
+   block that. Cheap, document as a deployment requirement.
+2. **Cap extracted size** before invoking mkfs.ext4. A `du -sb
+   staging` against a configured ceiling rejects 100 GB tar bombs
+   cheaply. ~10 lines.
+3. **Replace `exec.Command("tar", ...)` with a Go-native
+   extractor.** The real fix. We previously had a `copyTarToFS`
+   built on `archive/tar` with explicit traversal/symlink/hardlink
+   validation; it was deleted when go-diskfs's ext4 writer turned
+   out to be unusable, but the *tar reading* logic was correct.
+   Bring it back, write into a real Linux directory (no go-diskfs
+   bugs to dodge), then `mkfs.ext4 -d` from there. The ~150 lines
+   of validated extractor code replace one `tar` shell-out with
+   semantics we own end-to-end — no "trusting `/usr/bin/tar`'s
+   defaults" question, no implementation drift between dev hosts
+   and CI runners.
+
+Containerd's snapshotter, BuildKit, and Docker's image pull all use
+Go-native extraction with explicit safety wrappers for exactly these
+reasons. v1 ships with the shell-out path because it's the smallest
+correct change after dropping go-diskfs; (3) is the planned
+follow-up before regulated-environment deployment.
+
 ### Milestone
 
 A 16-core machine effectively compiles with `-j64` by distributing to
 3 other machines in the cluster. Each tenant's compiles run in their own
-Firecracker VM, reused across the build, snapshotted on idle, with no
-network access from inside the VM.
+Firecracker VM (driven directly by hpcc), reused across the build,
+snapshotted on idle timeout, with no network access from inside the VM.
 
 ---
 
@@ -715,9 +944,17 @@ internal/
     routing.go      — tenant→VM affinity, image-digest matching
   worker/
     worker.go       — host-side worker
-    vmpool/         — Firecracker pool: lifecycle, snapshot, eviction
-    image/          — OCI image → rootfs conversion + cache
-    agent/          — in-VM agent binary (separate go module, static)
+    runtime/        — Runtime interface; raw Firecracker driver (Linux),
+                      containerd+hcsshim (Windows, follow-up)
+    rootfs/         — OCI pull → flatten → ext4 image builder (Linux)
+    agent/          — host-side vsock client for the in-VM agent (Linux)
+    sessionpool/    — per-tenant VM lifecycle, snapshot + eviction
+    image/          — image prep: agent injection, worker-side digest accounting
+  agent/            — tiny static `hpcc-agent` binary: PID-1 + vsock Exec
+                      server inside the VM (Linux). Windows uses the smaller
+                      `hpcc-pause.exe` instead. Separate go module so it
+                      can be built standalone (linux/amd64, linux/arm64,
+                      windows/amd64) without dragging in the rest of the tree.
   config/
     config.go
 ```
@@ -751,18 +988,29 @@ mutex-protected map of `chan struct{}`.
 ### Sandbox Model
 
 **Hardware-virtualized boundary, always.** Namespace-based sandboxes (bwrap,
-nsjail, gVisor) are out of scope — the deployment target is regulated
-environments where the kernel boundary is the boundary auditors recognize.
+nsjail) and userspace-kernel sandboxes (gVisor) are out of scope — the
+deployment target is regulated environments where the kernel + KVM boundary
+is the boundary auditors recognize, and gVisor's intercept-syscalls model
+is not.
 
-A `Runtime` abstraction in the worker picks the backend by host OS:
+Two backends behind hpcc's `Runtime` interface:
 
-- **Linux** → Firecracker microVMs (primary target, v1).
-- **Windows** → Hyper-V-isolated Windows containers (follow-up; required
-  for MSVC and legacy Windows-only projects).
+- **Linux** → raw Firecracker driver. hpcc owns the rootfs builder, VMM
+  lifecycle, and an in-VM agent over vsock. (Primary target, v1.)
+- **Windows** → containerd + hcsshim with Hyper-V isolation → utility-VM
+  Windows containers (follow-up; required for MSVC and legacy Windows-only
+  projects).
 
 The scheduler matches jobs to workers by runtime + image digest. Everything
 above the runtime layer (gRPC compile RPC, cache, audit, image-digest
-identity) is OS-agnostic.
+identity, pause+agent injection) is OS-agnostic.
+
+We chose raw Firecracker over firecracker-containerd because the latter has
+stagnated (devmapper snapshotter rough, release cadence effectively dead).
+The trade — owning a small image→rootfs pipeline and a one-method vsock
+agent — is preferable to depending on unmaintained infra for a project that
+needs to live in regulated environments long-term. See §4.1 for the full
+rationale.
 
 ### Compiler/Invocation Split
 
@@ -782,8 +1030,8 @@ parser from a flag spec table, not a giant switch.
 | Wrapper ↔ daemon (local) | Length-prefixed protobuf over loopback TCP (`127.0.0.1`) with a per-daemon auth token | Wrapper invoked thousands of times per build; gRPC runtime is too heavy for the hot path. TCP (over Unix sockets) for portability — the wrapper has to run on Windows too |
 | Cache (Phase 3) | S3 API (`GetObject`/`PutObject`/`HeadObject`) | Direct to object storage, no proxy; works with AWS S3, MinIO, R2, GCS |
 | Daemon → scheduler (routing) | gRPC unary `Route` | Lightweight lookup (~1 KB), returns worker address. Scheduler never touches compile payloads |
-| Daemon → worker (compile) | gRPC unary `Compile` | Client dials worker directly. Per-call zstd, multiplexing, cancellation, mTLS, deadlines |
-| In-VM agent | gRPC over vsock | Same proto, no network device |
+| Daemon → worker (compile) | gRPC unary `Compile` | Client dials worker directly. Per-call zstd, multiplexing, cancellation, deadlines. Server-auth TLS with cert-fingerprint pinning + scheduler-signed JWT in metadata; no client-cert PKI to operate (§4.8) |
+| Worker → in-VM compile | Linux: hpcc-agent vsock RPC. Windows: containerd `Task.Exec` (hcsshim) | One method (`Exec(argv, env, cwd)` with stdio streaming + exit code + cancel). hpcc owns the Linux side end-to-end; Windows reuses containerd's task API |
 | Telemetry sidecar (later, optional) | Kafka | Append-only event log of compilations for dashboards/audit |
 
 Explicitly **not** Kafka for the compile path. Wrong shape — pub/sub log,
@@ -807,15 +1055,19 @@ timezone, hostname inside the VM. Document LTO/PGO caveats.
 - Daemon listens on loopback TCP only (`127.0.0.1`); a per-daemon auth token
   in a `0600` handshake file gates connections.
 - Remote cache uses S3 auth (AWS credential chain).
-- Workers run compilations in Firecracker VMs with no network device.
-- Image rootfs is read-only, optionally dm-verity signed.
+- Workers run compilations in Firecracker VMs (driven directly by hpcc)
+  with no virtio-net device attached.
+- Image rootfs is read-only, optionally dm-verity signed. The pause+agent
+  binary hpcc injects (§4.3.1) is the only worker-controlled content; user
+  image bytes are not modified.
 - Per-VM audit log: image digest, source digest, flag set, output digest,
   duration, exit code, tenant/scheduler/worker/VM IDs.
 - **Client→scheduler**: mTLS. Client trusts the scheduler's CA.
-- **Client→worker**: trust brokered by the scheduler. `RouteResponse`
-  carries either `system` (use OS trust store / internal PKI) or
-  `fingerprint` (scheduler sends the worker cert's SHA-256 fingerprint,
-  client pins it). No separate PKI needed in fingerprint mode — the
+- **Client→worker**: scheduler-issued JWT in the `RouteResponse`. Worker
+  verifies the signature against the scheduler's public key — no
+  scheduler↔worker connection needed for auth. Client pins the worker's
+  TLS cert via the SHA-256 fingerprint included in the `RouteResponse`
+  (registered by the worker at startup). No separate PKI needed — the
   scheduler is the trust root (§4.8).
 - **Paranoid mode** (`paranoid = true`): all cache reads/writes happen on
   the worker side only — clients never touch the cache stores and never
@@ -861,13 +1113,174 @@ timezone, hostname inside the VM. Document LTO/PGO caveats.
     listener, handshake file, per-connection auth, singleflight-based
     deduplication of identical in-flight compilations (§2.3),
     `TCP_NODELAY` on all connections. `cmd/start.go` launches the daemon.
+14. **Manifest-mode hashing** — implemented in
+    `internal/compiler/invocation.go` (`Invocation.CacheKey`, branching on
+    `ctx.Config.PreprocessingMode`). Manifest path enumerates inputs +
+    `FindDependencies` output (per-compiler `-M` runner in
+    `internal/compiler/clang.go`, `cl.go`) and hashes file contents
+    directly without materializing preprocessed bytes. The shared
+    `cacheKeyFlags` canonical encoding lives in
+    `internal/compiler/cache_key.go` (+ `cache_key_test.go`).
+15. **Scheduler** — `internal/scheduler/scheduler.go` (+
+    `scheduler_test.go`), `internal/scheduler/state.go`,
+    `internal/scheduler/config.go`. gRPC `Authenticate` / `Route` /
+    `RegisterWorker` / `Heartbeat`, JWKS-backed user auth, static-token
+    worker auth, scheduler-signed Ed25519 task JWTs, sticky-tenant +
+    image-digest + load-aware routing. `cmd/scheduler.go` launches it.
+16. **Pause binary** — `pause/main.go`, `pause/reap_linux.go`,
+    `pause/reap_other.go`. Tiny static PID-1 binary with cross-platform
+    SIGTERM handling and Linux-specific zombie reaping; separate Go
+    module so it can be built `linux/amd64 + linux/arm64 + windows/amd64`
+    without dragging in the rest of the tree. **Under raw Firecracker the
+    Linux build of this binary will absorb the in-VM agent role (§4.3.1)
+    and become `hpcc-agent`; Windows keeps it as pause-only.**
+17. **Worker image store** — `internal/worker/image/image.go` (+
+    `image_test.go`, `image_integration_test.go`). Currently
+    containerd-driven pull, pause-layer injection in the content store
+    under a worker-side digest, `dev.hpcc/user-digest` label so prepared
+    images are distinguishable from raw pulls. `Store.GetExistingImages`
+    and `PullImage(path, expectedDigest)` form the surface the worker
+    calls. **Under raw Firecracker this gets replaced (Linux) by a direct
+    OCI pull + flatten + ext4-build pipeline; the digest-identity surface
+    stays the same.**
+18. **Worker runtime interface + dev backend** —
+    `internal/worker/runtime/runtime.go` (interface + `ContainerSpec`,
+    `ExecRequest`/`ExecResult`), `dangerous.go`
+    (`DangerouslyExecOnHost`: forks `os/exec` children with
+    boundary-aware `/src` and `/out` path translation; gated behind
+    the deliberately awful `runtime.handler = "really_really_dangerous"`
+    config string), `select.go` (handler-string dispatcher with clear
+    "not implemented yet" errors for `aws.firecracker` and
+    `runhcs-wcow-hypervisor`). The real Firecracker /  hcsshim shims slot
+    in behind this interface — see "Remaining."
+19. **Client-side argv rewriting** —
+    `internal/compiler/rewrite.go` (+ `rewrite_test.go`). Adds three
+    pieces that the client uses to prepare a `CompileRequest` for the
+    chosen source-delivery mode:
+    - `RewritePathPrefix(inv, hostPrefix, vmPrefix)` — hand-written,
+      boundary-aware substring substitution across `RawArgs` and
+      structured fields. No regex; sibling dirs (`/proj-other` vs
+      `/proj`) don't false-match. Used by CAS.
+    - `Compiler.RewriteForPreprocessed(inv, srcPath)` — new interface
+      method. Rebuilds argv as `-x <lang> -c <srcPath> [-o <out>]
+      <kept-flags>`, dropping includes/defines/passthrough/linker-only
+      flags. Implemented for clang (auto-detects `cpp-output` vs
+      `c++-cpp-output` by compiler name, explicit `-x`, or input
+      extension); MSVC stub returns "not implemented." Used by
+      PREPROCESSED.
+    - `ValidateNoHostPaths(args)` — substring blacklist of
+      `/home/`, `/Users/`, `:\Users\` (any case). Worker calls this
+      after token validation so a client that botched its rewrite
+      surfaces loudly instead of silently failing inside the VM.
+20. **Worker compile pipeline (handler-only)** —
+    `internal/worker/worker.go`, `runtime_executor.go`, `staging.go`,
+    `config.go` (+ `worker_test.go`). End-to-end Compile handler doing:
+    descriptor + token validation (Ed25519 JWT against the scheduler's
+    pubkey) → host-path argv sanity check → per-RPC src/out tmpdir
+    staging (PREPROCESSED only; CAS returns a clear
+    not-implemented error) → `runtime.Start` → `compiler.Detect` +
+    `runtimeExecutor` adapter (translates `compiler.Executor` calls to
+    `runtime.Container.Exec`, in-container `/out` paths to host paths
+    for `ReadOutput`) → `compiler.Invoke` → cache lookup/store in
+    paranoid mode → `CompileResponse{Stdout,Stderr,ExitCode,
+    OutputArtifact,CacheKey}`. Per-RPC `compiler.Context` configured
+    with `PreprocessLocal` so cache-key derivation goes through the
+    in-VM preprocessor; `Invocation.PreprocessedDigest` short-circuits
+    that for PREPROCESSED-mode requests. Worker config grew a `[[cache]]`
+    section sharing `config.CacheConfig` with the client side; the
+    factory is `cache/store.FromConfig` (one place, both callers).
+    Scheduler liaison loop (auth, register, heartbeat) lives on the
+    same `Worker` value. **No `cmd/worker.go` yet — the handler can't
+    actually accept gRPC connections; it's only reachable from tests.**
+21. **Cache-key precomputed-digest path** —
+    `Invocation.PreprocessedDigest *[32]byte`; `CacheKey` short-circuits
+    on it before consulting `Config.PreprocessingMode`. Lets paranoid
+    mode produce stable cache keys for PREPROCESSED-source compiles
+    where there are no deps to walk and the in-container source path
+    doesn't translate via `os.ReadFile`.
 
 ### Remaining
 
-14. `internal/cache/store/s3.go` — S3-compatible remote store.
-15. Manifest-mode hashing alongside `internal/compiler/cache_key.go`.
-16. `internal/worker/image/` — OCI → rootfs conversion + cache.
-17. `internal/worker/vmpool/` — Firecracker lifecycle, snapshot, eviction.
-18. `internal/worker/agent/` — in-VM gRPC agent over vsock.
-19. `internal/scheduler/` — gRPC, tenant routing, image matching.
-20. Polish: inspect, explain, eviction, Prometheus endpoints.
+The end-to-end remote path is now wired up: `cmd/worker.go` runs the
+gRPC server + scheduler liaison loop with TLS; `internal/daemon/dispatch`
+authenticates via OAuth password grant, calls `scheduler.Route`, dials
+the worker pinned by cert fingerprint, and ships PREPROCESSED-mode
+`CompileRequest`s; the daemon falls back to local on any remote-side
+error. `internal/worker/runtime/pool.go` (`PooledRuntime`) gives
+per-tenant container reuse — `NewWorker` wraps the inner runtime in
+the pool, keyed on `(TenantID, ImageDigest)`, with `idle_timeout` and
+`pool.max_active` driving the reaper / cap. Image-pull-on-miss in the
+worker is in (`ensureImage`, singleflight'd by digest, with idle
+eviction at `image.idle_timeout` cadence). Both compiler families now
+implement `RewriteForPreprocessed` — the GNU walker (clang/clang++/cc/c++)
+and the cl.exe walker (with the `/MD`-family runtime/EH carveout).
+The `PooledRuntime` now also enforces §4.2's hard session timeout:
+each entry tracks `createdAt` (preserved across park/pop), and a
+configured `vm.session_timeout` evicts containers past that age at
+both pop time and the reaper tick — independent of how recently they
+were used. Per-job §4.12 audit records are populated on every
+`CompileResponse` (tenant/worker/vm/image, source + output BLAKE3
+digests, cache key, flags, exit code, duration, timestamp) and
+mirrored to the worker log; a durable sidecar sink remains follow-up
+work.
+
+What's still open:
+
+22. `internal/worker/runtime/` — real backends behind the existing
+    interface:
+    - **Linux: raw Firecracker driver.** Three pieces, all hpcc-owned:
+      (a) image→rootfs builder (OCI pull via `go-containerregistry`,
+      flatten layers, `mkfs.ext4` to a sparse file, cache by
+      `(user image digest, agent digest)`); (b) Firecracker VMM driver
+      (boot `vmlinux`, attach rootfs/source/output drives, vsock device,
+      no virtio-net; snapshot/restore for §4.2 idle re-warm); (c) host-side
+      vsock client to the in-VM `hpcc-agent` for Exec dispatch and stdio
+      streaming. Replaces the firecracker-containerd path that was
+      sketched in earlier drafts — see §4.1 for why.
+    - **Windows: containerd + hcsshim Hyper-V.** Container start with the
+      `hpcc-pause.exe` entrypoint, mount setup via Hyper-V volume,
+      `Task.Exec` per compile. Follow-up to v1.
+    - `select.go` still returns "not implemented yet" for both
+      `aws.firecracker` and `runhcs-wcow-hypervisor`; only
+      `really_really_dangerous` (host exec) works.
+23. **CAS staging** in `internal/worker/staging.go` — currently
+    returns `not implemented`; only PREPROCESSED works end-to-end. CAS
+    needs blob-list materialization (reuse the Phase 3 store as the
+    CAS). Cache-key derivation already works for it via
+    `PreprocessLocal`; only the staging side is open. (SharedRoot
+    mode was scoped earlier and dropped.)
+24. **Client-side mode selection** — `dispatch.Dispatch` always
+    preprocesses locally and sends `SourceMode_PREPROCESSED`. Once
+    CAS staging exists on the worker, the daemon needs to pick a mode
+    (config + per-job heuristics), call `RewritePathPrefix` for CAS,
+    and populate the matching `RemoteDescriptor` oneof. The rewrite
+    helpers exist (`internal/compiler/rewrite.go`); they have no
+    caller for the non-PREPROCESSED mode yet.
+25. `internal/cache/store/s3.go` — S3-compatible remote store
+    (Phase 3). The worker's `[[cache]]` section already routes through
+    `cache/store.FromConfig`, so the new backend slots in there.
+26. **Worker descriptor-sourced cache-key strategy** — currently
+    hardcoded to `PreprocessLocal` plus the precomputed-digest
+    short-circuit. As source modes evolve (CAS digests as direct
+    inputs, optional client-supplied keys) the worker's
+    `compileContext` should pick its strategy from
+    `descriptor.source_mode`.
+27. Polish: `hpcc inspect`, `hpcc explain`, local-cache LRU eviction
+    under `max_size`, Prometheus endpoints on daemon / worker /
+    scheduler, per-build summary.
+28. **Rootfs extraction hardening (§4.14)** —
+    `internal/worker/image/rootfs/rootfs.go` currently shells out to
+    `tar -xpf` and `mkfs.ext4 -d` on attacker-controlled OCI image
+    bytes. The mkfs side is narrow; the tar side has well-known
+    structural attack vectors (traversal, symlink racing, hardlinks
+    to host paths, suid escalation under staging, device-node
+    creation, tar bombs) whose mitigation today is "modern GNU tar's
+    defaults are mostly OK." Plan: (a) document tmpfs +
+    `nosuid,nodev,noexec` for the rootfs cache parent as a
+    deployment requirement; (b) cap extracted size against a
+    configured ceiling; (c) replace the `tar` shell-out with a
+    Go-native extractor along the lines of containerd's snapshotter
+    — explicit traversal/symlink/hardlink validation, optional suid
+    stripping, no foreign tar implementation in the trust boundary.
+    Required before this lands in a regulated-environment
+    deployment.

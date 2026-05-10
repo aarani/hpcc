@@ -1,4 +1,4 @@
-package internal
+package config
 
 import (
 	"errors"
@@ -16,6 +16,39 @@ import (
 type Config struct {
 	PreprocessingMode enum.PreprocessingMode `toml:"preprocessing_mode"`
 	Caches            []CacheConfig          `toml:"cache"`
+	Remote            RemoteConfig           `toml:"remote"`
+}
+
+// RemoteConfig drives the daemon's distributed-compile path. When
+// Enabled is false (the default) the daemon stays local. When true,
+// each compile request is routed through the scheduler to a worker;
+// failures fall back to local execution with a warning.
+type RemoteConfig struct {
+	Enabled     bool            `toml:"enabled"`
+	TenantID    string          `toml:"tenant_id"`
+	ImageRef    string          `toml:"image_ref"`
+	ImageDigest string          `toml:"image_digest"`
+	Scheduler   SchedulerConfig `toml:"scheduler"`
+	OAuth       OAuthConfig     `toml:"oauth"`
+}
+
+// SchedulerConfig is the dial info for the scheduler gRPC endpoint.
+// CAFile is optional — if empty, the system trust store is used.
+type SchedulerConfig struct {
+	URL    string `toml:"url"`
+	CAFile string `toml:"ca_file"`
+}
+
+// OAuthConfig holds the bits needed to do an OAuth2 password grant
+// against the IdP that fronts the scheduler. Password grant is chosen
+// for headless usability — no browser redirect required.
+type OAuthConfig struct {
+	TokenURL     string `toml:"token_url"`
+	ClientID     string `toml:"client_id"`
+	ClientSecret string `toml:"client_secret"`
+	Username     string `toml:"username"`
+	Password     string `toml:"password"`
+	Scope        string `toml:"scope"`
 }
 
 // CacheConfig describes a single cache backend. The Type field selects

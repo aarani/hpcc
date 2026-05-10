@@ -1,10 +1,6 @@
 package compiler
 
 import (
-	"bytes"
-	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/zeebo/blake3"
@@ -25,34 +21,19 @@ type PreprocessResult struct {
 	ExitCode int
 }
 
-// runCompilerCmd is the low-level exec helper: runs bin with args, captures
-// stdout and stderr separately, and returns the compiler's exit code as
-// data (not as a Go error). A non-nil err means hpcc itself couldn't run
-// the binary. Working directory is inherited; extraEnv is appended to the
-// parent process env (use it for things like VSLANG=1033).
-func runCompilerCmd(bin string, args, extraEnv []string) (stdout, stderr []byte, exitCode int, err error) {
-	var so, se bytes.Buffer
-	cmd := exec.Command(bin, args...)
-	cmd.Stdout = &so
-	cmd.Stderr = &se
-	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
-	}
-	err = cmd.Run()
-	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			return so.Bytes(), se.Bytes(), ee.ExitCode(), nil
-		}
-		return so.Bytes(), se.Bytes(), -1, fmt.Errorf("run %q: %w", bin, err)
-	}
-	return so.Bytes(), se.Bytes(), 0, nil
+// runCompilerCmd dispatches bin+args+extraEnv via the given Executor.
+// Thin wrapper kept so call sites read uniformly across the package; the
+// real work lives in the Executor implementation (LocalExecutor for the
+// host path, a Task.Exec-backed executor on the worker side).
+func runCompilerCmd(e Executor, bin string, args, extraEnv []string) (stdout, stderr []byte, exitCode int, err error) {
+	return e.Run(bin, args, extraEnv)
 }
 
-// runPreprocessor invokes bin with args, capturing preprocessed source
-// (stdout), stderr, and exit code. The BLAKE3-256 digest of the source is
-// computed once during this call.
-func runPreprocessor(bin string, args []string) (*PreprocessResult, error) {
-	stdout, stderr, exitCode, err := runCompilerCmd(bin, args, nil)
+// runPreprocessor invokes bin with args via the given Executor, capturing
+// preprocessed source (stdout), stderr, and exit code. The BLAKE3-256
+// digest of the source is computed once during this call.
+func runPreprocessor(e Executor, bin string, args []string) (*PreprocessResult, error) {
+	stdout, stderr, exitCode, err := runCompilerCmd(e, bin, args, nil)
 	if err != nil {
 		return nil, err
 	}

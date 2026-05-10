@@ -1,0 +1,76 @@
+# hpcc client config — copy to ~/.config/hpcc/config.toml or set
+# HPCC_CONFIG=<path>. Loaded by `hpcc start` (the daemon) and by every
+# in-process invocation when no daemon is running.
+#
+# All keys are optional; missing keys take the defaults shown here.
+# Companion configs in this directory: worker.toml, scheduler.toml.
+
+# How preprocessing happens before cache-key computation:
+#   "local"  — client runs the preprocessor, ships preprocessed bytes.
+#              Slow but works in any environment.
+#   "remote" — client only enumerates the dep closure (`-M` / /showIncludes)
+#              and the worker preprocesses. Faster, requires the worker
+#              to have a matching toolchain.
+preprocessing_mode = "local"
+
+# Cache backends. Multiple [[cache]] blocks may be specified; they are
+# checked in order. Each block requires a `type` key; the remaining keys
+# are type-specific.
+#
+# Supported types:
+#   "disk" — local filesystem cache.
+#     location — directory to store cached objects.
+#     max_size — upper size limit (e.g. "10G", "500M"). When exceeded
+#                the oldest entries are evicted.
+
+[[cache]]
+type     = "disk"
+location = "/tmp/hpcc"
+max_size = "10G"
+
+# # Uncomment to add a second disk cache (e.g. a larger, slower volume):
+# [[cache]]
+# type     = "disk"
+# location = "/mnt/storage/hpcc"
+# max_size = "50G"
+
+# # Uncomment to enable an S3-compatible remote cache. Works with AWS S3,
+# # MinIO, R2, GCS via the S3-compat layer, etc. Region is optional when
+# # using AWS endpoints; required when pointing at a custom endpoint.
+# # access_key/secret_key are optional too — leave empty to use the AWS
+# # credential chain (env, ~/.aws, instance profile).
+# [[cache]]
+# type       = "s3"
+# bucket     = "hpcc-cache"
+# region     = "auto"
+# endpoint   = "http://localhost:9000"   # MinIO or other S3-compatible URL
+# max_size   = "10G"
+# access_key = "testuser"
+# secret_key = "testpassword"
+
+# Distributed compilation. When `enabled = true`, the daemon routes each
+# compile through the scheduler to a worker; on any failure (network,
+# auth, scheduler unreachable) it falls back to local execution and
+# prints a red warning to stderr so the user knows. Leave omitted or
+# `enabled = false` to keep the daemon local-only.
+#
+# In paranoid mode, simply omit all [[cache]] blocks above — the daemon
+# then never reads or writes a local cache and every miss goes remote.
+#
+# [remote]
+# enabled      = true
+# tenant_id    = "team-foo"
+# image_ref    = "ghcr.io/example/toolchain@sha256:abc..."
+# image_digest = "sha256:abc..."
+#
+# [remote.scheduler]
+# url     = "scheduler.example.com:9091"
+# ca_file = "/etc/hpcc/scheduler-ca.pem"  # optional; system trust store if empty
+#
+# [remote.oauth]
+# token_url     = "https://idp.example.com/oauth/token"
+# client_id     = "hpcc-client"
+# client_secret = "..."
+# username      = "alice"
+# password      = "..."
+# scope         = "hpcc"

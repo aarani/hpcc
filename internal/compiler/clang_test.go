@@ -27,7 +27,7 @@ func writeSource(t *testing.T, dir, name, src string) string {
 
 func TestClangInvoke_compilesToObject(t *testing.T) {
 	clangPath := clangAvailable(t)
-	c := &clangCompiler{name: "clang", path: clangPath}
+	c := &clangCompiler{name: "clang", path: clangPath, exec: LocalExecutor{}}
 
 	dir := t.TempDir()
 	src := writeSource(t, dir, "hello.c", "int main(void) { return 0; }\n")
@@ -56,7 +56,7 @@ func TestClangInvoke_compilesToObject(t *testing.T) {
 
 func TestClangInvoke_capturesCompileError(t *testing.T) {
 	clangPath := clangAvailable(t)
-	c := &clangCompiler{name: "clang", path: clangPath}
+	c := &clangCompiler{name: "clang", path: clangPath, exec: LocalExecutor{}}
 
 	dir := t.TempDir()
 	src := writeSource(t, dir, "bad.c", "this is not valid C;\n")
@@ -85,7 +85,7 @@ func TestClangInvoke_capturesCompileError(t *testing.T) {
 
 func TestClangInvoke_stdoutPassthrough(t *testing.T) {
 	clangPath := clangAvailable(t)
-	c := &clangCompiler{name: "clang", path: clangPath}
+	c := &clangCompiler{name: "clang", path: clangPath, exec: LocalExecutor{}}
 
 	dir := t.TempDir()
 	src := writeSource(t, dir, "asm.c", "int x = 42;\n")
@@ -109,7 +109,7 @@ func TestClangInvoke_stdoutPassthrough(t *testing.T) {
 
 func TestClangIdentity_deterministic(t *testing.T) {
 	clangPath := clangAvailable(t)
-	c := &clangCompiler{name: "clang", path: clangPath}
+	c := &clangCompiler{name: "clang", path: clangPath, exec: LocalExecutor{}}
 
 	id1, err := c.Identity()
 	if err != nil {
@@ -128,7 +128,7 @@ func TestClangIdentity_deterministic(t *testing.T) {
 }
 
 func TestClangIdentity_missingBinary(t *testing.T) {
-	c := &clangCompiler{name: "clang", path: "/no/such/clang"}
+	c := &clangCompiler{name: "clang", path: "/no/such/clang", exec: LocalExecutor{}}
 	_, err := c.Identity()
 	if err == nil {
 		t.Error("expected error for missing binary")

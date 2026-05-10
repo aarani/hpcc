@@ -66,7 +66,7 @@ func (c *V1Cache) Lookup(inv *compiler.Invocation) (*compiler.InvocationResult, 
 	if len(c.stores) == 0 {
 		return nil, nil
 	}
-	key, err := inv.CacheKey(*c.ctx)
+	key, err := inv.CacheKey(c.ctx)
 	if err != nil {
 		return nil, fmt.Errorf("cache key: %w", err)
 	}
@@ -97,7 +97,7 @@ func (c *V1Cache) Store(inv *compiler.Invocation, res *compiler.InvocationResult
 	if len(c.stores) == 0 || res == nil {
 		return nil
 	}
-	key, err := inv.CacheKey(*c.ctx)
+	key, err := inv.CacheKey(c.ctx)
 	if err != nil {
 		return fmt.Errorf("cache key: %w", err)
 	}

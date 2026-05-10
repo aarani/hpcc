@@ -10,7 +10,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/aarani/hpcc/internal"
+	"github.com/aarani/hpcc/internal/config"
 )
 
 // DiskCacheStore is a content-addressable on-disk store. Each key maps
@@ -22,7 +22,7 @@ type DiskCacheStore struct {
 }
 
 func NewDiskCacheStore(dir string, maxSize string) (*DiskCacheStore, error) {
-	sz, err := internal.ParseSize(maxSize)
+	sz, err := config.ParseSize(maxSize)
 	if err != nil {
 		return nil, fmt.Errorf("disk cache max_size: %w", err)
 	}

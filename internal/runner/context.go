@@ -4,11 +4,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/aarani/hpcc/internal"
 	"github.com/aarani/hpcc/internal/cache"
 	"github.com/aarani/hpcc/internal/cache/store"
 	"github.com/aarani/hpcc/internal/compiler"
-	"github.com/aarani/hpcc/internal/enum"
+	"github.com/aarani/hpcc/internal/config"
 )
 
 // NewContext detects the requested compiler, loads the config (from the
@@ -26,13 +25,13 @@ import (
 func NewContext(compilerName string) (*compiler.Context, error) {
 	path := os.Getenv("HPCC_CONFIG")
 	if path == "" {
-		p, err := internal.DefaultConfigPath()
+		p, err := config.DefaultConfigPath()
 		if err != nil {
 			return nil, err
 		}
 		path = p
 	}
-	cfg, err := internal.LoadConfig(path)
+	cfg, err := config.LoadConfig(path)
 	if err != nil {
 		return nil, err
 	}
@@ -42,27 +41,12 @@ func NewContext(compilerName string) (*compiler.Context, error) {
 		return nil, fmt.Errorf("detect %q: %w", compilerName, err)
 	}
 
-	var stores []store.Store
-	for _, cacheCfg := range cfg.Caches {
-		switch cacheCfg.Type {
-		case enum.CacheDisk:
-			dc, err := store.NewDiskCacheStore(cacheCfg.Location, cacheCfg.MaxSize)
-			if err != nil {
-				return nil, fmt.Errorf("init disk cache: %w", err)
-			}
-			stores = append(stores, dc)
-		case enum.CacheS3:
-			ss, err := store.NewS3CacheStore(cacheCfg.Bucket, cacheCfg.MaxSize, cacheCfg.Region, cacheCfg.Endpoint, cacheCfg.AccessKey, cacheCfg.SecretKey)
-			if err != nil {
-				return nil, fmt.Errorf("init s3 cache: %w", err)
-			}
-			stores = append(stores, ss)
-		default:
-			return nil, fmt.Errorf("unsupported cache type %q", cacheCfg.Type)
-		}
+	stores, err := store.FromConfig(cfg.Caches)
+	if err != nil {
+		return nil, err
 	}
 
-	ctx := &compiler.Context{Compiler: c, Config: cfg}
+	ctx := &compiler.Context{Compiler: c, Config: &cfg}
 	ctx.Cache = cache.NewV1Cache(ctx, stores)
 	return ctx, nil
 }

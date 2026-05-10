@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package protocol;
+
+option go_package = "./gen";
+
+enum RuntimeType {
+  FIRECRACKER = 0;
+  HYPERV = 1;
+  // DANGEROUS runs every compile as a child of the worker process with
+  // no isolation at all — selected by the "really_really_dangerous"
+  // runtime handler. Development and CI/test only.
+  DANGEROUS = 2;
+}
+
+enum VMState {
+  RUNNING = 0;
+  SNAPSHOTTED = 1;
+  BOOTING = 2;
+}
+
+enum SourceMode {
+  // Proto3 requires a zero-valued enumerator; UNSPECIFIED catches
+  // unset/legacy fields so they don't collide with a real mode.
+  SOURCE_MODE_UNSPECIFIED = 0;
+  CAS = 1;           // worker pulls blobs from shared store
+  PREPROCESSED = 2;  // client ships preprocessed bytes
+}

@@ -16,10 +16,15 @@ import (
 func Detect(argv0 string) (Compiler, error) {
 	name := normalizeName(argv0)
 	switch name {
-	case "clang", "clang++":
-		return &clangCompiler{name: name, path: argv0}, nil
+	case "clang", "clang++", "cc", "c++":
+		// cc and c++ are the POSIX-named drivers — on Linux they're
+		// usually GCC, on macOS they're Apple Clang. Either way the
+		// argument grammar is GNU-flavored, which is all the wrapper
+		// needs to know; the actual binary on PATH is what runs the
+		// compile.
+		return &clangCompiler{name: name, path: argv0, exec: LocalExecutor{}}, nil
 	case "cl":
-		return &clCompiler{name: name, path: argv0}, nil
+		return &clCompiler{name: name, path: argv0, exec: LocalExecutor{}}, nil
 	}
 	return nil, fmt.Errorf("unknown compiler %q", argv0)
 }

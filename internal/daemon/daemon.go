@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/binary"
@@ -18,7 +19,9 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/aarani/hpcc/internal/compiler"
+	"github.com/aarani/hpcc/internal/config"
 	"github.com/aarani/hpcc/internal/daemon/client"
+	"github.com/aarani/hpcc/internal/daemon/dispatch"
 	"github.com/aarani/hpcc/internal/runner"
 	"google.golang.org/protobuf/proto"
 
@@ -26,13 +29,40 @@ import (
 )
 
 type DefaultDaemon struct {
-	Contexts  sync.Map
-	AuthToken string
-	compiles  singleflight.Group
+	Contexts   sync.Map
+	AuthToken  string
+	dispatcher *dispatch.Dispatcher
+	compiles   singleflight.Group
 }
 
+// NewDefaultDaemon loads the daemon's config and, if remote dispatch is
+// enabled, prepares a Dispatcher. Failures to construct the dispatcher
+// are logged but non-fatal — the daemon can still run as a local cache
+// while the operator fixes the remote config.
 func NewDefaultDaemon() *DefaultDaemon {
-	return &DefaultDaemon{Contexts: sync.Map{}}
+	d := &DefaultDaemon{Contexts: sync.Map{}}
+
+	cfgPath := os.Getenv("HPCC_CONFIG")
+	if cfgPath == "" {
+		if p, err := config.DefaultConfigPath(); err == nil {
+			cfgPath = p
+		}
+	}
+	cfg, err := config.LoadConfig(cfgPath)
+	if err != nil {
+		log.Printf("daemon: load config: %v (continuing without remote dispatch)", err)
+		return d
+	}
+	if cfg.Remote.Enabled {
+		dp, err := dispatch.New(cfg.Remote)
+		if err != nil {
+			log.Printf("daemon: init remote dispatcher: %v (continuing local-only)", err)
+		} else {
+			d.dispatcher = dp
+			log.Printf("daemon: remote dispatch enabled (scheduler=%s)", cfg.Remote.Scheduler.URL)
+		}
+	}
+	return d
 }
 
 func setRunningDaemon(token string, port int) error {
@@ -228,7 +258,7 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 
 	log.Printf("compile: %s -> %s", cmd, inv.Output)
 
-	hash, hashErr := inv.ComputeHash(*context)
+	hash, hashErr := inv.ComputeHash(context)
 
 	compile := func() (any, error) {
 		result, lookupErr := context.Cache.Lookup(inv)
@@ -237,9 +267,25 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 			return result, nil
 		}
 		log.Printf("compile: %s cache miss, invoking compiler", inv.Output)
+
+		var fallbackWarning []byte
+		if d.dispatcher != nil {
+			remoteResult, remoteErr := d.dispatcher.Dispatch(context_pkgContext(), context.Compiler, inv)
+			if remoteErr == nil {
+				log.Printf("compile: %s served remotely (exit=%d)", inv.Output, remoteResult.ExitCode)
+				_ = context.Cache.Store(inv, remoteResult)
+				return remoteResult, nil
+			}
+			log.Printf("compile: %s remote dispatch failed: %v (falling back to local)", inv.Output, remoteErr)
+			fallbackWarning = redWarning(remoteErr)
+		}
+
 		result, err := context.Compiler.Invoke(inv)
 		if err != nil {
 			return nil, err
+		}
+		if len(fallbackWarning) > 0 {
+			result.Stderr = append(append([]byte{}, fallbackWarning...), result.Stderr...)
 		}
 		_ = context.Cache.Store(inv, result)
 		return result, nil
@@ -285,6 +331,26 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 	if err := d.writeResponse(conn, writeMu, marshalled); err != nil {
 		log.Println(fmt.Errorf("write: %w", err))
 	}
+}
+
+// context_pkgContext returns a context for remote-dispatch RPCs. Kept
+// as a function (rather than a parent context plumbed through
+// handleRequest) so the rest of the daemon's connection lifecycle —
+// which predates the dispatcher — doesn't need rethreading. Detached
+// from the connection: a slow remote compile shouldn't be cancelled
+// just because the client connection blipped.
+func context_pkgContext() context.Context {
+	return context.Background()
+}
+
+// redWarning formats a one-line ANSI-red note explaining that the
+// remote compile failed and we fell back to local. Sent through the
+// CompileResponse's stderr so the client process prints it to the
+// user's terminal.
+func redWarning(err error) []byte {
+	const reset = "\033[0m"
+	const red = "\033[31m"
+	return []byte(red + "hpcc: remote dispatch failed (" + err.Error() + "); compiled locally" + reset + "\n")
 }
 
 func (d *DefaultDaemon) Run(force bool) error {

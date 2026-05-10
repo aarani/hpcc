@@ -1,0 +1,83 @@
+# hpcc worker config — copy to ~/.config/hpcc/worker.toml.
+# Loaded by `hpcc worker`.
+#
+# The worker dials the scheduler with a static `worker_token` (the same
+# value must appear in scheduler.toml under `[auth] worker_token`),
+# registers itself, then serves Compile RPCs that client daemons send
+# directly. The hot path (compile bytes) never touches the scheduler.
+
+# gRPC listen address for incoming Compile RPCs.
+listen = ":9092"
+
+# Identity advertised to clients (after scheduler routing). Clients dial
+# this address, so it must be reachable from wherever they run. Empty
+# `worker_id` auto-generates one at startup; persist it across restarts
+# only if you care about stable identity in audit logs.
+public_addr = "worker-1.internal:9092"
+worker_id   = ""
+
+# Paranoid mode mirrors the scheduler-side flag: clients never carry a
+# cache, the worker is the sole reader/writer. If you set this, also
+# define at least one [[cache]] block below.
+paranoid = false
+
+# TLS for the Compile gRPC server. The scheduler records the SHA-256
+# of cert_file at registration and hands that fingerprint to clients,
+# which pin against it on dial — so a self-signed cert is fine.
+[tls]
+cert_file = "/etc/hpcc/worker.crt"
+key_file  = "/etc/hpcc/worker.key"
+
+# Scheduler link. The worker_token is a shared secret with the
+# scheduler; rotate by editing both sides and bouncing the worker.
+[scheduler]
+url          = "scheduler.internal:9091"
+worker_token = "replace-with-a-long-random-string"
+ca_file      = ""  # optional; pin the scheduler's CA cert (PEM)
+
+# Container runtime. Linux drives Firecracker directly via jailer;
+# Windows uses the Hyper-V runhcs shim (not implemented yet). Use
+# "really_really_dangerous" in dev to skip isolation entirely.
+[runtime]
+handler = "firecracker"   # or "runhcs-wcow-hypervisor" / "really_really_dangerous"
+
+# Required when handler = "firecracker". Every microVM boots the
+# kernel_image hpcc provides (not the user image's), with the prepared
+# ext4 rootfs from rootfs_dir attached as /dev/vda. jailer chroots
+# firecracker into <run_dir>/firecracker/<vm-id>/root/ and drops to
+# uid/gid before exec.
+[runtime.firecracker]
+firecracker_bin = "/usr/bin/firecracker"
+jailer_bin      = "/usr/bin/jailer"
+kernel_image    = "/var/lib/hpcc/vmlinux"
+rootfs_dir      = "/var/lib/hpcc/rootfs"
+run_dir         = "/srv/jailer"
+uid             = 1000
+gid             = 1000
+# boot_args     = "console=ttyS0 reboot=k panic=1 pci=off init=/.hpcc/agent root=/dev/vda ro"
+
+# Per-tenant microVM sizing. The worker's total compile budget is
+# pool.max_active * vm.vcpus concurrent in-flight compiles.
+[vm]
+memory          = "2GB"
+vcpus           = 4
+idle_timeout    = "10m"   # reap a tenant VM after this much idleness
+session_timeout = "8h"    # hard cap on a tenant VM's lifetime
+
+[pool]
+max_active = 32   # upper bound on concurrent per-tenant VMs
+
+# Optional: pre-built pause binaries on disk. Empty → use the binaries
+# embedded at build time (built from /pause).
+# [image]
+# pause_linux_amd64   = "/var/lib/hpcc/pause-linux-amd64"
+# pause_linux_arm64   = "/var/lib/hpcc/pause-linux-arm64"
+# pause_windows_amd64 = "/var/lib/hpcc/pause-windows-amd64.exe"
+
+# Worker-side cache backends. Required when paranoid = true; in the
+# default mode this can be omitted and clients carry their own caches.
+# Schema is the same as the client's [[cache]] blocks.
+# [[cache]]
+# type     = "disk"
+# location = "/var/lib/hpcc/cache"
+# max_size = "100G"

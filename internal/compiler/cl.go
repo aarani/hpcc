@@ -11,8 +11,9 @@ import (
 )
 
 type clCompiler struct {
-	name string // always "cl"
-	path string // argv[0] as the user supplied it
+	name string   // always "cl"
+	path string   // argv[0] as the user supplied it
+	exec Executor // LocalExecutor by default; worker swaps in Task.Exec
 }
 
 func (c *clCompiler) Name() string        { return c.name }
@@ -26,7 +27,7 @@ func (c *clCompiler) Preprocess(inv *Invocation) (*PreprocessResult, error) {
 	// /nologo suppresses cl.exe's banner so preprocessed output stays clean.
 	// Harmless if the user already passed it.
 	args := append([]string{"/E", "/nologo"}, stripMSVCModeAndOutput(inv.RawArgs)...)
-	return runPreprocessor(c.path, args)
+	return runPreprocessor(c.exec, c.path, args)
 }
 
 func (c *clCompiler) FindDependencies(inv *Invocation) ([]string, error) {
@@ -37,7 +38,7 @@ func (c *clCompiler) FindDependencies(inv *Invocation) ([]string, error) {
 	// it's localized and the parser misses every line).
 	args := append([]string{"/E", "/showIncludes", "/nologo"},
 		stripMSVCModeAndOutput(inv.RawArgs)...)
-	_, stderr, exitCode, err := runCompilerCmd(c.path, args, []string{"VSLANG=1033"})
+	_, stderr, exitCode, err := runCompilerCmd(c.exec, c.path, args, []string{"VSLANG=1033"})
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +52,7 @@ func (c *clCompiler) FindDependencies(inv *Invocation) ([]string, error) {
 
 func (c *clCompiler) Invoke(inv *Invocation) (*InvocationResult, error) {
 	start := time.Now()
-	stdout, stderr, exitCode, err := runCompilerCmd(c.path, inv.RawArgs, nil)
+	stdout, stderr, exitCode, err := runCompilerCmd(c.exec, c.path, inv.RawArgs, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -62,13 +63,18 @@ func (c *clCompiler) Invoke(inv *Invocation) (*InvocationResult, error) {
 		Duration: time.Since(start),
 	}
 	if inv.Output != "" && exitCode == 0 {
-		data, err := os.ReadFile(inv.Output)
+		data, err := c.exec.ReadOutput(inv.Output)
 		if err != nil {
 			return nil, fmt.Errorf("read output %q: %w", inv.Output, err)
 		}
 		result.Output = data
 	}
 	return result, nil
+}
+
+func (c *clCompiler) RewriteForPreprocessed(inv *Invocation, srcPath string) (*Invocation, error) {
+	langFlag := msvcPreprocessedLanguage(inv)
+	return rewriteMSVCForPreprocessed(inv, srcPath, langFlag), nil
 }
 
 func (c *clCompiler) Identity() ([]byte, error) {

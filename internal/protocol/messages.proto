@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package protocol;
+
+option go_package = "./gen";
+
+import "enums.proto";
+
+message AuthRequest {
+  oneof token {
+    string jwt_token = 1;
+    string static_token = 2;
+  }
+}
+
+message AuthResponse {
+  bool success = 1;
+  string session_token = 2;      // pass as "session-token" gRPC metadata on subsequent calls
+  optional bytes signing_public_key = 3;  // scheduler's public key for verifying task JWTs (workers only)
+}
+
+message RouteRequest {
+  string session_token = 1;
+  string tenant_id = 2;
+  string image_digest = 3;
+}
+
+message RouteResponse {
+  string worker_address = 1;
+  string token = 2;              // JWT signed by scheduler; worker verifies signature
+  bytes cert_fingerprint = 3;    // SHA-256 of worker's TLS cert, for client-side pinning
+}
+
+message RegisterWorkerRequest {
+  string session_token = 1;
+  string worker_id = 2;
+  string public_addr = 3;
+  repeated string image_digests = 4;
+  int32 available_vcpus = 5;
+  int32 current_load = 6;
+  RuntimeType runtime = 7;
+  bytes cert_fingerprint = 8;
+}
+
+message RegisterWorkerResponse {
+  bool success = 1;
+  uint32 error_code = 2;
+}
+
+message WorkerHeartbeat {
+  string session_token = 1;
+  string worker_id = 2;
+  int32 available_vcpus = 3;
+  int32 current_load = 4;
+  repeated ActiveVM active_vms = 5;
+}
+
+message ActiveVM {
+  string vm_id = 1;
+  string tenant_id = 2;
+  string image_digest = 3;
+  VMState state = 4;
+}
+
+message HeartbeatResponse {}

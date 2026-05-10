@@ -1,0 +1,47 @@
+# hpcc scheduler config — copy to ~/.config/hpcc/scheduler.toml.
+# Loaded by `hpcc scheduler`.
+#
+# The scheduler is a route-only lookup service: workers register +
+# heartbeat to it, clients call Route(tenant, image_digest) to get a
+# worker address + a short-lived JWT. Compile bytes never traverse
+# the scheduler.
+
+# gRPC listen address.
+listen = ":9091"
+
+# TLS for the gRPC server. Both clients and workers dial scheduler over
+# TLS; the CA must be reachable on their side (or pinned via ca_file in
+# their respective configs).
+[tls]
+cert_file = "/etc/hpcc/scheduler.crt"
+key_file  = "/etc/hpcc/scheduler.key"
+
+# Authentication.
+#
+# - `worker_token` is the shared static token workers present at
+#   `Authenticate`. Must be the same string set in worker.toml under
+#   `[scheduler] worker_token`. Min length 16.
+# - `[jwks]` is the OIDC discovery surface for verifying user tokens
+#   (issued by your IdP and presented by the client daemon). The
+#   scheduler enforces both `iss` and `aud` claims.
+[auth]
+worker_token = "replace-with-a-long-random-string"
+
+[auth.jwks]
+url      = "https://idp.example.com/.well-known/jwks.json"
+issuer   = "https://idp.example.com/"
+audience = "hpcc-scheduler"
+
+# Routing knobs.
+#
+# - `sticky_tenants` biases routing so identical (tenant, image_digest)
+#   pairs land on the worker that already has a warm VM for them.
+#   Turning this off spreads load more evenly at the cost of cold-start
+#   latency on every dispatch.
+[routing]
+sticky_tenants = true
+
+# Paranoid mode (§4.13). Only meaningful as a deployment-wide flag —
+# both scheduler and workers must agree. When set, clients never carry
+# a cache and the worker is the sole reader/writer.
+paranoid = false

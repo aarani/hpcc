@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/aarani/hpcc/internal"
+	"github.com/aarani/hpcc/internal/config"
 	"github.com/aarani/hpcc/internal/runner"
 	"github.com/spf13/cobra"
 )
@@ -26,7 +26,7 @@ older than a duration. Both flags can be combined.`,
 
 		var maxSize int64
 		if maxSizeStr != "" {
-			sz, err := internal.ParseSize(maxSizeStr)
+			sz, err := config.ParseSize(maxSizeStr)
 			if err != nil {
 				return fmt.Errorf("--max-size: %w", err)
 			}
