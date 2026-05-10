@@ -1,6 +1,49 @@
-# hpcc
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
+    <img alt="hpcc — vault cube mark" src="docs/logo.svg" width="200" height="200">
+  </picture>
+  <br />
+  hpcc
+</h1>
 
-**A distributed compiler cache that a bank's security team will actually approve.**
+<p align="center">
+  <strong>A distributed compiler cache that a regulated security team will actually approve.</strong>
+  <br />
+  <em>Sandboxed remote compilation · per-tenant KVM boundary · auditable by row.</em>
+</p>
+
+<p align="center">
+  <a href="https://github.com/aarani/hpcc/actions/workflows/suite.yml"><img alt="Build &amp; Test Suite" src="https://github.com/aarani/hpcc/actions/workflows/suite.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/aarani/hpcc/blob/main/LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg"></a>
+  <a href="https://go.dev/"><img alt="Go 1.26+" src="https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go&amp;logoColor=white"></a>
+  <a href="https://goreportcard.com/report/github.com/aarani/hpcc"><img alt="Go Report Card" src="https://goreportcard.com/badge/github.com/aarani/hpcc"></a>
+  <a href="https://pkg.go.dev/github.com/aarani/hpcc"><img alt="Go Reference" src="https://pkg.go.dev/badge/github.com/aarani/hpcc.svg"></a>
+  <a href="https://hpcc.dev"><img alt="hpcc.dev" src="https://img.shields.io/badge/site-hpcc.dev-0e1014"></a>
+</p>
+
+---
+
+## Quick start
+
+```sh
+git clone https://github.com/aarani/hpcc.git
+cd hpcc && go build && go install
+
+# wrap a compiler invocation
+hpcc wrap cc -c hello.c -o hello.o
+
+# or wire into a Makefile
+make CC="hpcc wrap cc" CXX="hpcc wrap c++"
+
+# start the daemon (foreground; supervise with systemd / launchd)
+hpcc start
+```
+
+See [`docs/plan.md`](docs/plan.md) for the full design and roadmap, and
+[`docs/client.toml`](docs/client.toml) /
+[`docs/scheduler.toml`](docs/scheduler.toml) /
+[`docs/worker.toml`](docs/worker.toml) for example configs.
 
 ---
 
@@ -11,8 +54,9 @@
 **the worker is trusted shared-kernel infrastructure.**
 
 That assumption is where the conversation ends in a regulated enterprise.
-Bank security review isn't asking *"is namespace isolation technically
-sufficient?"* — they're asking *"is this a boundary auditors recognize?"*
+A regulated security review isn't asking *"is namespace isolation
+technically sufficient?"* — they're asking *"is this a boundary auditors
+recognize?"*
 A bwrap sandbox is not. A KVM boundary is.
 
 hpcc is built on a different assumption: **the worker is hostile-by-default,
@@ -25,7 +69,7 @@ multi-tenant, and on the audit trail.**
   wrong direction). Separate kernel, KVM boundary; the VM stays warm across
   compiles, snapshotted on idle timeout. **gVisor was considered and
   rejected:** it's a userspace kernel intercepting syscalls, not the
-  kernel+KVM boundary a bank security review actually recognises. No
+  kernel+KVM boundary a regulated security review actually recognises. No
   competing OSS distributed compiler ships hardware-virtualised
   per-tenant isolation — sccache-dist runs bwrap, distcc runs nothing.
 - **The VM has no NIC.** There is no exfiltration argument to have, because
@@ -42,7 +86,7 @@ multi-tenant, and on the audit trail.**
   inside the VM. Byte-identical outputs by default, not by ceremony.
 - **Per-job audit row** — `(image_digest, source_digest, flags, output_digest,
   tenant, worker, vm, duration, exit)` — reproducible from a single line.
-  This is the table format banks want to see.
+  This is the table format regulated audit teams want to see.
 - **Structured miss explanations.** `hpcc explain <file>` names *which
   header* or *which flag* changed. Not a debug log you have to grep.
 - **Per-call zstd on the wire.** Preprocessed C++ compresses 5–10×; this is

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 64 64" fill="none" role="img" aria-label="hpcc — vault cube">
+  <!-- outer iso cube wireframe -->
+  <g stroke="#f6f4ee" stroke-opacity="0.6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" fill="none">
+    <path d="M32 6 L56 19 L56 45 L32 58 L8 45 L8 19 Z" />
+    <path d="M32 6 L32 32 M8 19 L32 32 M56 19 L32 32" />
+  </g>
+  <!-- inner solid cube — top / left / right faces -->
+  <g fill="#f6f4ee">
+    <path d="M32 22 L44 28.5 L32 35 L20 28.5 Z" />
+    <path d="M20 28.5 L32 35 L32 48 L20 41.5 Z" opacity="0.82" />
+    <path d="M44 28.5 L32 35 L32 48 L44 41.5 Z" opacity="0.66" />
+  </g>
+</svg>
