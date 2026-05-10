@@ -23,13 +23,14 @@ multi-tenant, and on the audit trail.**
   for something whose value proposition is "this lives in regulated
   environments for years," depending on unmaintained orchestration is the
   wrong direction). Separate kernel, KVM boundary; the VM stays warm across
-  compiles and is snapshotted on idle timeout. **gVisor was considered and
+  compiles, snapshotted on idle timeout. **gVisor was considered and
   rejected:** it's a userspace kernel intercepting syscalls, not the
   kernel+KVM boundary a bank security review actually recognises. No
   competing OSS distributed compiler ships hardware-virtualised
   per-tenant isolation — sccache-dist runs bwrap, distcc runs nothing.
 - **The VM has no NIC.** There is no exfiltration argument to have, because
-  there is no network device. Full stop.
+  there is no network device. Full stop. The host↔guest channel is one
+  vsock device carrying a single bidirectional gRPC stream.
 - **The container image digest *is* the toolchain identity.** No "hash the
   gcc binary" dance. 50 developers sharing one image produce one cache
   bucket; CI and laptops cannot silently diverge.
@@ -70,7 +71,7 @@ Full plan in [docs/plan.md](docs/plan.md).
 |-------|-------------|--------|
 | [Phase 1](docs/plan.md#phase-1-core-compiler-wrapping) | Core Compiler Wrapping | Done |
 | [Phase 2](docs/plan.md#phase-2-daemon-architecture) | Daemon Architecture | Done |
-| [Phase 3](docs/plan.md#phase-3-remote-cache) | Remote Cache (S3) | Not started |
+| [Phase 3](docs/plan.md#phase-3-remote-cache) | Remote Cache (S3) | Done |
 | [Phase 4](docs/plan.md#phase-4-distributed-compilation-in-per-tenant-vms) | Distributed Compilation in Per-Tenant Firecracker VMs | In progress |
 | [Phase 5](docs/plan.md#phase-5-observability--polish) | Observability & Polish | Not started |
 
@@ -86,37 +87,52 @@ path), in-flight deduplication by cache key, daemon-down fallback.
 `hpcc start` runs the daemon in the foreground; lifecycle is managed by
 the user's terminal or a process supervisor (systemd, launchd, etc.).
 
-### Phase 3 — Remote Cache
+### Phase 3 — Remote Cache ✅
 S3-compatible blob store as a `Store` implementation (AWS S3, MinIO, R2,
-GCS-via-S3). Multi-tier lookup with backfill, configurable timeouts, AWS
-credential chain. No custom server binary.
+GCS-via-S3). Multi-tier lookup with backfill. Per-call timeouts (2s reads,
+5s writes, 30s lists), bounded body reads (1 GiB cap), watermark-gated
+eviction (full-bucket scan only fires when the in-memory size estimate
+overshoots `max_size` by 10%, instead of on every Put). All cache objects
+namespaced under a `cache/` prefix so the bucket can be shared with other
+tools without scan loops tripping on stray objects. Bucket auto-creation
+is opt-in via `auto_create = true` for local MinIO setups; production
+deployments leave it false. Standard AWS credential chain; no hpcc-specific
+auth layer.
 
 ### Phase 4 — Distributed Compilation in Per-Tenant VMs
-The differentiated phase. Raw Firecracker microVMs on Linux, driven directly
-by hpcc (Hyper-V-isolated containers via containerd + hcsshim on Windows,
-follow-up). One long-running VM per tenant session; per-compile work is
-dispatched as a single Exec into the VM — vsock RPC to a tiny in-VM
-`hpcc-agent` on Linux, `Task.Exec` via hcsshim on Windows. The user supplies
-an OCI image; the worker pulls + flattens it into an ext4 rootfs (Linux),
-injects the agent binary as PID 1 so the VM stays alive across compiles
-even for distroless/scratch images. We chose this over firecracker-containerd
-because that project has stagnated; we own a small image→rootfs pipeline
-and a one-method vsock agent in exchange for not depending on unmaintained
-infra. The KVM boundary, no-NIC story, and audit pitch are unchanged.
-Server-side preprocessing (`cas` / `preprocessed` modes). Route-only
-scheduler (returns a worker address + TLS trust info, never touches compile
+The differentiated phase. Raw Firecracker microVMs on Linux, driven
+directly by hpcc (Hyper-V-isolated containers via containerd + hcsshim
+on Windows, follow-up). One long-running VM per tenant session;
+per-compile work is dispatched as one gRPC bidi-streaming Exec call into
+the VM over vsock — header + input file chunks in, stdio + result + output
+file chunks back, all under a single `AgentService.Exec` stream. The user
+supplies an OCI image; the worker pulls + flattens it into an ext4 rootfs
+via `tar -xpf` + `mkfs.ext4 -d`, injects the agent binary as PID 1 so the
+VM stays alive across compiles even for distroless/scratch images. We
+chose this over firecracker-containerd because that project has
+stagnated; we own a small image→rootfs pipeline and a one-method gRPC
+agent in exchange for not depending on unmaintained infra. The KVM
+boundary, no-NIC story, and audit pitch are unchanged. Server-side
+preprocessing (`cas` / `preprocessed` modes). Route-only scheduler
+(returns a worker address + TLS trust info, never touches compile
 payloads); client dials the worker directly over gRPC with per-call zstd,
 scheduler-signed JWT auth, and cancellation. Per-job audit log.
 
 **Phase 4 status (today):** route-only scheduler, worker `Compile` RPC,
-per-tenant container pool, image→ext4 pipeline (with hardlink fallback for
-busybox/alpine/distroless), and Firecracker boot under jailer (hpcc-supplied
-kernel, prepared rootfs, no NIC) are working end-to-end against a CI test.
-Compiles still execute through the dev-only `really_really_dangerous`
-runtime (host exec, no isolation); wiring vsock + the in-VM `hpcc-agent`
-so Firecracker's `Exec` actually dispatches into the VM is the immediate
-next step. Per-RPC `/src` and `/out` drives, snapshot/restore on idle
-timeout, and the Windows hcsshim path land after that.
+per-tenant container pool with idle/session TTLs, image→ext4 pipeline,
+raw Firecracker driver under jailer (vsock device, no-NIC,
+`/proc/<pid>/root` reach for the namespace-isolated socket, lazy-unmount
+cleanup), in-VM `hpcc-agent` (separate Go module, PID-1 init + bidi gRPC
+over vsock), shared `proto/agent` module for the runner↔agent wire schema,
+and an integration suite that downloads firecracker + jailer, builds a
+real chainguard `gcc-glibc` rootfs, and compiles a C source end-to-end
+on a GitHub Actions Ubuntu runner. Compiles dispatched through the
+Firecracker runtime work end-to-end on Linux. Still open: VM
+snapshot/restore on idle (today the pool just keeps warm VMs in RAM),
+CAS-mode source staging on the worker (today only `PREPROCESSED` mode
+works end-to-end), the Windows hcsshim path, and the rootfs-extraction
+hardening tracked in §4.14 (Go-native tar reader replacing the
+`exec.Command("tar", ...)` shell-out).
 
 ### Phase 5 — Observability & Polish
 `hpcc inspect <hash>` and `hpcc explain <file>` with structured miss
@@ -128,8 +144,10 @@ and VM snapshots.
 
 ## Status
 
-Phases 1 and 2 are implemented. Phase 4 is in progress — the worker,
-scheduler, image→rootfs pipeline, and raw-Firecracker boot path are
-landed; the in-VM agent + vsock dispatch is the next chunk of work.
-Phase 3 (S3 remote cache) is unstarted and slots in alongside Phase 4
-without blocking it.
+Phases 1, 2, and 3 are implemented. Phase 4 is in progress: the Linux
+end-to-end remote compile path — scheduler routing, worker dispatch,
+image→rootfs build, raw-Firecracker boot, vsock + agent, real-gcc
+e2e — is landed and CI-tested. The remaining Phase 4 work is snapshot/
+restore for idle VMs, CAS-mode staging, the Windows backend, and the
+rootfs-extraction hardening called out as a v1 follow-up. Phase 5 is
+unstarted.
