@@ -39,13 +39,19 @@ type CacheConfig struct {
 	// Disk-specific fields.
 	Location string `toml:"location,omitempty"`
 	MaxSize  string `toml:"max_size,omitempty"`
-}
 
+	// S3-specific fields.
+	Bucket    string `toml:"bucket,omitempty"`
+	Region    string `toml:"region,omitempty"`
+	Endpoint  string `toml:"endpoint,omitempty"`
+	AccessKey string `toml:"access_key,omitempty"`
+	SecretKey string `toml:"secret_key,omitempty"`
+}
 // DefaultConfig returns the values used when no config file is present.
 func DefaultConfig() Config {
-	return Config{
-		PreprocessingMode: enum.PreprocessLocal,
-	}
+	// Default: no caches configured. Require explicit TOML `[[cache]]`
+	// entries to enable disk or S3 backends.
+	return Config{PreprocessingMode: enum.PreprocessLocal}
 }
 
 // DefaultConfigPath returns ~/.config/hpcc/config.toml on Unix and the

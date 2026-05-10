@@ -29,3 +29,13 @@ max_size = "10G"
 # type     = "disk"
 # location = "/mnt/storage/hpcc"
 # max_size = "50G"
+
+# # Uncomment to enable S3 cache
+# [[cache]]
+# type     = "s3"
+# bucket   = "hpcc-cache"
+# region   = "auto"            # optional for custom endpoints
+# endpoint = "http://localhost:9000" # MinIO or other S3-compatible URL
+# max_size = "10G"
+# access_key = "testuser"
+# secret_key = "testpassword"
