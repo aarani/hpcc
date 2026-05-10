@@ -51,6 +51,12 @@ func NewContext(compilerName string) (*compiler.Context, error) {
 				return nil, fmt.Errorf("init disk cache: %w", err)
 			}
 			stores = append(stores, dc)
+		case enum.CacheS3:
+			ss, err := store.NewS3CacheStore(cacheCfg.Bucket, cacheCfg.MaxSize, cacheCfg.Region, cacheCfg.Endpoint, cacheCfg.AccessKey, cacheCfg.SecretKey)
+			if err != nil {
+				return nil, fmt.Errorf("init s3 cache: %w", err)
+			}
+			stores = append(stores, ss)
 		default:
 			return nil, fmt.Errorf("unsupported cache type %q", cacheCfg.Type)
 		}
