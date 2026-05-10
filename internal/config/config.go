@@ -79,6 +79,13 @@ type CacheConfig struct {
 	Endpoint  string `toml:"endpoint,omitempty"`
 	AccessKey string `toml:"access_key,omitempty"`
 	SecretKey string `toml:"secret_key,omitempty"`
+
+	// AutoCreate, when true, has the worker attempt CreateBucket if
+	// the bucket isn't reachable at startup. Only sane for local
+	// MinIO/dev setups — in production the bucket is provisioned by
+	// infra and the worker shouldn't even hold CreateBucket IAM
+	// permissions. Default false.
+	AutoCreate bool `toml:"auto_create,omitempty"`
 }
 // DefaultConfig returns the values used when no config file is present.
 func DefaultConfig() Config {

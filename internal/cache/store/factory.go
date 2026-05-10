@@ -22,7 +22,27 @@ func FromConfig(cfgs []config.CacheConfig) ([]Store, error) {
 			}
 			stores = append(stores, ds)
 		case enum.CacheS3:
-			ss, err := NewS3CacheStore(c.Bucket, c.MaxSize, c.Region, c.Endpoint, c.AccessKey, c.SecretKey)
+			// Empty max_size is fine for S3 — means "no eviction,
+			// budget managed by S3 lifecycle policies or external
+			// tooling". DiskCache disagrees and requires an
+			// explicit limit; that asymmetry is intentional.
+			var maxSize int64
+			if c.MaxSize != "" {
+				sz, err := config.ParseSize(c.MaxSize)
+				if err != nil {
+					return nil, fmt.Errorf("init s3 cache for %q: max_size: %w", c.Bucket, err)
+				}
+				maxSize = sz
+			}
+			ss, err := NewS3CacheStore(S3Options{
+				Bucket:     c.Bucket,
+				Region:     c.Region,
+				Endpoint:   c.Endpoint,
+				AccessKey:  c.AccessKey,
+				SecretKey:  c.SecretKey,
+				MaxSize:    maxSize,
+				AutoCreate: c.AutoCreate,
+			})
 			if err != nil {
 				return nil, fmt.Errorf("init s3 cache for %q: %w", c.Bucket, err)
 			}
