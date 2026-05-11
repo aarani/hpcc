@@ -24,6 +24,9 @@
 
 ---
 
+> ⚠️ **Work in progress.** hpcc is under active development and has not been audited.
+> Do not rely on it for security-sensitive or production workloads yet.
+
 ## Quick start
 
 ```sh
