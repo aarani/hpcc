@@ -25,7 +25,10 @@ const preprocessedSourceName = "main.i"
 //
 //   - PREPROCESSED: write the inline preprocessed bytes to
 //     <srcDir>/main.i; allocate an empty <outDir> for artifacts.
-//   - CAS: not yet implemented.
+//
+// CAS mode (§4.5) was scoped but deferred; the proto reserves the wire
+// tags. Requests carrying SourceMode = 1 hit the default branch below
+// and are rejected as unknown.
 func (w *Worker) stageSource(req *gen.CompileRequest) (srcHostPath, outHostPath string, cleanup func(), err error) {
 	srcDir, err := os.MkdirTemp("", "hpcc-src-*")
 	if err != nil {
@@ -53,9 +56,6 @@ func (w *Worker) stageSource(req *gen.CompileRequest) (srcHostPath, outHostPath 
 			cleanup()
 			return "", "", nil, fmt.Errorf("write preprocessed source: %w", err)
 		}
-	case gen.SourceMode_CAS:
-		cleanup()
-		return "", "", nil, fmt.Errorf("source_mode=CAS not implemented")
 	default:
 		cleanup()
 		return "", "", nil, fmt.Errorf("unknown source_mode %v", req.Descriptor_.SourceMode)

@@ -73,10 +73,11 @@ Two modes, both supported:
 Run the compiler's preprocessor (`-E`) to resolve all `#include` directives and
 macros into a single translation unit. Hash the preprocessed output.
 
-**Manifest mode (faster, used by server-side preprocessing in Phase 4):**
+**Manifest mode (faster, originally scoped for §4.5 CAS-mode preprocessing):**
 Run dependency generation (`-M`/`-MM`) to discover the include closure. Hash
 `(source_digest + sorted_dep_digests + relevant_flags + toolchain_id)` without
 ever materializing preprocessed bytes. ccache's `depend_mode` is the reference.
+Not used in v1 — §4.5 ships PREPROCESSED-only.
 
 In both modes, the cache key incorporates:
 - **Toolchain identity**:
@@ -335,9 +336,6 @@ remote cache hit for the same file without compiling.
   - §4.2 snapshot/restore — today the pool just keeps warm VMs in RAM
     on idle; cold-restart on resume. Driving Firecracker directly
     means snapshot/restore is on the table; not yet wired.
-  - §4.5 CAS-mode source staging on the worker — only `PREPROCESSED`
-    works end-to-end. CAS needs blob-list materialization (reuse the
-    Phase 3 store as the CAS).
   - §4.1.1 Windows hcsshim path — runtime interface ready; backend
     not implemented.
   - §4.11 VM-crash reaping with scheduler reroute — partial today
@@ -585,10 +583,10 @@ the Firecracker VMM API:
   drives mounted at `/src` and `/out`. Replaced by inline file chunks
   carried over the agent's gRPC stream (§4.4.1): much simpler, no
   hot-attach dance, the agent stages bytes into its tmpfs and streams
-  outputs back. Tradeoff is memory pressure for huge include closures
-  in CAS mode — the guest needs RAM to hold the working set. Easy
-  escape hatch (virtio-fs over vsock for host-dir passthrough) if any
-  workload makes this an issue.
+  outputs back. Tradeoff is memory pressure for translation units with
+  large preprocessed payloads — the guest needs RAM to hold the working
+  set. Easy escape hatch (virtio-fs over vsock for host-dir passthrough)
+  if any workload makes this an issue.
 - **Init** — `/.hpcc/agent`, kept alive for the life of the VM and
   serving the bidi `Exec` stream over vsock (§4.4.1).
 - **Vsock** — one virtio-vsock device. The host reaches the agent via
@@ -654,7 +652,7 @@ Server stream (agent → runner):
 
 Streaming both ends keeps peak agent RAM bounded by chunk size (256 KiB
 inputs, 256 KiB outputs) rather than by sum-of-sizes — important for
-CAS mode where the include closure can be hundreds of MB. Cancellation
+translation units with multi-MB preprocessed payloads. Cancellation
 is free: the runner's `ctx.Cancel` closes the gRPC stream, which fires
 the agent's `cmd.Run` context, which kills the in-guest compiler.
 
@@ -664,35 +662,55 @@ into the runner clobbering `/etc/passwd` on the host).
 
 ### 4.5 Server-Side Preprocessing
 
-Because the VM has the toolchain and system headers, preprocessing should
-happen *there*, not on the client. Wins:
+Because the VM has the toolchain and system headers, the original design
+contemplated preprocessing happening *there*, not on the client. Wins:
 
-- **Bandwidth.** Original source is ~10 KB; preprocessed source is 1–50 MB.
-- **Cross-developer cache hits.** Client-preprocessed output bakes in
+- **Bandwidth.** Original source ~10 KB; preprocessed source 1–50 MB.
+- **Cross-developer cache hits.** Client-preprocessed output can bake in
   `__FILE__` paths and other locals; server-side preprocessing produces
-  canonical bytes, raising cache hit rate dramatically.
+  canonical bytes.
 - **CPU offload** from developer laptops to the build farm.
 
-Two modes negotiated per-job:
+**v1 ships PREPROCESSED only.** The client preprocesses locally, ships
+the bytes inline in `CompileRequest.descriptor.preprocessed`, and the
+worker compiles them inside the VM. The §4.7 determinism flags
+(auto-injected `-ffile-prefix-map`, pinned locale/timezone/hostname,
+`-Werror=date-time`) close most of the canonicality gap that
+server-side preprocessing was meant to address, and per-call zstd
+compression on the `Compile` RPC (§4.10) shrinks preprocessed payloads
+~5–10× on the wire. The remaining wins of a CAS-shaped staging mode
+do not justify the implementation surface:
 
-1. **`cas`** — preferred, **not yet implemented**. Client runs `gcc -M`
-   to discover the include closure, digests each input, sends
-   `(source_digest, header_digests[], flags)`. Worker pulls missing
-   digests from the shared CAS, materializes a synthetic input root,
-   compiles. Reuses the Phase 3 blob store as the CAS. Produces
-   canonical bytes server-side, so the cache key is portable across
-   developers.
-2. **`preprocessed`** — fallback, **working today**. Client preprocesses
-   locally and ships bytes. Same RPC, just a populated
-   `preprocessed_source` field. Used when the client can't reach the
-   CAS or doesn't trust it.
+- Two new streaming RPCs (`FindMissingBlobs`, `UploadBlobs`), worker-proxy
+  upload with incremental BLAKE3 verification (S3 does not enforce that
+  an object's key matches its content), three-layer lookup
+  (worker-local CAS → in-memory confirmed-set → bounded-concurrency S3
+  probes), per-tenant write quotas, garbage collection of unreferenced
+  blobs, path-traversal validation on every `BlobRef.path`.
+- Without S3 probing in `FindMissingBlobs`, cross-worker CAS sharing is
+  effectively zero under load-balanced routing — the shared bucket
+  becomes a write-only graveyard. With S3 probing, the cold-worker
+  latency cost is real and the operational surface (probe concurrency,
+  IAM scoping, S3 request volume) grows.
+
+The proto reserves the wire tags so CAS can be re-added later without
+breaking compatibility:
+
+- `SourceMode.CAS = 1` is `reserved`; `RemoteDescriptor.cas` (tag 7) is
+  `reserved`; `CasDescriptor` and `BlobRef` messages are removed from
+  the schema until needed.
+
+If a measured pain point appears later — sustained low cross-developer
+hit rate on a real workload, or preprocessed-bytes upload becoming the
+build's bottleneck on a typical workstation — this is the section to
+re-open. The implementation cost we'd skip now is exactly the cost
+we'd pay then; it doesn't compound.
 
 (A `shared_root` mode that mounted the host tree directly into the
 worker container was scoped earlier and dropped — too coupled to a
 specific deployment topology, and the trust story for "client
 filesystem appears in the worker's VM" was hard to defend in a
-multi-tenant setup. CAS gives us the same canonicalization win
-without the mount-shape constraint.)
+multi-tenant setup.)
 
 ### 4.6 Build-System Compatibility (CMake/ninja/make)
 
@@ -1107,9 +1125,10 @@ go.work             — multi-module workspace tying all four modules together
 
 ### Hashing Strategy
 
-Start with **preprocess-then-hash**. Add **manifest mode** as a sibling for
-Phase 4 server-side preprocessing — manifest mode is what enables hashing
-without ever materializing preprocessed bytes on the client.
+Use **preprocess-then-hash**. Manifest mode (`-M`-based dep discovery
++ per-file digest aggregation) was scoped as a sibling for §4.5
+CAS-mode preprocessing but is not wired up in v1, since §4.5 ships
+PREPROCESSED-only.
 
 ### Storage Format
 
@@ -1342,13 +1361,17 @@ timezone, hostname inside the VM. Document LTO/PGO caveats.
     cold-boot on resume" downgrade) is unwritten. Hooks into the
     pool's reaper tick and the Firecracker `CreateSnapshot` /
     `LoadSnapshot` API calls.
-28. **CAS-mode source staging** in `internal/worker/staging.go` —
-    currently returns "not implemented"; only PREPROCESSED works
-    end-to-end. CAS needs blob-list materialization (reuse the Phase 3
-    store as the CAS), mode-pivot in `dispatch.Dispatch` to call
-    `RewritePathPrefix` for CAS and populate the matching
-    `RemoteDescriptor` oneof, and a worker-side cache-key strategy
-    pivot keyed on `descriptor.source_mode`.
+28. **Source mode: PREPROCESSED-only confirmation.** §4.5 originally
+    specified a CAS mode alongside PREPROCESSED; v1 ships PREPROCESSED
+    only. The proto reserves `SourceMode.CAS = 1` and
+    `RemoteDescriptor.cas = 7`, and removes the `CasDescriptor`/`BlobRef`
+    message bodies from the schema until a measured pain point
+    justifies them. The implementation cost we'd skip now (worker-proxy
+    upload with incremental BLAKE3 verification, three-layer
+    `FindMissingBlobs` lookup, persistent confirmed-set, path-traversal
+    validation, cache-key strategy pivot) is exactly what we'd pay
+    later; it doesn't compound. No client-side, worker-side, or
+    wire-protocol work for CAS lands in v1.
 29. **Windows hcsshim path** (§4.1.1). Container start with the
     `hpcc-pause.exe` entrypoint, mount setup via Hyper-V volume,
     `Task.Exec` per compile.

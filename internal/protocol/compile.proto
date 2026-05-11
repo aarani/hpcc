@@ -20,12 +20,15 @@ message RemoteDescriptor {
   SourceMode source_mode = 4;
   oneof source_settings {
     PreprocessedDescriptor preprocessed = 6;
-    CasDescriptor cas = 7;
   }
   // Tag 5 was SharedRootDescriptor; reserved so we never accidentally
   // recycle it for a different message type and decode old bytes wrong.
   reserved 5;
   reserved "shared_root";
+  // Tag 7 was CasDescriptor (§4.5 CAS-mode source staging); deferred.
+  // Reserved so the wire encoding stays stable if CAS is re-added.
+  reserved 7;
+  reserved "cas";
   // Full OCI image reference, e.g. "ghcr.io/foo/toolchain@sha256:abc..."
   // or "registry.example.com/team/toolchain:v1.2.3". Used by the worker
   // to pull the image if it's not already in the local snapshotter.
@@ -38,14 +41,9 @@ message PreprocessedDescriptor {
   bytes preprocessed_source = 1;
 }
 
-message CasDescriptor {
-  repeated BlobRef input_refs = 1;
-}
-
-message BlobRef {
-  string path = 1;        // relative path in the source tree
-  bytes digest = 2;       // BLAKE3 digest
-}
+// CasDescriptor and BlobRef messages were removed when §4.5 CAS-mode
+// source staging was deferred. See docs/plan.md §4.5. If re-adding,
+// allocate fresh tag numbers — tag 7 is reserved on RemoteDescriptor.
 
 message CompileResponse {
   int32 exit_code = 1;

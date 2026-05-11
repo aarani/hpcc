@@ -129,25 +129,6 @@ func TestCompile_RejectsHostPathInArgv(t *testing.T) {
 	}
 }
 
-func TestCompile_RejectsCASMode(t *testing.T) {
-	w, priv := newTestWorker(t)
-	token := signToken(t, priv, validClaims())
-	req := &gen.CompileRequest{
-		Args: []string{"clang", "-c", "/src/main.i", "-o", "/out/main.o"},
-		Descriptor_: &gen.RemoteDescriptor{
-			TenantId:       "t1",
-			ImageDigest:    "d1",
-			SchedulerToken: token,
-			SourceMode:     gen.SourceMode_CAS,
-			SourceSettings: &gen.RemoteDescriptor_Cas{Cas: &gen.CasDescriptor{}},
-		},
-	}
-	_, err := w.Compile(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error for unimplemented CAS mode, got nil")
-	}
-}
-
 // --- happy-path test ---------------------------------------------------
 
 func TestCompile_PreprocessedHappyPath(t *testing.T) {
