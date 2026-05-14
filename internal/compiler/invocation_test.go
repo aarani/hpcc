@@ -6,6 +6,28 @@ import (
 	"github.com/aarani/hpcc/internal/enum"
 )
 
+func TestReadsStdin(t *testing.T) {
+	cases := []struct {
+		name   string
+		inputs []string
+		want   bool
+	}{
+		{"bare dash", []string{"-"}, true},
+		{"/dev/stdin", []string{"/dev/stdin"}, true},
+		{"dash among many", []string{"foo.c", "-", "bar.c"}, true},
+		{"plain file", []string{"foo.c"}, false},
+		{"no inputs", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inv := &Invocation{Inputs: tc.inputs}
+			if got := inv.ReadsStdin(); got != tc.want {
+				t.Errorf("ReadsStdin() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestCacheable enumerates the rules from Invocation.Cacheable so a
 // future change to the predicate has to touch this table — the
 // runner and the daemon both rely on this being right.

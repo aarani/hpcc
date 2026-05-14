@@ -61,6 +61,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
+	"github.com/aarani/hpcc/internal/config"
+	"github.com/aarani/hpcc/internal/enum"
 	"github.com/aarani/hpcc/internal/protocol/gen"
 	"github.com/aarani/hpcc/internal/scheduler"
 	"github.com/aarani/hpcc/internal/worker"
@@ -219,9 +221,25 @@ func main() {
 	}
 	uid, gid := pickJailerCreds()
 
+	// Paranoid mode: the worker owns the cache; clients never touch a
+	// local store. This is both the "regulated environments" pitch
+	// hpcc leads with and the only configuration that meaningfully
+	// benchmarks the Phase 4 path — in non-paranoid mode every warm
+	// compile would short-circuit on the client side and never
+	// re-exercise scheduler/worker/FC dispatch, which defeats the
+	// purpose of an FC-mode benchmark. The on-disk layout lives at
+	// {stack-dir}/cache; the shell wrapper inspects that directory
+	// directly to count entries (the client has no `hpcc stats`
+	// surface in paranoid mode).
+	cacheDir := filepath.Join(*stackDir, "cache")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		log.Fatalf("mkdir cacheDir: %v", err)
+	}
+
 	workerCfg := worker.Config{
 		Listen:     workerAddr,
 		PublicAddr: workerAddr,
+		Paranoid:   true,
 		TLS: worker.TLSConfig{
 			CertFile: certPath,
 			KeyFile:  keyPath,
@@ -254,6 +272,14 @@ func main() {
 			AdvertisedDigests: []string{digest},
 			IdleTimeout:       "24h",
 		},
+		// Generous max_size so a defconfig kernel build (~30k TUs at
+		// a few hundred KB each → low-GB cache) doesn't trip eviction
+		// mid-bench and make the warm pass look like cache misses.
+		Caches: []config.CacheConfig{{
+			Type:     enum.CacheDisk,
+			Location: cacheDir,
+			MaxSize:  "100G",
+		}},
 	}
 
 	w, err := worker.NewWorker(workerCfg)

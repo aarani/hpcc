@@ -65,6 +65,16 @@ scheduler, worker, IdP, and pre-stages a rootfs from a public
 toolchain OCI image; the shell script then drives the `make` dance
 through it.
 
+**Cache configuration:** the FC bench runs the worker in **paranoid
+mode** with a worker-side disk cache at `bench/work/firecracker/stack-<ts>/cache`.
+This is both the regulated-environment posture the README leads with
+and the only configuration that meaningfully benchmarks the Phase 4
+path — in non-paranoid mode every warm compile would short-circuit
+on a client-side cache and never re-exercise scheduler/worker/FC
+dispatch. The bench reads entry counts directly from that worker
+cache directory; `hpcc stats` against the paranoid-mode client is
+a no-op because clients have no local stores by design.
+
 Defaults differ from local mode because per-TU FC dispatch overhead
 means warm builds never hit the same speedup multiplier:
 
@@ -72,7 +82,7 @@ means warm builds never hit the same speedup multiplier:
 |----------------------------------|---------------|
 | `HPCC_BENCH_CONFIG`              | `tinyconfig` (defconfig is hours) |
 | `HPCC_BENCH_MAX_WARM_PCT`        | `75` |
-| `HPCC_BENCH_MIN_HIT_RATE`        | `90` (not enforced yet — see TODO below) |
+| `HPCC_BENCH_MIN_HIT_RATE`        | `90` |
 | `HPCC_BENCH_VM_MEMORY`           | `2GB` |
 | `HPCC_BENCH_VM_VCPUS`            | `2` |
 | `HPCC_BENCH_POOL_MAX`            | `8` (concurrent VMs per tenant) |
@@ -98,18 +108,13 @@ Output at `bench/results/<timestamp>-<mode>/`:
 - `hpcc-config.toml` — the exact client config used (for repro)
 - `fcstack.log` *(FC mode only)* — supervisor stderr
 
-The success signal in local mode is a high cache hit rate combined
-with a large cold/warm wall-time delta. The success signal in FC
-mode is the wall-time delta alone, because the in-VM cache lookup
-isn't yet exposed as a stats RPC.
+The success signal in both modes is a high cache hit rate combined
+with a large cold/warm wall-time delta. Local mode reads hit-rate
+from `hpcc stats` (single client-side disk cache); FC mode walks the
+worker's paranoid-mode disk cache dir directly since the paranoid
+client has no `hpcc stats` surface.
 
 ## TODO
-
-- **Worker-side stats in FC mode.** The local bench reads cache
-  entry deltas via `hpcc stats`, which only knows about client-side
-  caches. In FC mode the cache lives on the worker, and there's no
-  RPC to fetch its tally; the bench currently asserts on wall-time
-  only. Once §4 lands a worker stats endpoint, plumb it here.
 
 - **`make modules` target.** `vmlinux` covers the bulk of the TU
   count but excludes most of `drivers/`. Adding a second pass with

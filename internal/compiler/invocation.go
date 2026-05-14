@@ -59,6 +59,24 @@ func NewInvocation() *Invocation {
 	return &Invocation{Defines: map[string]string{}}
 }
 
+// ReadsStdin reports whether the invocation reads its source from
+// the wrapper's stdin (`-` or `/dev/stdin` as an input). The runner
+// uses this to keep stdin-reading compiles on the in-process path —
+// the daemon protocol carries parsed argv but no stdin bytes, so a
+// daemon-dispatched stdin invocation would silently see an empty
+// file. The clearest symptom is the Linux kernel's
+// `scripts/cc-version.sh` probe (`gcc -E -P -x c -` with the C
+// source heredoc'd in) producing empty preprocessor output and the
+// build aborting with "unknown C compiler."
+func (inv *Invocation) ReadsStdin() bool {
+	for _, in := range inv.Inputs {
+		if in == "-" || in == "/dev/stdin" {
+			return true
+		}
+	}
+	return false
+}
+
 // Cacheable reports whether this invocation can be served from /
 // recorded into the hpcc V1 cache. The callers (runner.Run and
 // the daemon's compile handler) gate cache lookup and store on it
@@ -98,8 +116,7 @@ func (inv *Invocation) Cacheable() bool {
 	if len(inv.Inputs) != 1 {
 		return false
 	}
-	switch inv.Inputs[0] {
-	case "-", "/dev/stdin":
+	if inv.ReadsStdin() {
 		return false
 	}
 	return true

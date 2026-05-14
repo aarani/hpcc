@@ -19,25 +19,33 @@ import (
 // the cache loop and the actual compiler invocation, and we just relay
 // stdout/stderr/exit. Otherwise we fall back to running the cache lookup
 // and the compiler in-process.
+//
+// One exception: invocations that read source from stdin (`-` or
+// `/dev/stdin` as an input) must run in-process even when the daemon is
+// up. The compile protocol carries argv but not stdin bytes, so a
+// daemon-dispatched stdin compile would silently see EOF. The most
+// common caller is the Linux kernel's scripts/cc-version.sh probe.
 func Run(ctx *compiler.Context, args []string) error {
-	if cfg := client.Load(); cfg != nil {
-		cwd, _ := os.Getwd()
-		full := append([]string{ctx.Compiler.Name()}, args...)
-		if resp, err := client.Dispatch(cfg, cwd, full); err == nil {
-			if len(resp.Stdout) > 0 {
-				os.Stdout.Write(resp.Stdout)
-			}
-			if len(resp.Stderr) > 0 {
-				os.Stderr.Write(resp.Stderr)
-			}
-			os.Exit(int(resp.ExitCode))
-			return nil
-		}
-	}
-
 	inv, err := ctx.Compiler.Parse(args)
 	if err != nil {
 		return err
+	}
+
+	if !inv.ReadsStdin() {
+		if cfg := client.Load(); cfg != nil {
+			cwd, _ := os.Getwd()
+			full := append([]string{ctx.Compiler.Name()}, args...)
+			if resp, err := client.Dispatch(cfg, cwd, full); err == nil {
+				if len(resp.Stdout) > 0 {
+					os.Stdout.Write(resp.Stdout)
+				}
+				if len(resp.Stderr) > 0 {
+					os.Stderr.Write(resp.Stderr)
+				}
+				os.Exit(int(resp.ExitCode))
+				return nil
+			}
+		}
 	}
 
 	// Cacheable() encodes the rules for which invocations can safely

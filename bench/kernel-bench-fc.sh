@@ -74,6 +74,12 @@ STACK_DIR="${WORK_DIR}/stack-${TS}"
 KERNEL_DIR="${WORK_DIR}/linux"
 CLIENT_CFG="${OUT_DIR}/hpcc-config.toml"
 FCSTACK_LOG="${OUT_DIR}/fcstack.log"
+# The worker runs in paranoid mode with its disk cache living
+# inside the stack dir at this fixed path. fcstack creates it and
+# wires the [[cache]] block; we read entry counts from here
+# directly since the client has no cache surface in paranoid mode
+# (and therefore `hpcc stats` against HPCC_CONFIG returns nothing).
+WORKER_CACHE_DIR="${STACK_DIR}/cache"
 mkdir -p "${OUT_DIR}" "${WORK_DIR}" "${STACK_DIR}"
 
 # Make sure the unprivileged side can read our output (running as
@@ -82,7 +88,13 @@ SUDO_UID_REAL="${SUDO_UID:-0}"
 SUDO_GID_REAL="${SUDO_GID:-0}"
 
 FCSTACK_PID=""
+DAEMON_PID=""
 cleanup() {
+    if [[ -n "${DAEMON_PID}" ]] && kill -0 "${DAEMON_PID}" 2>/dev/null; then
+        bench::info "stopping hpcc daemon (pid ${DAEMON_PID})"
+        kill -TERM "${DAEMON_PID}" 2>/dev/null || true
+        wait "${DAEMON_PID}" 2>/dev/null || true
+    fi
     if [[ -n "${FCSTACK_PID}" ]] && kill -0 "${FCSTACK_PID}" 2>/dev/null; then
         bench::info "stopping fcstack (pid ${FCSTACK_PID})"
         kill -TERM "${FCSTACK_PID}" 2>/dev/null || true
@@ -95,6 +107,15 @@ cleanup() {
     chown -R "${SUDO_UID_REAL}:${SUDO_GID_REAL}" "${WORK_DIR}" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+# Isolate the daemon's discovery file under the stack dir so the
+# bench never collides with a developer's system-wide hpcc daemon and
+# leaves no stray state on EXIT. hpcc's daemon and `hpcc wrap` both
+# resolve daemon.json through os.UserConfigDir, which honours
+# $XDG_CONFIG_HOME — set it here and both halves point at the same
+# bench-local path.
+export XDG_CONFIG_HOME="${STACK_DIR}/xdg"
+mkdir -p "${XDG_CONFIG_HOME}/hpcc"
 
 # 1. Build hpcc + fcstack.
 HPCC_BIN="${WORK_DIR}/hpcc"
@@ -140,38 +161,57 @@ bench::info "fcstack ready; client config at ${CLIENT_CFG}"
 
 export HPCC_CONFIG="${CLIENT_CFG}"
 
-# 3. Kernel checkout + configure.
+# 3. Start the hpcc daemon. This is load-bearing: runner.Run only
+#    dispatches to the scheduler+worker when a daemon is running —
+#    the in-process path (no daemon) ignores remote.enabled and just
+#    runs the compile locally. Without this step the entire FC stack
+#    sits idle and every "remote" compile is silently a host gcc.
+DAEMON_LOG="${OUT_DIR}/daemon.log"
+DAEMON_FILE="${XDG_CONFIG_HOME}/hpcc/daemon.json"
+bench::info "starting hpcc daemon (HPCC_CONFIG=${CLIENT_CFG})"
+"${HPCC_BIN}" start --force >"${DAEMON_LOG}" 2>&1 &
+DAEMON_PID=$!
+
+# Daemon writes daemon.json once it's bound its listener and is
+# ready to accept compile requests. Poll until it appears or the
+# bounded window expires.
+for _ in $(seq 1 60); do
+    if [[ -f "${DAEMON_FILE}" ]]; then break; fi
+    if ! kill -0 "${DAEMON_PID}" 2>/dev/null; then
+        bench::warn "daemon exited before becoming ready; last log:"
+        tail -n 40 "${DAEMON_LOG}" >&2
+        bench::die "hpcc daemon failed to start"
+    fi
+    sleep 0.5
+done
+if [[ ! -f "${DAEMON_FILE}" ]]; then
+    bench::warn "daemon never wrote ${DAEMON_FILE}; last log:"
+    tail -n 40 "${DAEMON_LOG}" >&2
+    bench::die "hpcc daemon never became ready"
+fi
+bench::info "hpcc daemon ready at ${DAEMON_FILE}"
+
+# 4. Kernel checkout + configure.
 bench::clone_kernel "${KERNEL_DIR}"
 bench::configure_kernel "${KERNEL_DIR}" "${HPCC_BENCH_CONFIG}"
 
 CC_CMD="${HPCC_BIN} wrap gcc"
 
-# 4. Cold build. `make clean` first in case the cached checkout has
+# 5. Cold build. `make clean` first in case the cached checkout has
 #    stale outputs from a previous run.
 (cd "${KERNEL_DIR}" && make clean)
 bench::info "cold build: make -j${HPCC_BENCH_JOBS} ${HPCC_BENCH_TARGET}"
 COLD_SECONDS="$(bench::time_make "${KERNEL_DIR}" "${CC_CMD}" "${OUT_DIR}/build-cold.log")"
 bench::info "cold build: ${COLD_SECONDS}s"
 
-# In FC + paranoid mode the client-side disk cache would be empty;
-# in non-paranoid (default) mode the client writes to whatever local
-# caches were configured. fcstack writes no [[cache]] block, so the
-# client only sees the remote path. That means `hpcc stats` against
-# this config is a no-op — we instead read the worker's tally via the
-# fcstack log if needed. For v1, derive miss count from the warm log:
-# every cache miss results in a "Compile" RPC line on the worker's
-# scheduler-side audit log. Until that surface is parseable, we rely
-# purely on wall-time delta and skip the hit-rate threshold.
-#
-# TODO(bench-fc): once worker exposes a stats RPC, parse it here so
-# the report and assertion match local mode. For now, plug in
-# placeholder TU counts that satisfy bench::write_report without
-# implying a real hit rate.
-ENTRIES_COLD=1
-ENTRIES_WARM=1
-SIZE_WARM=0
+# Snapshot the worker cache after the cold build. In paranoid mode
+# this is where every cacheable compile lands; the cold pass should
+# have populated one entry per TU. Counting on the worker side (not
+# `hpcc stats` against the paranoid client, which has no stores).
+read -r ENTRIES_COLD SIZE_COLD < <(bench::worker_cache_stats "${WORKER_CACHE_DIR}")
+bench::info "after cold: ${ENTRIES_COLD} worker-cache entries, $(bench::fmt_bytes "${SIZE_COLD}")"
 
-# 5. Warm builds — HPCC_BENCH_WARM_RUNS of them. The worker-side
+# 6. Warm builds — HPCC_BENCH_WARM_RUNS of them. The worker-side
 #    cache is reused across runs so all warm passes should land in
 #    the same regime; multiple samples let us median over runner
 #    noise (gRPC tail latency, FC start jitter).
@@ -184,9 +224,12 @@ for run in $(seq 1 "${HPCC_BENCH_WARM_RUNS}"); do
     WARM_TIMES+=("${ws}")
 done
 
-# 6. Report. Hit-rate field is 100 by construction here because
-#    cold==warm==1 above — the report will still surface the cold/warm
-#    wall-time delta which is the real signal in FC mode.
+read -r ENTRIES_WARM SIZE_WARM < <(bench::worker_cache_stats "${WORKER_CACHE_DIR}")
+bench::info "after warm: ${ENTRIES_WARM} worker-cache entries, $(bench::fmt_bytes "${SIZE_WARM}")"
+
+# 7. Report. ENTRIES_WARM - ENTRIES_COLD is the count of TUs that
+#    still missed on the warm pass — for a sound cache that delta is
+#    zero, and the hit-rate field matches the local-mode bench.
 bench::write_report \
     "${OUT_DIR}" \
     "firecracker" \
@@ -200,12 +243,15 @@ WARM_MEDIAN=$(bench::stats median "${WARM_TIMES[@]}")
 WARM_PCT=$(awk -v c="${COLD_SECONDS}" -v w="${WARM_MEDIAN}" \
     'BEGIN { if (c > 0) printf "%.1f", (w / c) * 100; else printf "0.0" }')
 
-# Only enforce the wall-time threshold in FC mode; the hit-rate
-# threshold needs worker-side stats we haven't plumbed yet.
-WARM_OK=$(awk -v w="${WARM_PCT}" -v m="${HPCC_BENCH_MAX_WARM_PCT}" \
-    'BEGIN { if (w <= m) print "1"; else print "0" }')
-if [[ "${WARM_OK}" != "1" ]]; then
-    bench::die "warm build too slow: ${WARM_PCT}% of cold > max ${HPCC_BENCH_MAX_WARM_PCT}%"
+NEW_ENTRIES=$(( ENTRIES_WARM - ENTRIES_COLD ))
+(( NEW_ENTRIES < 0 )) && NEW_ENTRIES=0
+if (( ENTRIES_COLD > 0 )); then
+    HIT_RATE=$(awk -v new="${NEW_ENTRIES}" -v total="${ENTRIES_COLD}" \
+        'BEGIN { printf "%.2f", (1 - new / total) * 100 }')
+else
+    HIT_RATE="0.00"
 fi
+
+bench::assert_thresholds "${HIT_RATE}" "${WARM_PCT}"
 
 bench::info "kernel-bench (firecracker) passed"
