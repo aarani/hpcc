@@ -22,6 +22,7 @@ import (
 	"github.com/aarani/hpcc/internal/config"
 	"github.com/aarani/hpcc/internal/daemon/client"
 	"github.com/aarani/hpcc/internal/daemon/dispatch"
+	"github.com/aarani/hpcc/internal/enum"
 	"github.com/aarani/hpcc/internal/runner"
 	"google.golang.org/protobuf/proto"
 
@@ -258,6 +259,21 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 
 	log.Printf("compile: %s -> %s", cmd, inv.Output)
 
+	// Non-compile invocations (link, preprocess-only, dep-only, assemble)
+	// bypass the cache and remote dispatch entirely: their inputs and
+	// outputs aren't safe to cache by source-hash, and remote workers
+	// don't have the local library/object state they'd need.
+	if inv.Mode != enum.CompileMode {
+		result, invokeErr := context.Compiler.Invoke(inv)
+		if invokeErr != nil {
+			log.Println(fmt.Errorf("compile: %w", invokeErr))
+			d.writeErrorResponse(conn, writeMu, fmt.Sprintf("compile: %v", invokeErr), 1)
+			return
+		}
+		d.writeCompileResult(conn, writeMu, inv, result)
+		return
+	}
+
 	hash, hashErr := inv.ComputeHash(context)
 
 	compile := func() (any, error) {
@@ -309,6 +325,13 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 	if shared {
 		log.Printf("compile: %s deduped", inv.Output)
 	}
+	d.writeCompileResult(conn, writeMu, inv, result)
+}
+
+// writeCompileResult writes the result of a compile (or link/preprocess/etc.)
+// back to the client: spills the output blob to disk if one was produced,
+// then sends a CompileResponse with stdout/stderr/exit code.
+func (d *DefaultDaemon) writeCompileResult(conn *net.TCPConn, writeMu *sync.Mutex, inv *compiler.Invocation, result *compiler.InvocationResult) {
 	log.Printf("compile: %s exit=%d", inv.Output, result.ExitCode)
 
 	if inv.Output != "" && result.Output != nil {

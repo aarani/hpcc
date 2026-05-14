@@ -9,6 +9,7 @@ import (
 
 	"github.com/aarani/hpcc/internal/compiler"
 	"github.com/aarani/hpcc/internal/daemon/client"
+	"github.com/aarani/hpcc/internal/enum"
 )
 
 // Run executes a single compiler invocation. The args here are the
@@ -39,14 +40,27 @@ func Run(ctx *compiler.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	result, err := ctx.Cache.Lookup(inv)
 
-	if err != nil || result == nil {
+	// Only compile mode is cacheable: link/preprocess/dep-only/assemble
+	// invocations either depend on too much external state (libraries,
+	// link order) or are cheap enough that caching adds no value. Their
+	// inputs (.o/.a files, etc.) also can't be fed through the
+	// preprocessor that CacheKey runs.
+	var result *compiler.InvocationResult
+	if inv.Mode == enum.CompileMode {
+		result, err = ctx.Cache.Lookup(inv)
+		if err != nil || result == nil {
+			result, err = ctx.Compiler.Invoke(inv)
+			if err != nil {
+				return err
+			}
+			ctx.Cache.Store(inv, result)
+		}
+	} else {
 		result, err = ctx.Compiler.Invoke(inv)
 		if err != nil {
 			return err
 		}
-		ctx.Cache.Store(inv, result)
 	}
 
 	if (inv.Output != "") && (result.Output != nil) {
