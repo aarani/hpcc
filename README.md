@@ -153,9 +153,11 @@ on Windows, follow-up). One long-running VM per tenant session;
 per-compile work is dispatched as one gRPC bidi-streaming Exec call into
 the VM over vsock — header + input file chunks in, stdio + result + output
 file chunks back, all under a single `AgentService.Exec` stream. The user
-supplies an OCI image; the worker pulls + flattens it into an ext4 rootfs
-via `tar -xpf` + `mkfs.ext4 -d`, injects the agent binary as PID 1 so the
-VM stays alive across compiles even for distroless/scratch images. We
+supplies an OCI image; the worker pulls + flattens it and streams the
+layer tar directly through an in-tree, clean-room Go squashfs writer
+(no staging dir on the host, no `tar -xpf` shell-out, no `mkfs.*` shell-out,
+no GPL deps in the build path), injecting the agent binary as PID 1 so
+the VM stays alive across compiles even for distroless/scratch images. We
 chose this over firecracker-containerd because that project has
 stagnated; we own a small image→rootfs pipeline and a one-method gRPC
 agent in exchange for not depending on unmaintained infra. The KVM
@@ -166,20 +168,22 @@ payloads); client dials the worker directly over gRPC with per-call zstd,
 scheduler-signed JWT auth, and cancellation. Per-job audit log.
 
 **Phase 4 status (today):** route-only scheduler, worker `Compile` RPC,
-per-tenant container pool with idle/session TTLs, image→ext4 pipeline,
-raw Firecracker driver under jailer (vsock device, no-NIC,
-`/proc/<pid>/root` reach for the namespace-isolated socket, lazy-unmount
-cleanup), in-VM `hpcc-agent` (separate Go module, PID-1 init + bidi gRPC
-over vsock), shared `proto/agent` module for the runner↔agent wire schema,
-and an integration suite that downloads firecracker + jailer, builds a
-real chainguard `gcc-glibc` rootfs, and compiles a C source end-to-end
-on a GitHub Actions Ubuntu runner. Compiles dispatched through the
+per-tenant container pool with idle/session TTLs, streaming
+image→squashfs pipeline (in-tree clean-room Go writer; no tar /
+mkfs shell-outs, no host staging dir, on-wire format validated in CI
+via `unsquashfs` round-trip), raw Firecracker driver under jailer
+(vsock device, no-NIC, `/proc/<pid>/root` reach for the
+namespace-isolated socket, lazy-unmount cleanup), in-VM `hpcc-agent`
+(separate Go module, PID-1 init + bidi gRPC over vsock), shared
+`proto/agent` module for the runner↔agent wire schema, and an
+integration suite that downloads firecracker + jailer, builds a real
+chainguard `gcc-glibc` rootfs, and compiles a C source end-to-end on a
+GitHub Actions Ubuntu runner. Compiles dispatched through the
 Firecracker runtime work end-to-end on Linux. Still open: VM
 snapshot/restore on idle (today the pool just keeps warm VMs in RAM),
 CAS-mode source staging on the worker (today only `PREPROCESSED` mode
-works end-to-end), the Windows hcsshim path, and the rootfs-extraction
-hardening tracked in §4.14 (Go-native tar reader replacing the
-`exec.Command("tar", ...)` shell-out).
+works end-to-end), the Windows hcsshim path, and the residual
+extraction-pipeline hardening in §4.14 (tar-bomb size/entry caps).
 
 ### Phase 5 — Observability & Polish
 `hpcc inspect <hash>` and `hpcc explain <file>` with structured miss
@@ -193,8 +197,8 @@ and VM snapshots.
 
 Phases 1, 2, and 3 are implemented. Phase 4 is in progress: the Linux
 end-to-end remote compile path — scheduler routing, worker dispatch,
-image→rootfs build, raw-Firecracker boot, vsock + agent, real-gcc
+streaming image→squashfs build (clean-room Go writer, format-validated
+in CI via `unsquashfs`), raw-Firecracker boot, vsock + agent, real-gcc
 e2e — is landed and CI-tested. The remaining Phase 4 work is snapshot/
 restore for idle VMs, CAS-mode staging, the Windows backend, and the
-rootfs-extraction hardening called out as a v1 follow-up. Phase 5 is
-unstarted.
+residual rootfs-extraction caps in §4.14. Phase 5 is unstarted.

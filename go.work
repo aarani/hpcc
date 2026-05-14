@@ -1,17 +1,20 @@
 go 1.26.2
 
-// Multi-module workspace. The repo ships four modules with different
+// Multi-module workspace. The repo ships five modules with different
 // dependency surfaces: main hpcc (the worker/scheduler/client),
 // hpcc/agent (in-VM PID 1, Linux-only, must stay tiny),
 // hpcc/pause (the Windows-side equivalent + legacy injectable
-// pause binary), and hpcc/proto (just the agent↔runner wire schema,
+// pause binary), hpcc/proto (just the agent↔runner wire schema,
 // imported by both main and agent without dragging in main's heavy
-// deps). go.work keeps `go build` resolving cross-module imports to
-// local source while we develop; releases would tag the modules and
-// let go.mod requirements take over.
+// deps), and hpcc/squashfs (pure-Go squashfs writer used by the
+// rootfs builder; no compression dep of its own — caller picks).
+// go.work keeps `go build` resolving cross-module imports to local
+// source while we develop; releases would tag the modules and let
+// go.mod requirements take over.
 use (
 	.
 	./agent
 	./pause
 	./proto
+	./squashfs
 )

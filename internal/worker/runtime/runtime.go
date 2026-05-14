@@ -9,7 +9,7 @@ import (
 
 // Runtime owns per-tenant compile sandboxes. Implementations are
 // backend-specific — a raw Firecracker driver on Linux (hpcc owns image
-// pull, ext4 rootfs build, VMM lifecycle, and the host-side vsock channel
+// pull, squashfs rootfs build, VMM lifecycle, and the host-side vsock channel
 // to the in-VM agent), containerd + hcsshim (Hyper-V isolation) on Windows
 // — but the surface is the same: start a container from a prepared image,
 // dispatch Execs into it, stop it. Image preparation (pulling,

@@ -38,7 +38,10 @@ const HandlerFirecracker = "firecracker"
 // package) read-only with the in-VM hpcc-agent — staged at
 // /.hpcc/agent by the rootfs builder — running as PID 1. `pci=off`
 // matches Firecracker's recommended cmdline; serial console is left
-// on ttyS0 so an operator can hook stdio for debugging.
+// on ttyS0 so an operator can hook stdio for debugging. No explicit
+// `rootfstype=` — the kernel auto-detects from the on-disk magic
+// (see feedback_kernel_boot_args.md for why explicit pinning is
+// fragile across deployments).
 const defaultBootArgs = "console=ttyS0 reboot=k panic=1 pci=off init=/.hpcc/agent root=/dev/vda ro"
 
 // socketWaitTimeout is the upper bound on how long Start blocks
@@ -83,7 +86,7 @@ type FirecrackerOptions struct {
 }
 
 // Firecracker is the raw Firecracker Runtime. It owns the per-tenant
-// VMM lifecycle (jailer + firecracker), wiring the prepared ext4
+// VMM lifecycle (jailer + firecracker), wiring the prepared squashfs
 // rootfs and hpcc-supplied vmlinux into a freshly-jailed chroot and
 // driving the Firecracker API to the InstanceStart action.
 //
@@ -144,7 +147,7 @@ func (f *Firecracker) Start(ctx context.Context, spec ContainerSpec) (Container,
 		_ = os.RemoveAll(chrootDir)
 		return nil, fmt.Errorf("firecracker: stage kernel: %w", err)
 	}
-	if err := stageIntoChroot(rootfsHost, filepath.Join(chrootRoot, "rootfs.ext4"), f.opts.UID, f.opts.GID); err != nil {
+	if err := stageIntoChroot(rootfsHost, filepath.Join(chrootRoot, "rootfs.sqsh"), f.opts.UID, f.opts.GID); err != nil {
 		_ = os.RemoveAll(chrootDir)
 		return nil, fmt.Errorf("firecracker: stage rootfs: %w", err)
 	}
@@ -240,7 +243,7 @@ func (f *Firecracker) Start(ctx context.Context, spec ContainerSpec) (Container,
 		DriveID:      &driveID,
 		IsRootDevice: &isRoot,
 		IsReadOnly:   true,
-		PathOnHost:   "/rootfs.ext4",
+		PathOnHost:   "/rootfs.sqsh",
 	})); err != nil {
 		teardown()
 		return nil, fmt.Errorf("firecracker: put rootfs drive: %w", err)

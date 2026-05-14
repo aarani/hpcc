@@ -1,14 +1,18 @@
 package rootfs
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
+	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"testing"
+	"time"
 )
 
 func TestEncodeDecodeRootfsName_roundtrip(t *testing.T) {
@@ -16,10 +20,10 @@ func TestEncodeDecodeRootfsName_roundtrip(t *testing.T) {
 		digest string
 		file   string
 	}{
-		{"sha256:abc123", "sha256-abc123.ext4"},
-		{"sha512:deadbeef", "sha512-deadbeef.ext4"},
+		{"sha256:abc123", "sha256-abc123.sqsh"},
+		{"sha512:deadbeef", "sha512-deadbeef.sqsh"},
 		// Bare hex assumed sha256 (matches cdimage.normalizeDigest).
-		{"abc", "sha256-abc.ext4"},
+		{"abc", "sha256-abc.sqsh"},
 	}
 	for _, c := range cases {
 		got, err := encodeRootfsName(c.digest)
@@ -57,11 +61,11 @@ func TestEncodeRootfsName_rejectsInvalid(t *testing.T) {
 func TestDecodeRootfsName_rejectsStrays(t *testing.T) {
 	for _, name := range []string{
 		"random.txt",          // wrong suffix
-		"sha256.ext4",         // no dash
-		"-abc.ext4",           // empty algo
-		"sha256-.ext4",        // empty hex
-		".ext4",               // empty stem
-		"sha256-abc.ext4.bak", // wrong suffix
+		"sha256.sqsh",         // no dash
+		"-abc.sqsh",           // empty algo
+		"sha256-.sqsh",        // empty hex
+		".sqsh",               // empty stem
+		"sha256-abc.sqsh.bak", // wrong suffix
 	} {
 		if _, ok := decodeRootfsName(name); ok {
 			t.Errorf("decodeRootfsName(%q) returned ok=true, want false", name)
@@ -71,8 +75,8 @@ func TestDecodeRootfsName_rejectsStrays(t *testing.T) {
 
 func TestGetExistingImages_listsAndFiltersStrays(t *testing.T) {
 	dir := t.TempDir()
-	mustWrite(t, filepath.Join(dir, "sha256-aaaa.ext4"), nil)
-	mustWrite(t, filepath.Join(dir, "sha256-bbbb.ext4"), nil)
+	mustWrite(t, filepath.Join(dir, "sha256-aaaa.sqsh"), nil)
+	mustWrite(t, filepath.Join(dir, "sha256-bbbb.sqsh"), nil)
 	// Strays the listing must skip silently.
 	mustWrite(t, filepath.Join(dir, "in-progress.tmp"), nil)
 	mustWrite(t, filepath.Join(dir, "README"), nil)
@@ -105,7 +109,7 @@ func TestGetExistingImages_missingCacheDirIsEmpty(t *testing.T) {
 
 func TestUntagImage_removesAndIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "sha256-cafe.ext4")
+	path := filepath.Join(dir, "sha256-cafe.sqsh")
 	mustWrite(t, path, []byte("rootfs"))
 
 	s := &Store{CacheDir: dir}
@@ -130,72 +134,175 @@ func TestUntagImage_rejectsInvalidDigest(t *testing.T) {
 	}
 }
 
-func TestExt4SizeFor_bounds(t *testing.T) {
-	// Tiny content still gets the minimum and stays 4MiB-aligned.
-	got := ext4SizeFor(1024)
-	if got != ext4MinBytes {
-		t.Errorf("ext4SizeFor(1024) = %d, want %d (min)", got, ext4MinBytes)
+func TestNormalizeTarPath(t *testing.T) {
+	good := map[string]string{
+		"usr/bin/ls":     "/usr/bin/ls",
+		"./etc/hostname": "/etc/hostname",
+		"etc/":           "/etc",
+		"./etc/":         "/etc",
+		"a":              "/a",
 	}
-	if got%ext4Mib4 != 0 {
-		t.Errorf("ext4SizeFor(1024) = %d, not 4MiB-aligned", got)
+	for in, want := range good {
+		got, ok := normalizeTarPath(in)
+		if !ok {
+			t.Errorf("normalizeTarPath(%q) returned ok=false", in)
+			continue
+		}
+		if got != want {
+			t.Errorf("normalizeTarPath(%q) = %q, want %q", in, got, want)
+		}
 	}
-	// Larger content scales past the floor and stays aligned.
-	huge := int64(500 * 1024 * 1024)
-	got = ext4SizeFor(huge)
-	if got <= huge*ext4ContentScale {
-		t.Errorf("ext4SizeFor(%d) = %d, want > content*scale", huge, got)
+
+	// Archive root maps to empty string with ok=true so callers can
+	// skip cleanly.
+	for _, in := range []string{".", "/", "./"} {
+		got, ok := normalizeTarPath(in)
+		if !ok || got != "" {
+			t.Errorf("normalizeTarPath(%q) = (%q, %v), want (\"\", true)", in, got, ok)
+		}
 	}
-	if got%ext4Mib4 != 0 {
-		t.Errorf("ext4SizeFor(%d) = %d, not 4MiB-aligned", huge, got)
+
+	bad := []string{
+		"",
+		"\x00",
+		"foo\x00bar",
+		"/abs/path",
+		"../escape",
+		"./../escape",
+		"foo/../bar",
+		"foo/./bar",
+		"foo//bar",
+	}
+	for _, in := range bad {
+		if _, ok := normalizeTarPath(in); ok {
+			t.Errorf("normalizeTarPath(%q) returned ok=true, want false", in)
+		}
 	}
 }
 
-// TestBuildExt4FromDir_endToEnd skips on hosts where mkfs.ext4 isn't
-// available (Mac dev workstations, container images without
-// e2fsprogs). When the binary is present, it stages a tiny dir,
-// builds an ext4 from it, and asserts the magic bytes at offset
-// 1080 — the ext4 superblock magic 0xEF53 — to confirm we got a
-// real filesystem.
-func TestBuildExt4FromDir_endToEnd(t *testing.T) {
-	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
-		t.Skipf("mkfs.ext4 not available: %v", err)
+// TestBuildSquashfs_endToEnd writes a small synthetic OCI-style
+// layer tar in memory, runs the production buildSquashfs pipeline
+// against it, and confirms the result has the squashfs magic at
+// offset 0 plus a non-empty inode count. We are not validating the
+// entire image structure here — the squashfs writer's own tests do
+// that — only the pipeline wiring: tar entries reach the writer,
+// agent + mountpoints get injected, and a sealed file lands on
+// disk.
+func TestBuildSquashfs_endToEnd(t *testing.T) {
+	tarBytes := makeFixtureTar(t)
+	out := filepath.Join(t.TempDir(), "rootfs.sqsh")
+	agent := []byte("\x7fELF FAKE-AGENT BINARY")
+
+	if err := buildSquashfs(bytes.NewReader(tarBytes), agent, out); err != nil {
+		t.Fatalf("buildSquashfs: %v", err)
 	}
 
-	staging := t.TempDir()
-	mustWrite(t, filepath.Join(staging, "hostname"), []byte("hpcc-vm\n"))
-	if err := os.MkdirAll(filepath.Join(staging, "usr", "bin"), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	mustWrite(t, filepath.Join(staging, "usr", "bin", "cc"), []byte("fake-cc"))
-
-	out := filepath.Join(t.TempDir(), "rootfs.ext4")
-	if err := buildExt4FromDir(staging, out); err != nil {
-		t.Fatalf("buildExt4FromDir: %v", err)
-	}
-
-	// ext4 superblock starts at offset 1024; magic is at offset 56
-	// inside the superblock (1024 + 56 = 1080), little-endian
-	// 0xEF53. Anything else means mkfs.ext4 didn't actually format.
 	f, err := os.Open(out)
 	if err != nil {
 		t.Fatalf("open rootfs: %v", err)
 	}
 	defer f.Close()
-	var sb [2]byte
-	if _, err := f.ReadAt(sb[:], 1080); err != nil {
-		t.Fatalf("read superblock magic: %v", err)
-	}
-	if sb[0] != 0x53 || sb[1] != 0xEF {
-		t.Errorf("ext4 magic at offset 1080 = % x, want 53 ef", sb[:])
-	}
 
+	var sb [96]byte
+	if _, err := f.ReadAt(sb[:], 0); err != nil {
+		t.Fatalf("read superblock: %v", err)
+	}
+	// "hsqs" little-endian — same magic the squashfs writer's own
+	// tests check. Anything else means the file is not a squashfs.
+	if got := binary.LittleEndian.Uint32(sb[0:4]); got != 0x73717368 {
+		t.Errorf("magic = %#x, want 0x73717368", got)
+	}
+	if got := binary.LittleEndian.Uint32(sb[4:8]); got == 0 {
+		t.Errorf("inode_count = 0, want >0")
+	}
+	bytesUsed := binary.LittleEndian.Uint64(sb[40:48])
 	info, err := f.Stat()
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Must hit the minimum floor for a tiny staging dir.
-	if info.Size() < ext4MinBytes {
-		t.Errorf("rootfs size = %d, want >= %d", info.Size(), ext4MinBytes)
+	// Writer pads the file to a 4 KiB boundary so the kernel's
+	// block-layer read of the last logical block can't short-read.
+	if int64(bytesUsed) > info.Size() {
+		t.Errorf("bytes_used = %d exceeds file size = %d", bytesUsed, info.Size())
+	}
+	if info.Size()%4096 != 0 {
+		t.Errorf("file size = %d, want 4KiB-aligned", info.Size())
+	}
+}
+
+// The /.hpcc namespace-stripping property is validated end-to-end
+// via TestBuildSquashfs_externalStripsHpccNamespace in
+// pipeline_external_check_test.go, which extracts the produced
+// rootfs through unsquashfs (the canonical reader) and asserts the
+// extracted /.hpcc/agent contains our bytes, not the user's. That
+// path works regardless of compressor choice; an earlier in-process
+// byte-substring version of this test was retired when the
+// production compressor became gzip (the user-supplied entry's
+// bytes never enter the writer at all, but the real agent's bytes
+// are gzip-compressed in the output and a verbatim-substring check
+// would falsely fail).
+
+// makeFixtureTar builds a small in-memory OCI-style layer tar with
+// one of each entry type the pipeline supports. Returned bytes are
+// safe to feed to buildSquashfs.
+func makeFixtureTar(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	mtime := time.Unix(1_700_000_000, 0)
+
+	// Directory.
+	mustWriteTarHeader(t, tw, &tar.Header{
+		Typeflag: tar.TypeDir,
+		Name:     "etc/",
+		Mode:     0o755,
+		ModTime:  mtime,
+	})
+	// Regular file.
+	mustTarFile(t, tw, "etc/hostname", []byte("hpcc\n"))
+	// Symlink.
+	mustWriteTarHeader(t, tw, &tar.Header{
+		Typeflag: tar.TypeSymlink,
+		Name:     "etc/host",
+		Linkname: "hostname",
+		Mode:     0o777,
+		ModTime:  mtime,
+	})
+	// File the hardlink will target.
+	mustTarFile(t, tw, "bin/sh", []byte("#!/bin/sh\nexit 0\n"))
+	// Hardlink.
+	mustWriteTarHeader(t, tw, &tar.Header{
+		Typeflag: tar.TypeLink,
+		Name:     "bin/ash",
+		Linkname: "bin/sh",
+		Mode:     0o755,
+		ModTime:  mtime,
+	})
+
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func mustTarFile(t *testing.T, tw *tar.Writer, name string, body []byte) {
+	t.Helper()
+	mustWriteTarHeader(t, tw, &tar.Header{
+		Typeflag: tar.TypeReg,
+		Name:     name,
+		Mode:     0o644,
+		Size:     int64(len(body)),
+		ModTime:  time.Unix(1_700_000_000, 0),
+	})
+	if _, err := io.Copy(tw, bytes.NewReader(body)); err != nil {
+		t.Fatalf("write tar body %q: %v", name, err)
+	}
+}
+
+func mustWriteTarHeader(t *testing.T, tw *tar.Writer, h *tar.Header) {
+	t.Helper()
+	if err := tw.WriteHeader(h); err != nil {
+		t.Fatalf("write tar header %q: %v", h.Name, err)
 	}
 }
 

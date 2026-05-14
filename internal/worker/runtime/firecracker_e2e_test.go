@@ -37,9 +37,9 @@ import (
 //
 // The rootfs is built through the production rootfs.Store pipeline
 // against a real public image (busybox) with the agent injected at
-// /.hpcc/agent — exercises the same image→ext4 path operators rely
-// on, including the hardlink fallback that lets busybox-style
-// images write into go-diskfs's ext4.
+// /.hpcc/agent — exercises the same image→squashfs streaming path
+// operators rely on, including the hardlink handling that
+// busybox-style images depend on.
 
 const (
 	envFirecrackerBin = "HPCC_FIRECRACKER_BIN"
@@ -70,7 +70,7 @@ const (
 
 // Shared bootstrap state. The agent is built once across all tests
 // (same binary regardless of image); each user image is pulled and
-// turned into an ext4 once, cached by ref. Done lazily — TestMain
+// turned into a squashfs once, cached by ref. Done lazily — TestMain
 // can't t.Skip, and we want the host-prereq checks (root, /dev/kvm,
 // fc/jailer paths) to govern whether bootstrap runs at all.
 var (
@@ -116,7 +116,7 @@ func e2eAgent(t *testing.T) string {
 	return e2eAgentPath
 }
 
-// e2eEnsureRootfs pulls imageRef and writes a prepared rootfs.ext4
+// e2eEnsureRootfs pulls imageRef and writes a prepared rootfs.sqsh
 // for it once, caching the result. Concurrent calls (different
 // images) serialize on the mutex; the build is CPU-bound and tests
 // run serially anyway, so the contention is irrelevant.

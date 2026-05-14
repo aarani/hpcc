@@ -43,7 +43,7 @@ handler = "firecracker"   # or "runhcs-wcow-hypervisor" / "really_really_dangero
 
 # Required when handler = "firecracker". Every microVM boots the
 # kernel_image hpcc provides (not the user image's), with the prepared
-# ext4 rootfs from rootfs_dir attached as /dev/vda. jailer chroots
+# squashfs rootfs from rootfs_dir attached as /dev/vda. jailer chroots
 # firecracker into <run_dir>/firecracker/<vm-id>/root/ and drops to
 # uid/gid before exec.
 [runtime.firecracker]

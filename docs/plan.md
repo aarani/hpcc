@@ -315,19 +315,21 @@ remote cache hit for the same file without compiling.
 - **Done:** §4.1.1 Runtime abstraction (`internal/worker/runtime`,
   with `DangerouslyExecOnHost` as the dev backend and a real
   `Firecracker` driver in production); §4.3 image→rootfs pipeline
-  (`tar -xpf` + `mkfs.ext4 -d`, post-extract agent injection,
-  pre-created standard mountpoints for distroless-style images);
-  §4.4 VM layout under jailer (vsock device, no NIC, kernel + rootfs
-  staged into the chroot); §4.4.1 in-VM `hpcc-agent` (separate Go
-  module, PID-1 init that mounts `/proc` `/sys` `/dev` `/tmp` `/run`
-  + zombie reaping + bidi-streaming gRPC `AgentService.Exec` over
-  AF_VSOCK port 17727); shared `proto/agent` module so the runner and
-  agent compile against one wire schema; §4.8 route-only scheduler;
-  §4.9 worker (Compile RPC, image catalogue + idle eviction, per-tenant
-  container pool with idle/session TTLs, Ed25519 task-JWT verification);
-  §4.10 client→worker gRPC compile path with per-call zstd; §4.12
-  per-job audit records; §4.13 paranoid-mode plumbing on the worker.
-  An integration suite (`firecracker_e2e_test.go`, runs in CI under
+  (streaming OCI tar → in-tree clean-room Go squashfs writer, no
+  host staging dir, no `tar`/`mkfs.*` shell-outs, on-wire format
+  validated in CI via `unsquashfs` round-trip; agent injection +
+  standard mountpoints handled inline); §4.4 VM layout under jailer
+  (vsock device, no NIC, kernel + rootfs staged into the chroot);
+  §4.4.1 in-VM `hpcc-agent` (separate Go module, PID-1 init that
+  mounts `/proc` `/sys` `/dev` `/tmp` `/run` + zombie reaping +
+  bidi-streaming gRPC `AgentService.Exec` over AF_VSOCK port 17727);
+  shared `proto/agent` module so the runner and agent compile against
+  one wire schema; §4.8 route-only scheduler; §4.9 worker (Compile
+  RPC, image catalogue + idle eviction, per-tenant container pool
+  with idle/session TTLs, Ed25519 task-JWT verification); §4.10
+  client→worker gRPC compile path with per-call zstd; §4.12 per-job
+  audit records; §4.13 paranoid-mode plumbing on the worker. An
+  integration suite (`firecracker_e2e_test.go`, runs in CI under
   `sudo` on Ubuntu with KVM) downloads firecracker + jailer, builds
   a real chainguard `gcc-glibc` rootfs, and compiles a one-line C
   source end-to-end through the full vsock + agent pipeline.
@@ -341,9 +343,11 @@ remote cache hit for the same file without compiling.
   - §4.11 VM-crash reaping with scheduler reroute — partial today
     (the runtime surfaces process exit, but the worker doesn't yet
     notify the scheduler to drop the dead VM from routing).
-  - §4.14 rootfs extraction hardening — the `tar -xpf` shell-out is
-    the soft underbelly of the image pipeline against
-    attacker-controlled images. Plan in §4.14.
+  - §4.14 residual extraction-pipeline caps — the structural §4.14
+    hardening (replacing the tar shell-out + on-host staging dir +
+    e2fsprogs trust surface) is done by virtue of the §4.3
+    streaming squashfs rewrite; remaining work is tar-bomb size/
+    entry-count caps in the streaming reader. See §4.14.
 
 Farm out compilation to remote workers, isolated in **raw Firecracker
 microVMs driven directly by hpcc**, to parallelize beyond local CPU count
@@ -394,11 +398,14 @@ we control than carry someone else's abandonware.
 The trade is real. We took on:
 
 - **OCI image → rootfs pipeline.** `crane.Pull`, flatten via
-  `mutate.Extract`, shell out to `tar -xpf` + `mkfs.ext4 -d` (the
-  go-diskfs ext4 writer is unusable on real-sized rootfs — it
-  fails extent-tree promotion past ~4 inline extents and can't
-  initialize journals on multi-GB images). Bounded scope, ~250
-  lines. See §4.3.
+  `mutate.Extract`, stream the resulting tar through an in-tree
+  clean-room Go squashfs writer (`squashfs/`). No host staging
+  directory, no `tar -xpf`/`mkfs.*` shell-outs, no GPL deps in the
+  build path. Bounded scope, ~1,500 lines including format encoder
+  and the streaming tar→squashfs bridge. CI validates the produced
+  images against `unsquashfs` on every build so format regressions
+  are caught at PR time rather than in the firecracker boot path.
+  See §4.3 and §4.14.
 - **In-VM agent over vsock.** A tiny static binary (~10 MB stripped)
   inside the guest that speaks one bidi-streaming gRPC: header in,
   input file chunks in, stdio out, result out, output file chunks
@@ -506,24 +513,57 @@ The user supplies their toolchain by handing hpcc a **container image**
 (any OCI-compatible registry: Docker Hub, GHCR, ECR, internal mirrors).
 
 On the **Linux/Firecracker** path the worker pulls layers (via
-`go-containerregistry`), flattens them via `mutate.Extract` into a
-single tar spool, shells out to `tar -xpf` to materialize the tree
-under a staging directory, drops `/.hpcc/agent` (and pre-creates
-`/proc /sys /dev /tmp /run` mountpoints for distroless-style images
-that omit them), then runs `mkfs.ext4 -d <staging> <output.ext4>` to
-seal the rootfs. `mkfs.ext4 -d` populates the ext4 directly from the
-staging tree in one pass — no mount required, no root/loop dance,
-handles hardlinks/symlinks/modes natively. The prepared rootfs is
-cached on disk keyed by the user-image digest.
+`go-containerregistry`), flattens them via `mutate.Extract`, and
+streams the resulting tar through an in-tree clean-room Go squashfs
+writer (`github.com/aarani/hpcc/squashfs`) that produces a sealed
+`.sqsh` rootfs file in a single pass. The bridge in
+`internal/worker/image/rootfs/` validates each tar entry's path
+(rejecting `..`, abs-paths-in-archive, NUL bytes, "." segments)
+before dispatching to one of the squashfs writer's typed Create*
+methods — regular file, directory, symlink, hardlink, char/block
+device, FIFO, socket. `/.hpcc/agent` and the standard mountpoints
+(`/proc /sys /dev /tmp /run`, with `/tmp` set sticky) are written
+inline against the same writer. No host staging directory exists at
+any point. The prepared rootfs is cached on disk keyed by the
+user-image digest.
 
-Why shell out instead of using a pure-Go ext4 writer (go-diskfs)?
-go-diskfs's ext4 implementation is incomplete on the write path — it
-fails extent-tree promotion on multi-MB files (the agent itself is
-~10 MB) and journal initialization on rootfs sizes typical of real
-toolchain images (~1 GB and up). e2fsprogs' `mkfs.ext4` has been the
-canonical implementation for two decades and is on every Linux that
-could host a worker; the dependency cost is one stable, package-managed
-binary.
+Why squashfs? It's naturally read-only (matching how the kernel
+mounts it inside the guest), compresses well in the production path,
+and lets us encode the entire on-disk image directly from a
+streaming tar — no intermediate filesystem tree on the host, no
+shell-outs. The squashfs format is also simple enough to encode
+clean-room from a reverse-engineered writeup, so the whole pipeline
+stays in code we own with no GPL trust boundary in the build path
+(important for the licensing posture in §1).
+
+Why not the previous ext4 + `mkfs.ext4 -d` approach? It worked but
+forced a `tar -xpf` shell-out and an on-host staging directory full
+of attacker-controlled file content (see §4.14), and depended on
+`mkfs.ext4` / `e2fsprogs` being present on every worker host. The
+streaming squashfs writer removes both surfaces in one change.
+
+The production compressor is gzip via stdlib `compress/zlib` (the
+squashfs "gzip" compressor ID expects an RFC 1950 zlib stream, not
+the RFC 1952 gzip-with-header stream — `compress/gzip` would
+produce something the kernel decoder rejects). Gzip is the most
+universally compiled-in squashfs decompressor across Linux kernel
+builds, including the minimal Firecracker reference kernels, so
+it's the v1 choice over faster-but-less-universal zstd. Switching
+to zstd later is a one-file adapter against the same `Compressor`
+interface. A `StoredCompressor` (every block raw, gzip declared in
+the superblock so the kernel never invokes a decoder) ships in the
+package for tests and for callers that explicitly want
+uncompressed output.
+
+Sealed images are padded out to a 4 KiB boundary in `Writer.Close`,
+matching `mksquashfs`'s default. `bytes_used` stays at the
+unpadded logical size; the padding exists so the kernel's
+`sb_bread` can read the last 1 KiB logical block of squashfs data
+without short-reading past the block-device's reported size. (We
+discovered this empirically: without padding, Firecracker's
+virtio_blk reported the file size exactly, the kernel's last
+read failed with `-EIO`, and `fill_super` returned without logging
+because the failure path bails before the `SQUASHFS error:` print.)
 
 On the **Windows/hcsshim** path containerd's image pull + snapshotter
 does the equivalent.
@@ -905,68 +945,82 @@ combined with **signed artifacts**: the worker signs the `(cache_key,
 output_digest)` tuple and the client verifies the signature before
 writing the `.o` to disk, so even the wire path is tamper-evident.
 
-### 4.14 Rootfs Extraction Hardening (Follow-up)
+### 4.14 Rootfs Extraction Hardening
 
 The §4.3 image→rootfs pipeline runs against **attacker-controlled OCI
 image bytes** — the entire multi-tenancy story assumes the tenant is
-hostile, so the bytes flowing through `crane.Pull` → `mutate.Extract`
-→ tar extraction → `mkfs.ext4 -d` are not trusted. The current
-implementation (`internal/worker/image/rootfs/rootfs.go`) is mostly
-safe but has known gaps that should be closed before this lands in a
-production deployment.
+hostile, so every byte flowing through `crane.Pull` → `mutate.Extract`
+→ the squashfs writer is on the threat surface.
 
-Threat surface, by stage:
+Where the threats used to live, before the streaming squashfs
+rewrite, were a `tar -xpf` shell-out, a host staging directory full
+of materialized attacker content, and a `mkfs.ext4 -d` call against
+that directory. That structure produced six concrete worry items —
+path traversal via `../../etc/foo`, symlink racing across the
+extraction window, hardlink targets resolving outside the
+extraction tree, suid/sgid binaries briefly resident on the host
+filesystem, mknod of arbitrary device nodes on the host, and
+unbounded staging-directory size from uncompressed flattened OCI
+tars — plus the kernel-level e2fsprogs trust surface for the
+`mkfs.ext4` binary itself.
 
-- **`crane.Pull` + `mutate.Extract`** (in-process Go, vetted by the
-  ecosystem). Low risk.
-- **`tar -xpf` of the spooled flattened tar.** The soft underbelly.
-  Depending on which `tar` implementation is in `$PATH`, a malicious
-  image can attempt:
-  - **Path traversal** — entries named `../../etc/foo`. GNU tar 1.30+
-    blocks by default; older tars and some BSD/busybox variants
-    don't.
-  - **Symlink racing** — first entry creates `etc -> /etc`, second
-    writes `etc/passwd`. Modern GNU tar refuses to follow; older
-    versions had bugs here.
-  - **Hardlink attacks** — `linkname=/etc/shadow`. GNU tar checks
-    that link targets resolve inside the extraction tree.
-  - **suid/sgid escalation** — `tar -xpf` preserves modes. A
-    root-owned suid binary briefly living under our staging dir is a
-    local-priv-escalation vector for any sibling process under the
-    worker user.
-  - **Device-node creation** — TypeChar/TypeBlock entries with
-    mknod. As root, tar will create them under staging.
-  - **Tar bombs** — uncompressed flattened OCI tars can be
-    arbitrarily large. We don't currently cap.
-- **`mkfs.ext4 -d`.** Narrow surface — libext2fs reads our (now
-  populated) staging dir and writes a fresh ext4. Doesn't exec
-  staging contents, doesn't interpret tar headers. e2fsprogs CVEs
-  cluster on the *parse* side (mounting/fsck'ing malicious ext4),
-  not the format side. Worst plausible failure: malformed ext4 that
-  fails to mount in the guest — noisy, not silent compromise.
+The streaming squashfs rewrite (`squashfs/` +
+`internal/worker/image/rootfs/`) collapses that surface:
 
-Mitigations, ranked by impact / cost:
+- **No `tar -xpf`.** OCI layer bytes are read with Go's
+  `archive/tar` inside the worker process. Path validation
+  (`normalizeTarPath`) rejects empty names, NUL bytes, absolute
+  paths inside the archive, and any `.` or `..` segment at parse
+  time, before the entry name reaches the squashfs writer.
+- **No host staging directory.** Every tar entry becomes a typed
+  `squashfs.Create*` call against an in-process writer that
+  produces the final `.sqsh` file directly. Suid binaries, device
+  nodes, and symlinks named by the user image only ever exist
+  inside the sealed squashfs file — which is mounted read-only with
+  `nodev,nosuid` inside the guest, neutralizing them at the place
+  they would be evaluated.
+- **No `mkfs.ext4` shell-out.** e2fsprogs is no longer in the
+  trust boundary. The squashfs writer is clean-room Go in-tree code
+  we own end-to-end, written against a non-GPL format reference.
+- **Symlink-racing window is closed by construction.** There's no
+  filesystem step where an entry can be opened by name and another
+  entry races to redirect that name; entries are serialized into
+  the squashfs file as the tar is read.
+- **Hardlink validation.** `CreateHardlink` requires its target to
+  have been created earlier as a regular file (`ErrHardlinkTarget`
+  otherwise), so `linkname` referring to an off-image path or to a
+  directory is rejected at writer time rather than silently
+  resolving against the host.
+- **`/.hpcc` namespace is stripped.** A hostile image cannot
+  pre-empt the agent injection path by shipping its own
+  `/.hpcc/agent` — those entries are dropped during the tar
+  stream and the worker writes its agent afterwards. Tested.
+- **On-wire format is externally validated.** `unsquashfs` from
+  squashfs-tools is invoked against produced images in CI on every
+  build, so a writer-side regression cannot silently emit a
+  malformed but locally-self-consistent rootfs that only fails when
+  the kernel tries to mount it.
 
-1. **Deployment-side**: mount the rootfs cache dir's parent on tmpfs
-   with `nosuid,nodev,noexec`. Even if tar is tricked into dropping
-   a suid binary or device node under staging, it can't be
-   exploited. mkfs.ext4 only reads from staging — `noexec` doesn't
-   block that. Cheap, document as a deployment requirement.
-2. **Cap extracted size** before invoking mkfs.ext4. A `du -sb
-   staging` against a configured ceiling rejects 100 GB tar bombs
-   cheaply. ~10 lines.
-3. **Replace `exec.Command("tar", ...)` with a Go-native
-   extractor.** The real fix. An `archive/tar` reader with explicit
-   traversal/symlink/hardlink validation, optional suid stripping,
-   no foreign tar implementation in the trust boundary. The ~150
-   lines of validated extractor code replace one `tar` shell-out
-   with semantics we own end-to-end.
+#### Residual gaps
 
-Containerd's snapshotter, BuildKit, and Docker's image pull all use
-Go-native extraction with explicit safety wrappers for exactly these
-reasons. v1 ships with the shell-out path because it's the smallest
-correct change after dropping go-diskfs; (3) is the planned
-follow-up before regulated-environment deployment.
+One concern from the original threat list is not yet addressed by
+the rewrite, because it exists independent of *how* the rootfs is
+materialized:
+
+- **Tar-bomb size cap.** A hostile image can describe an
+  arbitrarily large logical filesystem in its layer tar — both in
+  total byte count and in entry count. The streaming writer
+  doesn't cap either today, so a tar describing millions of
+  zero-byte files would balloon worker memory holding inode
+  metadata before `Close()` writes anything. Mitigation: enforce
+  `(max_total_bytes, max_entry_count)` ceilings inside
+  `streamTarToSquashfs` and abort with a clean error past either.
+  ~15 lines. Tracked in the Phase 4 milestone list (item §31).
+
+A future optimization — *not* hardening — is swapping the
+production compressor from gzip to zstd for smaller cache
+footprint. The `Compressor` interface accommodates this without
+any pipeline change.
 
 ### Milestone
 
@@ -1104,7 +1158,7 @@ internal/
                       jailer setup, vsock dial, mount cleanup,
                       DangerouslyExecOnHost dev backend
     image/
-      rootfs/       — OCI pull → flatten → tar -xpf → mkfs.ext4 ext4 builder (Linux)
+      rootfs/       — OCI pull → flatten → streaming tar → squashfs (Linux)
       cdimage/      — containerd image prep (Windows path, follow-up)
 agent/              — separate Go module: in-VM hpcc-agent (Linux) — PID-1 init,
                       mount setup, zombie reaping, AgentService.Exec gRPC server
@@ -1115,8 +1169,11 @@ proto/              — separate Go module: shared agent↔runner wire schema.
                       proto/agent/agent.proto + generated .pb.go. Imported by
                       both the main module and the agent module without
                       dragging either side's heavy deps in the other direction
+squashfs/           — separate Go module: clean-room Go squashfs 4.0 writer.
+                      Pluggable Compressor; in-tree, no GPL deps in the
+                      build path. Format-validated in CI via unsquashfs.
 firecracker/        — generated Firecracker VMM API client (go-swagger)
-go.work             — multi-module workspace tying all four modules together
+go.work             — multi-module workspace tying all five modules together
 ```
 
 ---
@@ -1325,14 +1382,31 @@ timezone, hostname inside the VM. Document LTO/PGO caveats.
     bounded body reads, watermark-gated eviction with
     single-flighted bucket scan, opt-in `auto_create`,
     object-level-IAM-friendly init smoke-test.
-23. **Image→rootfs pipeline (Linux Firecracker)** —
-    `internal/worker/image/rootfs/`. `crane.Pull` →
-    `mutate.Extract` → `tar -xpf` → `mkfs.ext4 -d` with
-    pre-created standard mountpoints and post-extract agent
-    injection. go-diskfs's ext4 writer turned out to be unusable on
-    real-sized rootfs (extent-tree promotion, journal init bugs);
-    shelling out to e2fsprogs's `mkfs.ext4` is the v1 answer.
-    Hardening tracked in §4.14.
+23. **Image→rootfs streaming pipeline (Linux Firecracker)** —
+    `internal/worker/image/rootfs/` + the in-tree `squashfs/`
+    module. `crane.Pull` → `mutate.Extract` → `archive/tar` reader
+    feeding typed `squashfs.Create*` calls in one streaming pass.
+    `/.hpcc` namespace stripping, post-stream agent injection,
+    standard mountpoints (`/proc /sys /dev /tmp /run`, `/tmp`
+    sticky). Production compressor is gzip via stdlib
+    `compress/zlib` (the squashfs "gzip" ID expects RFC 1950 zlib,
+    not RFC 1952 gzip-with-header — picking the wrong package
+    silently fails kernel mount). Sealed images are padded to a 4
+    KiB boundary in `Writer.Close` so the kernel's `sb_bread` can
+    read the last logical block of squashfs data without
+    short-reading past the block-device's reported size; the
+    padding bug originally manifested as a silent kernel mount
+    panic against a working-looking image. No host staging
+    directory, no `tar -xpf`/`mkfs.*` shell-outs. The squashfs
+    writer is clean-room Go written against a non-GPL format
+    reference; produced images are validated against `unsquashfs`
+    in CI on every build, and the full path is exercised
+    end-to-end through `firecracker_e2e_test.go` (real kernel
+    mount, busybox boot, agent dial). Replaces the earlier ext4 +
+    `mkfs.ext4 -d` approach (and the short-lived go-diskfs
+    experiment before it). Most of the original §4.14 threat
+    surface dissolved with this rewrite; residual caps tracked
+    there.
 24. **Raw Firecracker driver** —
     `internal/worker/runtime/firecracker.go` + `firecracker_e2e_test.go`.
     Jailer launch, kernel/rootfs staging, vsock device config,
@@ -1379,11 +1453,17 @@ timezone, hostname inside the VM. Document LTO/PGO caveats.
     locally; the scheduler learns about the dead VM only on the next
     heartbeat tick. A direct failure RPC would make client retries
     pick up a fresh worker faster.
-31. **Rootfs extraction hardening** (§4.14). Replace the `tar -xpf`
-    shell-out with a Go-native, traversal-validating `archive/tar`
-    extractor; cap extracted size; document the `nosuid,nodev,noexec`
-    tmpfs deployment requirement. Required before any
-    regulated-environment deployment.
+31. **Tar-bomb caps on the streaming reader** (§4.14). Cap
+    `streamTarToSquashfs` at configurable `max_total_bytes` /
+    `max_entry_count` ceilings so a hostile tar describing
+    millions of small entries can't OOM the worker before
+    `Close()` writes anything. ~15 lines. The larger §4.14
+    structural items — tar-shell-out removal, host staging dir
+    removal, e2fsprogs-out-of-trust-boundary — landed as part of
+    milestone §23's squashfs rewrite. Production v1 ships with
+    real gzip compression (stdlib `compress/zlib`, the format
+    expects an RFC 1950 stream); the zstd swap is a later
+    optimization, not hardening.
 32. **Phase 5 polish**. `hpcc inspect`, `hpcc explain`, local-cache
     LRU eviction under `max_size`, Prometheus endpoints on daemon /
     worker / scheduler, per-build summary, durable audit-record
