@@ -12,8 +12,9 @@ import (
 
 type clangCompiler struct {
 	// name is the normalized argv[0] basename: "clang", "clang++",
-	// "cc", or "c++". Drives C-vs-C++ selection in the preprocessed
-	// rewriter; the actual binary on PATH is whatever the user named.
+	// "cc", "c++", "gcc", or "g++". Drives C-vs-C++ selection in the
+	// preprocessed rewriter; the actual binary on PATH is whatever
+	// the user named.
 	name string
 	path string   // argv[0] as the user supplied it
 	exec Executor // LocalExecutor by default; worker swaps in Task.Exec

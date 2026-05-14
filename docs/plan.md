@@ -1353,8 +1353,8 @@ timezone, hostname inside the VM. Document LTO/PGO caveats.
 16. **Client-side argv rewriting** — `internal/compiler/rewrite.go`.
     `RewritePathPrefix`, `Compiler.RewriteForPreprocessed`,
     `ValidateNoHostPaths`. Both compiler families implement
-    `RewriteForPreprocessed` — GNU walker (clang/clang++/cc/c++) and
-    cl.exe walker.
+    `RewriteForPreprocessed` — GNU walker (clang/clang++/cc/c++/gcc/g++)
+    and cl.exe walker.
 17. **Worker runtime interface + dev backend** —
     `internal/worker/runtime/runtime.go` (interface + `ContainerSpec`,
     `ExecRequest`/`ExecResult`), `dangerous.go`

@@ -16,12 +16,15 @@ import (
 func Detect(argv0 string) (Compiler, error) {
 	name := normalizeName(argv0)
 	switch name {
-	case "clang", "clang++", "cc", "c++":
+	case "clang", "clang++", "cc", "c++", "gcc", "g++":
 		// cc and c++ are the POSIX-named drivers — on Linux they're
-		// usually GCC, on macOS they're Apple Clang. Either way the
+		// usually GCC, on macOS they're Apple Clang. gcc/g++ are the
+		// GNU-vendor names for the same compilers. Either way the
 		// argument grammar is GNU-flavored, which is all the wrapper
 		// needs to know; the actual binary on PATH is what runs the
-		// compile.
+		// compile. The type name `clangCompiler` is a historical
+		// holdover from the days before GCC was supported — it
+		// drives every GNU-grammar compiler now.
 		return &clangCompiler{name: name, path: argv0, exec: LocalExecutor{}}, nil
 	case "cl":
 		return &clCompiler{name: name, path: argv0, exec: LocalExecutor{}}, nil

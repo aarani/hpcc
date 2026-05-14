@@ -24,7 +24,9 @@ func TestDetect(t *testing.T) {
 		{"cl", "cl", enum.MSVCFamily, false},
 		{"cl.exe", "cl", enum.MSVCFamily, false},
 		{`C:\VC\bin\CL.EXE`, "cl", enum.MSVCFamily, false},
-		{"gcc", "", 0, true}, // intentionally unsupported in v1
+		{"gcc", "gcc", enum.GNUFamily, false},
+		{"g++", "g++", enum.GNUFamily, false},
+		{"/usr/bin/gcc", "gcc", enum.GNUFamily, false},
 		{"nonsense", "", 0, true},
 	}
 	for _, tc := range cases {
