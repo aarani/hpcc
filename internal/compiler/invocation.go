@@ -45,6 +45,16 @@ type Invocation struct {
 	// RawArgs is the argv we were given, after @file expansion.
 	RawArgs []string
 
+	// Cwd is the working directory the compiler should run from.
+	// Empty means "inherit hpcc's own cwd" — correct for the in-process
+	// `hpcc wrap` path (the wrapper is invoked from the right place by
+	// make/etc.). The daemon sets this to the client's cwd so spawned
+	// gcc/cl invocations resolve joined-form `-Iinclude`, auto-derived
+	// depfile paths, and other relative arguments the way they would
+	// if the user had run the compiler directly. NOT part of CacheKey
+	// — only file content matters, not where it was compiled from.
+	Cwd string
+
 	// PreprocessedDigest, if non-nil, is the BLAKE3-256 of the
 	// already-preprocessed source bytes. CacheKey treats it as a
 	// substitute for running the preprocessor: skip FindDependencies,

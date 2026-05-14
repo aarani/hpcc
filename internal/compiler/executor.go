@@ -14,7 +14,14 @@ import (
 // means hpcc itself couldn't dispatch (binary missing, containerd
 // unreachable, etc.); a non-zero exit code is normal cacheable data.
 type Executor interface {
-	Run(bin string, args, extraEnv []string) (stdout, stderr []byte, exitCode int, err error)
+	// cwd, when non-empty, is the working directory the spawned process
+	// should run from. Empty means inherit the parent's cwd. The
+	// runtime/in-VM executor ignores cwd because the FC VM has its own
+	// fixed staging paths, but the daemon-side LocalExecutor needs it
+	// so spawned compilers see relative `-Iinclude` / `-MF foo.d`
+	// arguments resolve the same way they would if the user had run
+	// the compiler directly.
+	Run(bin string, args, extraEnv []string, cwd string) (stdout, stderr []byte, exitCode int, err error)
 
 	// ReadOutput returns the bytes of a file produced by a previous Run.
 	// Local: os.ReadFile from the host fs. Task.Exec: read from the
@@ -27,11 +34,14 @@ type Executor interface {
 // path; the worker swaps in a containerd-backed executor.
 type LocalExecutor struct{}
 
-func (LocalExecutor) Run(bin string, args, extraEnv []string) (stdout, stderr []byte, exitCode int, err error) {
+func (LocalExecutor) Run(bin string, args, extraEnv []string, cwd string) (stdout, stderr []byte, exitCode int, err error) {
 	var so, se bytes.Buffer
 	cmd := exec.Command(bin, args...)
 	cmd.Stdout = &so
 	cmd.Stderr = &se
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
 	// Forward the wrapper's own stdin to the compiler. Several
 	// real-world callers feed source through "-" on stdin: the
 	// Linux kernel's scripts/cc-version.sh preprocesses a heredoc

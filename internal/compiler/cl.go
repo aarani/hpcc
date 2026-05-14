@@ -27,7 +27,7 @@ func (c *clCompiler) Preprocess(inv *Invocation) (*PreprocessResult, error) {
 	// /nologo suppresses cl.exe's banner so preprocessed output stays clean.
 	// Harmless if the user already passed it.
 	args := append([]string{"/E", "/nologo"}, stripMSVCModeAndOutput(inv.RawArgs)...)
-	return runPreprocessor(c.exec, c.path, args)
+	return runPreprocessor(c.exec, c.path, args, inv.Cwd)
 }
 
 func (c *clCompiler) FindDependencies(inv *Invocation) ([]string, error) {
@@ -38,7 +38,7 @@ func (c *clCompiler) FindDependencies(inv *Invocation) ([]string, error) {
 	// it's localized and the parser misses every line).
 	args := append([]string{"/E", "/showIncludes", "/nologo"},
 		stripMSVCModeAndOutput(inv.RawArgs)...)
-	_, stderr, exitCode, err := runCompilerCmd(c.exec, c.path, args, []string{"VSLANG=1033"})
+	_, stderr, exitCode, err := runCompilerCmd(c.exec, c.path, args, []string{"VSLANG=1033"}, inv.Cwd)
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +52,7 @@ func (c *clCompiler) FindDependencies(inv *Invocation) ([]string, error) {
 
 func (c *clCompiler) Invoke(inv *Invocation) (*InvocationResult, error) {
 	start := time.Now()
-	stdout, stderr, exitCode, err := runCompilerCmd(c.exec, c.path, inv.RawArgs, nil)
+	stdout, stderr, exitCode, err := runCompilerCmd(c.exec, c.path, inv.RawArgs, nil, inv.Cwd)
 	if err != nil {
 		return nil, err
 	}

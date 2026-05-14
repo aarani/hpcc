@@ -48,7 +48,15 @@ func newRuntimeExecutor(ctx context.Context, c runtime.Container, srcHostPath, o
 // compiler's bin+args+env and forwards it to the container. A non-zero
 // exit code is returned as data; only dispatch failures (container dead,
 // shim error, ctx cancelled) come back as err.
-func (r *runtimeExecutor) Run(bin string, args, extraEnv []string) (stdout, stderr []byte, exitCode int, err error) {
+//
+// cwd is accepted for interface symmetry but ignored: the FC VM stages
+// sources at /run/hpcc/src/<exec>/ and outputs at /run/hpcc/out/<exec>/,
+// and the agent does its own working-directory management around those.
+// Passing the host-side cwd into the guest would either be meaningless
+// (the directory doesn't exist) or actively wrong (a host /home path
+// inside a stripped rootfs).
+func (r *runtimeExecutor) Run(bin string, args, extraEnv []string, cwd string) (stdout, stderr []byte, exitCode int, err error) {
+	_ = cwd
 	var so, se bytes.Buffer
 
 	id, err := uuid.NewV7()

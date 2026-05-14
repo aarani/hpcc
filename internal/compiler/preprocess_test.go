@@ -9,7 +9,7 @@ import (
 )
 
 func TestRunPreprocessor_capturesAndHashes(t *testing.T) {
-	res, err := runPreprocessor(LocalExecutor{},"sh", []string{"-c", "printf 'hello world'"})
+	res, err := runPreprocessor(LocalExecutor{}, "sh", []string{"-c", "printf 'hello world'"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,9 +26,9 @@ func TestRunPreprocessor_capturesAndHashes(t *testing.T) {
 }
 
 func TestRunPreprocessor_capturesStderrAndExitCode(t *testing.T) {
-	res, err := runPreprocessor(LocalExecutor{},"sh", []string{
+	res, err := runPreprocessor(LocalExecutor{}, "sh", []string{
 		"-c", "printf 'partial' ; echo failure-msg >&2 ; exit 7",
-	})
+	}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestRunPreprocessor_capturesStderrAndExitCode(t *testing.T) {
 }
 
 func TestRunPreprocessor_unrunnable(t *testing.T) {
-	_, err := runPreprocessor(LocalExecutor{},"/no/such/binary/exists", nil)
+	_, err := runPreprocessor(LocalExecutor{}, "/no/such/binary/exists", nil, "")
 	if err == nil {
 		t.Errorf("expected error for missing binary, got nil")
 	}

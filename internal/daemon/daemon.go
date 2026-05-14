@@ -275,6 +275,14 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 		return
 	}
 
+	// Preserve the client's cwd so the spawned compiler resolves
+	// joined-form `-Iinclude`, auto-derived depfiles, and any other
+	// relative arguments against the directory the client ran in,
+	// not the daemon's own cwd. resolveRelativePaths above already
+	// absolutized known separate-form path flags; this catches
+	// everything the walker can't reliably classify.
+	inv.Cwd = compileRequest.Cwd
+
 	log.Printf("compile: %s -> %s", cmd, inv.Output)
 
 	// Non-cacheable invocations (link, preprocess-only, dep-only,

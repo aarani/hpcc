@@ -375,7 +375,13 @@ func TestDaemonCwdResolvesRelativePaths(t *testing.T) {
 	}
 }
 
-func TestDaemonCwdIgnoredForAbsolutePaths(t *testing.T) {
+// TestDaemonAbsolutePathsRespectedFromAnyCwd checks that when args
+// are fully absolute, the daemon-spawned compile still succeeds —
+// the client's cwd is now load-bearing (the daemon chdirs there so
+// joined-form -Iinclude / auto-derived depfiles resolve correctly),
+// so use a real cwd here. Path-flag resolution is exercised by
+// TestDaemonCwdResolvesRelativePaths and TestResolveRelativePaths_*.
+func TestDaemonAbsolutePathsRespectedFromAnyCwd(t *testing.T) {
 	clangAvailable(t)
 	ctx := setupTestContext(t)
 	d := NewDefaultDaemon()
@@ -388,14 +394,18 @@ func TestDaemonCwdIgnoredForAbsolutePaths(t *testing.T) {
 	src := writeSource(t, dir, "abs.c", "int absolute(void) { return 0; }\n")
 	out := filepath.Join(dir, "abs.o")
 
+	// A different real directory: the daemon chdirs here, but every
+	// path in argv is absolute so it doesn't matter for resolution.
+	cwd := t.TempDir()
+
 	sendCompileRequest(t, conn, &gen.CompileRequest{
-		Cwd:  "/some/bogus/directory",
+		Cwd:  cwd,
 		Args: []string{"clang", "-c", src, "-o", out},
 	})
 
 	resp := readCompileResponse(t, conn)
 	if resp.ExitCode != 0 {
-		t.Fatalf("absolute paths should ignore cwd, got %d: %s", resp.ExitCode, resp.Stderr)
+		t.Fatalf("absolute paths under non-source cwd should still compile, got %d: %s", resp.ExitCode, resp.Stderr)
 	}
 }
 

@@ -25,15 +25,15 @@ type PreprocessResult struct {
 // Thin wrapper kept so call sites read uniformly across the package; the
 // real work lives in the Executor implementation (LocalExecutor for the
 // host path, a Task.Exec-backed executor on the worker side).
-func runCompilerCmd(e Executor, bin string, args, extraEnv []string) (stdout, stderr []byte, exitCode int, err error) {
-	return e.Run(bin, args, extraEnv)
+func runCompilerCmd(e Executor, bin string, args, extraEnv []string, cwd string) (stdout, stderr []byte, exitCode int, err error) {
+	return e.Run(bin, args, extraEnv, cwd)
 }
 
 // runPreprocessor invokes bin with args via the given Executor, capturing
 // preprocessed source (stdout), stderr, and exit code. The BLAKE3-256
 // digest of the source is computed once during this call.
-func runPreprocessor(e Executor, bin string, args []string) (*PreprocessResult, error) {
-	stdout, stderr, exitCode, err := runCompilerCmd(e, bin, args, nil)
+func runPreprocessor(e Executor, bin string, args []string, cwd string) (*PreprocessResult, error) {
+	stdout, stderr, exitCode, err := runCompilerCmd(e, bin, args, nil, cwd)
 	if err != nil {
 		return nil, err
 	}

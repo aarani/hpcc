@@ -167,7 +167,7 @@ unknown
 	}()
 
 	stdout, stderr, exitCode, err := LocalExecutor{}.Run(
-		clangPath, []string{"-E", "-P", "-x", "c", "-"}, nil)
+		clangPath, []string{"-E", "-P", "-x", "c", "-"}, nil, "")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

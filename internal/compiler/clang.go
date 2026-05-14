@@ -29,7 +29,7 @@ func (c *clangCompiler) Parse(args []string) (*Invocation, error) {
 
 func (c *clangCompiler) Preprocess(inv *Invocation) (*PreprocessResult, error) {
 	args := append([]string{"-E"}, stripGNUModeAndOutput(inv.RawArgs)...)
-	return runPreprocessor(c.exec, c.path, args)
+	return runPreprocessor(c.exec, c.path, args, inv.Cwd)
 }
 
 func (c *clangCompiler) FindDependencies(inv *Invocation) ([]string, error) {
@@ -38,7 +38,7 @@ func (c *clangCompiler) FindDependencies(inv *Invocation) ([]string, error) {
 	// Use -MM later if/when we want to elide system headers (e.g. when
 	// the toolchain identity already pins them via image digest).
 	args := append([]string{"-M"}, stripGNUModeAndOutput(inv.RawArgs)...)
-	stdout, stderr, exitCode, err := runCompilerCmd(c.exec, c.path, args, nil)
+	stdout, stderr, exitCode, err := runCompilerCmd(c.exec, c.path, args, nil, inv.Cwd)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +50,7 @@ func (c *clangCompiler) FindDependencies(inv *Invocation) ([]string, error) {
 
 func (c *clangCompiler) Invoke(inv *Invocation) (*InvocationResult, error) {
 	start := time.Now()
-	stdout, stderr, exitCode, err := runCompilerCmd(c.exec, c.path, inv.RawArgs, nil)
+	stdout, stderr, exitCode, err := runCompilerCmd(c.exec, c.path, inv.RawArgs, nil, inv.Cwd)
 	if err != nil {
 		return nil, err
 	}
