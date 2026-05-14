@@ -1,3 +1,7 @@
 chats/
 .claude/
 .idea/
+
+# bench/ outputs: per-run results, kernel checkouts, scratch caches.
+bench/results/
+bench/work/

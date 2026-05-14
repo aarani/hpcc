@@ -1,0 +1,155 @@
+name: Kernel build benchmark
+
+# Two heavy jobs that compile a real Linux kernel through hpcc and
+# report cache hit rate + cold/warm wall time. Gated to:
+#
+#   - workflow_dispatch:  on-demand from the Actions tab.
+#   - nightly cron:       so regressions in the dispatch path or the
+#                         hashing layer surface within 24h instead of
+#                         the next release.
+#
+# Not on push/PR because defconfig builds take 10–30 minutes on the
+# free GitHub runner; this is a feedback signal, not a PR gate. If
+# you want it as a gate, move the local job to push: and keep the FC
+# job here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_tag:
+        description: "Linux git tag to benchmark"
+        required: false
+        default: "v6.6"
+      config:
+        description: "kconfig target (defconfig / tinyconfig / allnoconfig)"
+        required: false
+        default: "defconfig"
+  schedule:
+    # 04:30 UTC daily — outside business hours in every timezone we
+    # care about, so a flaky FC run doesn't wake anybody.
+    - cron: "30 4 * * *"
+
+jobs:
+  local-bench:
+    name: Local-mode kernel bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.26.3"
+
+      - name: Install build deps
+        # The standard kernel build deps for x86_64. `bc`, `bison`,
+        # `flex`, `libelf-dev`, `libssl-dev` are required even for a
+        # defconfig + vmlinux build because the kernel's own build
+        # tools (genksyms, scripts/mod, certgen) link against them.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libelf-dev libssl-dev \
+            git make gawk
+
+      - name: Cache kernel checkout
+        uses: actions/cache@v4
+        with:
+          # The bench reuses bench/work/local/linux across runs when
+          # it's present, so caching that path turns the
+          # 1.5GB-clone cost from per-run to per-cache-bump.
+          path: bench/work/local/linux
+          # Keyed on the tag we're benchmarking so a config bump
+          # naturally invalidates.
+          key: linux-${{ inputs.kernel_tag || 'v6.6' }}
+
+      - name: Run local kernel bench
+        env:
+          HPCC_BENCH_KERNEL_TAG: ${{ inputs.kernel_tag || 'v6.6' }}
+          HPCC_BENCH_CONFIG: ${{ inputs.config || 'defconfig' }}
+        run: ./bench/kernel-bench.sh
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-bench-local
+          path: bench/results/
+
+  fc-bench:
+    name: Firecracker-mode kernel bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.26.3"
+
+      - name: Install build + kernel deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libelf-dev libssl-dev \
+            git make gawk
+
+      - name: Enable KVM group perms
+        # Mirror suite.yml — default Ubuntu udev rules don't give the
+        # runner user /dev/kvm access, and our jailer drops to a
+        # non-root uid that won't be in the kvm group either.
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Install firecracker + jailer
+        # Pinned to the same version suite.yml's firecracker-runtime
+        # job uses, so kernel-bench and the runtime e2e exercise the
+        # same FC release.
+        run: |
+          set -euo pipefail
+          VERSION=v1.15.1
+          ARCH=$(uname -m)
+          curl -fSL "https://github.com/firecracker-microvm/firecracker/releases/download/${VERSION}/firecracker-${VERSION}-${ARCH}.tgz" \
+            -o /tmp/fc.tgz
+          mkdir -p /tmp/fc
+          tar -xzf /tmp/fc.tgz -C /tmp/fc
+          sudo install -m 0755 "/tmp/fc/release-${VERSION}-${ARCH}/firecracker-${VERSION}-${ARCH}" /usr/local/bin/firecracker
+          sudo install -m 0755 "/tmp/fc/release-${VERSION}-${ARCH}/jailer-${VERSION}-${ARCH}"      /usr/local/bin/jailer
+
+      - name: Download Firecracker CI kernel
+        run: |
+          set -euo pipefail
+          ARCH=$(uname -m)
+          mkdir -p /tmp/fcassets
+          curl -fSL "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/${ARCH}/vmlinux-6.1.155" \
+            -o /tmp/fcassets/vmlinux
+
+      - name: Cache kernel checkout
+        uses: actions/cache@v4
+        with:
+          path: bench/work/firecracker/linux
+          key: linux-${{ inputs.kernel_tag || 'v6.6' }}-fc
+
+      - name: Run FC kernel bench
+        env:
+          HPCC_FIRECRACKER_BIN: /usr/local/bin/firecracker
+          HPCC_JAILER_BIN: /usr/local/bin/jailer
+          HPCC_TEST_KERNEL: /tmp/fcassets/vmlinux
+          HPCC_BENCH_KERNEL_TAG: ${{ inputs.kernel_tag || 'v6.6' }}
+          # tinyconfig by default — defconfig under FC dispatch is
+          # multi-hour on a 2-vCPU FC runner.
+          HPCC_BENCH_CONFIG: ${{ inputs.config || 'tinyconfig' }}
+        run: sudo -E env "PATH=$PATH" ./bench/kernel-bench-fc.sh
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-bench-firecracker
+          path: bench/results/
