@@ -109,3 +109,64 @@ func TestParseGNU_defaultsToLink(t *testing.T) {
 		t.Errorf("Mode = %v, want LinkMode", inv.Mode)
 	}
 }
+
+// TestParseGNU_inferDefaultOutput pins the gcc convention that
+// `gcc -c path/to/foo.c` (no -o) writes `foo.o` in cwd. Hpcc has to
+// know this so the cache can read the file back on miss and write
+// it out on hit; previously inv.Output stayed empty and a cache hit
+// silently failed to materialize the object file after a clean.
+func TestParseGNU_inferDefaultOutput(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"bare basename", []string{"-c", "foo.c"}, "foo.o"},
+		{"relative dir is stripped", []string{"-c", "sub/foo.c"}, "foo.o"},
+		{"absolute dir is stripped", []string{"-c", "/abs/path/foo.c"}, "foo.o"},
+		{"c++ extension", []string{"-c", "src/foo.cpp"}, "foo.o"},
+		{"unknown extension still trims last dot", []string{"-c", "foo.weird"}, "foo.o"},
+		{"explicit -o not overridden", []string{"-c", "foo.c", "-o", "build/x.o"}, "build/x.o"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inv, err := ParseGNU(tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if inv.Output != tc.want {
+				t.Errorf("Output = %q, want %q", inv.Output, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseGNU_inferOutputOnlyForSingleInputCompile guards the modes
+// and shapes where inference must NOT fire — link mode (a.out is
+// gcc's job, not the cache's), multi-input compiles (one .o per
+// input doesn't fit V1Cache's single-output shape), preprocess and
+// assemble modes (uncached, compiler handles its own defaults), and
+// stdin (no input name to base a default on).
+func TestParseGNU_inferOutputOnlyForSingleInputCompile(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"link mode (no -c)", []string{"foo.c"}},
+		{"multi-input compile", []string{"-c", "foo.c", "bar.c"}},
+		{"preprocess only", []string{"-E", "foo.c"}},
+		{"assemble only", []string{"-S", "foo.c"}},
+		{"stdin source", []string{"-c", "-x", "c", "-"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inv, err := ParseGNU(tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if inv.Output != "" {
+				t.Errorf("Output = %q, want empty", inv.Output)
+			}
+		})
+	}
+}

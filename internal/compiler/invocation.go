@@ -59,6 +59,52 @@ func NewInvocation() *Invocation {
 	return &Invocation{Defines: map[string]string{}}
 }
 
+// Cacheable reports whether this invocation can be served from /
+// recorded into the hpcc V1 cache. The callers (runner.Run and
+// the daemon's compile handler) gate cache lookup and store on it
+// so we never produce or consume entries that the cache shape
+// can't represent correctly.
+//
+// False for:
+//
+//   - Non-compile modes (link/preprocess/dep-only/assemble). Link
+//     inputs are .o/.a files that depend on too much external
+//     state to key on source hash; the rest are either cheap or
+//     write to stdout/temp files that don't fit a single-output
+//     cache entry.
+//
+//   - Stdin-source compiles ("-" anywhere in Inputs, or the
+//     /dev/stdin synonym). The cache key incorporates preprocessed
+//     bytes via Preprocess(), which consumes stdin — by the time
+//     Invoke runs the real compile, the FD is at EOF. Caching
+//     stdin compiles would also be unsound: the bytes the key
+//     captures are the bytes we couldn't read again, so any later
+//     invocation with the same argv but different stdin content
+//     would have no way to detect the mismatch.
+//
+//   - Multi-input compiles. gcc/cl write one object per input; the
+//     V1Cache shape stores one output blob per entry, so caching
+//     here would silently drop all but one .o.
+//
+// All three of these paths fall through to a direct Compiler.Invoke,
+// which is correct: the wrapper passes the user's argv to the real
+// compiler verbatim, the compiler writes whatever files it would
+// write without hpcc in the picture, and the user sees normal
+// behavior.
+func (inv *Invocation) Cacheable() bool {
+	if inv.Mode != enum.CompileMode {
+		return false
+	}
+	if len(inv.Inputs) != 1 {
+		return false
+	}
+	switch inv.Inputs[0] {
+	case "-", "/dev/stdin":
+		return false
+	}
+	return true
+}
+
 // GetBytes computes the cache-key seed for this invocation: a 32-byte
 // BLAKE3-256 digest mixing source content, compiler identity, and the
 // cache-key-relevant flags.

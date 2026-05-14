@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -132,5 +133,49 @@ func TestClangIdentity_missingBinary(t *testing.T) {
 	_, err := c.Identity()
 	if err == nil {
 		t.Error("expected error for missing binary")
+	}
+}
+
+// TestLocalExecutor_forwardsStdin pins the behaviour the Linux kernel
+// (and other build systems) rely on: when the compiler reads source
+// from "-", the wrapper must pass its own stdin through. Without
+// this, scripts/cc-version.sh's preprocess-a-heredoc probe sees an
+// empty file, no __clang__/__GNUC__ macros are emitted, and the
+// build surfaces a misleading "unknown C compiler" error.
+func TestLocalExecutor_forwardsStdin(t *testing.T) {
+	clangPath := clangAvailable(t)
+
+	const probe = `#if defined(__clang__)
+Clang
+#elif defined(__GNUC__)
+GCC
+#else
+unknown
+#endif
+`
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	origStdin := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = origStdin })
+
+	go func() {
+		defer w.Close()
+		_, _ = w.Write([]byte(probe))
+	}()
+
+	stdout, stderr, exitCode, err := LocalExecutor{}.Run(
+		clangPath, []string{"-E", "-P", "-x", "c", "-"}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("clang exit %d; stderr=%q", exitCode, stderr)
+	}
+	out := string(stdout)
+	if !strings.Contains(out, "Clang") && !strings.Contains(out, "GCC") {
+		t.Fatalf("stdin not forwarded — preprocessor saw an empty file; got %q", out)
 	}
 }

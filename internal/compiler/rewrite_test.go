@@ -3,7 +3,6 @@ package compiler
 import (
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 )
 
@@ -253,20 +252,33 @@ func TestValidateNoHostPaths_AcceptsSystemDirs(t *testing.T) {
 	}
 }
 
-func TestRewriteForPreprocessed_NoOutputFlag(t *testing.T) {
+// TestRewriteForPreprocessed_InfersDefaultOutput pins that when the
+// user omits -o on a compile, the parser infers gcc's default
+// (basename + ".o") and the rewriter emits it explicitly. Without
+// this, a preprocessed-compile dispatched to a remote worker would
+// have nowhere to write its object file and the cache layer would
+// have no path to read back.
+func TestRewriteForPreprocessed_InfersDefaultOutput(t *testing.T) {
 	c := &clangCompiler{name: "clang"}
 	inv, err := ParseGNU([]string{"-c", "/src/foo.cpp"})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
+	if inv.Output != "foo.o" {
+		t.Errorf("ParseGNU did not infer default output; got %q want %q", inv.Output, "foo.o")
+	}
 	got, err := c.RewriteForPreprocessed(inv, "/staged/foo.i")
 	if err != nil {
 		t.Fatalf("rewrite: %v", err)
 	}
-	for _, a := range got.RawArgs {
-		if a == "-o" {
-			t.Errorf("did not expect -o when input had none, got %v", got.RawArgs)
+	found := false
+	for i, a := range got.RawArgs {
+		if a == "-o" && i+1 < len(got.RawArgs) && got.RawArgs[i+1] == "foo.o" {
+			found = true
 		}
+	}
+	if !found {
+		t.Errorf("expected -o foo.o in rewritten argv, got %v", got.RawArgs)
 	}
 }
 
@@ -366,20 +378,27 @@ func TestRewriteForPreprocessed_MSVC_ExplicitTpForcesCxx(t *testing.T) {
 	}
 }
 
-func TestRewriteForPreprocessed_MSVC_NoOutputFlag(t *testing.T) {
+func TestRewriteForPreprocessed_MSVC_InfersDefaultOutput(t *testing.T) {
 	c := &clCompiler{name: "cl"}
 	inv, err := ParseMSVC([]string{"/c", "foo.cpp"})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
+	if inv.Output != "foo.obj" {
+		t.Errorf("ParseMSVC did not infer default output; got %q want %q", inv.Output, "foo.obj")
+	}
 	got, err := c.RewriteForPreprocessed(inv, `C:\staged\foo.i`)
 	if err != nil {
 		t.Fatalf("rewrite: %v", err)
 	}
+	found := false
 	for _, a := range got.RawArgs {
-		if strings.HasPrefix(a, "/Fo") {
-			t.Errorf("did not expect /Fo when input had none, got %v", got.RawArgs)
+		if a == "/Fo:foo.obj" {
+			found = true
 		}
+	}
+	if !found {
+		t.Errorf("expected /Fo:foo.obj in rewritten argv, got %v", got.RawArgs)
 	}
 }
 

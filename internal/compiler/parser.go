@@ -58,7 +58,51 @@ func ParseGNU(args []string) (*Invocation, error) {
 	if inv.Mode == enum.UnknownMode {
 		inv.Mode = enum.LinkMode
 	}
+	inferDefaultOutput(inv, ".o")
 	return inv, nil
+}
+
+// inferDefaultOutput fills inv.Output with the conventional default
+// that gcc/clang/cl write when -o (or /Fo) is omitted. Without this,
+// the cache layer doesn't know which file to read on store or write
+// on hit, so a `gcc -c foo.c` (no -o) cache hit would silently fail
+// to materialize foo.o — the user runs `make clean`, expects the
+// next build to reproduce its objects, and gets nothing.
+//
+// gcc/cl conventions for a single input "path/to/foo.c":
+//   - compile mode (-c / /c)            → "foo.o" (or "foo.obj")
+//
+// Only compile mode is handled here. Link mode's "a.out" default,
+// preprocess mode's stdout default, and assemble mode's ".s" default
+// don't go through the cache, so the wrapper just passes argv to the
+// real compiler and the file the compiler emits on disk is what the
+// user gets — no inference needed.
+//
+// Multi-input compiles produce one .o per input and aren't cacheable
+// through the single-output V1Cache shape; we leave inv.Output empty
+// and the runner's `inv.Output != ""` guards skip the cache path.
+func inferDefaultOutput(inv *Invocation, objExt string) {
+	if inv.Mode != enum.CompileMode || inv.Output != "" || len(inv.Inputs) != 1 {
+		return
+	}
+	in := inv.Inputs[0]
+	// "-" means stdin; gcc routes the corresponding -c output to a
+	// file derived from the stdin language, but with no input name
+	// to base it on there's nothing sensible to default to.
+	if in == "-" {
+		return
+	}
+	base := in
+	if i := strings.LastIndexAny(base, `/\`); i >= 0 {
+		base = base[i+1:]
+	}
+	if dot := strings.LastIndexByte(base, '.'); dot > 0 {
+		base = base[:dot]
+	}
+	if base == "" {
+		return
+	}
+	inv.Output = base + objExt
 }
 
 // matchGNUFlag tries to match args[i] against gnuFlagsSorted. Returns the

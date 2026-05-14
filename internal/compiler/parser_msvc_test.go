@@ -117,3 +117,33 @@ func TestParseMSVC_defaultsToLink(t *testing.T) {
 		t.Errorf("Output = %q", inv.Output)
 	}
 }
+
+// TestParseMSVC_inferDefaultOutput is the cl.exe counterpart of the
+// gcc inference test: `cl /c foo.cpp` writes `foo.obj` in cwd, and
+// the parser needs to encode that so the cache layer knows the
+// output path.
+func TestParseMSVC_inferDefaultOutput(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"bare basename", []string{"/c", "foo.cpp"}, "foo.obj"},
+		{"backslash path stripped", []string{"/c", `src\foo.cpp`}, "foo.obj"},
+		{"explicit /Fo: not overridden", []string{"/c", "foo.cpp", `/Fo:build\x.obj`}, `build\x.obj`},
+		{"/Tc input form", []string{"/c", "/Tc:foo.c"}, "foo.obj"},
+		{"link mode unchanged", []string{"foo.obj"}, ""},
+		{"multi-input compile not inferred", []string{"/c", "a.cpp", "b.cpp"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inv, err := ParseMSVC(tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if inv.Output != tc.want {
+				t.Errorf("Output = %q, want %q", inv.Output, tc.want)
+			}
+		})
+	}
+}

@@ -32,6 +32,17 @@ func (LocalExecutor) Run(bin string, args, extraEnv []string) (stdout, stderr []
 	cmd := exec.Command(bin, args...)
 	cmd.Stdout = &so
 	cmd.Stderr = &se
+	// Forward the wrapper's own stdin to the compiler. Several
+	// real-world callers feed source through "-" on stdin: the
+	// Linux kernel's scripts/cc-version.sh preprocesses a heredoc
+	// via `$CC -E -P -x c -` to detect __GNUC__/__clang__, and
+	// `echo … | cc -E -` is the canonical preprocessor probe. With
+	// stdin unset the child sees an empty file, the probe parses
+	// no macros, and the surrounding build prints a misleading
+	// "unknown C compiler" diagnostic. Forwarding is a no-op for
+	// invocations that don't read stdin — exec.Cmd closes the pipe
+	// when Run returns.
+	cmd.Stdin = os.Stdin
 	if len(extraEnv) > 0 {
 		cmd.Env = append(os.Environ(), extraEnv...)
 	}

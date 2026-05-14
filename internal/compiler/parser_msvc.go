@@ -48,6 +48,7 @@ func ParseMSVC(args []string) (*Invocation, error) {
 	if inv.Mode == enum.UnknownMode {
 		inv.Mode = enum.LinkMode
 	}
+	inferDefaultOutput(inv, ".obj")
 	return inv, nil
 }
 

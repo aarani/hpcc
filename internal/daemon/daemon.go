@@ -22,7 +22,6 @@ import (
 	"github.com/aarani/hpcc/internal/config"
 	"github.com/aarani/hpcc/internal/daemon/client"
 	"github.com/aarani/hpcc/internal/daemon/dispatch"
-	"github.com/aarani/hpcc/internal/enum"
 	"github.com/aarani/hpcc/internal/runner"
 	"google.golang.org/protobuf/proto"
 
@@ -259,11 +258,13 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 
 	log.Printf("compile: %s -> %s", cmd, inv.Output)
 
-	// Non-compile invocations (link, preprocess-only, dep-only, assemble)
-	// bypass the cache and remote dispatch entirely: their inputs and
-	// outputs aren't safe to cache by source-hash, and remote workers
-	// don't have the local library/object state they'd need.
-	if inv.Mode != enum.CompileMode {
+	// Non-cacheable invocations (link, preprocess-only, dep-only,
+	// assemble, stdin source, multi-input compile) bypass the cache
+	// and remote dispatch entirely: their inputs and outputs aren't
+	// safe to cache by source-hash, and remote workers don't have
+	// the local library/object state they'd need. See Cacheable() for
+	// the full ruleset.
+	if !inv.Cacheable() {
 		result, invokeErr := context.Compiler.Invoke(inv)
 		if invokeErr != nil {
 			log.Println(fmt.Errorf("compile: %w", invokeErr))
