@@ -119,7 +119,45 @@ func (inv *Invocation) Cacheable() bool {
 	if inv.ReadsStdin() {
 		return false
 	}
+	if inv.isProbeInvocation() {
+		return false
+	}
 	return true
+}
+
+// isProbeInvocation matches the shape of build-system probes — small
+// invocations that use the C compiler driver to ask questions, not to
+// compile real translation units. The Linux kernel runs these by the
+// hundred during kconfig and the build:
+//
+//   - scripts/as-version.sh: `gcc -Wa,--version -c -x assembler-with-cpp /dev/null -o /dev/null`
+//     wants the assembler version banner on stdout. gcc short-circuits
+//     and doesn't actually produce an object.
+//
+//   - $(cc-option) macro: `gcc -Werror <flag> -c -x c /dev/null -o tmp.o`
+//     asks "does this gcc accept <flag>?" — exits non-zero if no.
+//
+// Treating these as cacheable compiles is wrong twice over: caching
+// the result is meaningless (each probe is run once per build), and
+// dispatching them through the FC path uploads empty preprocessed
+// bytes to a VM that has no way to produce the host-specific
+// diagnostic the kernel is asking for. Routing them to a direct
+// Compiler.Invoke on the host runs the real driver, which is exactly
+// what the probe is asking about.
+//
+// The heuristic is "/dev/null appears as input or output." Real
+// translation units don't use /dev/null on either side; probes
+// almost always do.
+func (inv *Invocation) isProbeInvocation() bool {
+	if inv.Output == "/dev/null" {
+		return true
+	}
+	for _, in := range inv.Inputs {
+		if in == "/dev/null" {
+			return true
+		}
+	}
+	return false
 }
 
 // GetBytes computes the cache-key seed for this invocation: a 32-byte

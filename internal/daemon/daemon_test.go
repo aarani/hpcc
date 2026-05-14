@@ -399,6 +399,57 @@ func TestDaemonCwdIgnoredForAbsolutePaths(t *testing.T) {
 	}
 }
 
+// TestResolveRelativePaths_dontMangleNonPathValues pins the rule
+// that separate-form value flags (like `-x lang`) don't get their
+// value run through filepath.Join. The Linux kernel's
+// scripts/as-version.sh probes the assembler with
+// `gcc -Wa,--version -c -x assembler-with-cpp /dev/null -o /dev/null`;
+// before the nonPathValueFlags carve-out the daemon would rewrite
+// that to `-x /cwd/assembler-with-cpp` and gcc would silently fall
+// back to extension-based language detection, losing the probe.
+func TestResolveRelativePaths_dontMangleNonPathValues(t *testing.T) {
+	cwd := "/build"
+	cases := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{
+			name: "-x language value stays verbatim",
+			args: []string{"-c", "-x", "assembler-with-cpp", "/dev/null", "-o", "/dev/null"},
+			want: []string{"-c", "-x", "assembler-with-cpp", "/dev/null", "-o", "/dev/null"},
+		},
+		{
+			name: "-x with relative source still resolves source",
+			args: []string{"-c", "-x", "c", "foo.c", "-o", "foo.o"},
+			want: []string{"-c", "-x", "c", "/build/foo.c", "-o", "/build/foo.o"},
+		},
+		{
+			name: "-target value stays verbatim",
+			args: []string{"-target", "x86_64-linux-gnu", "-c", "foo.c"},
+			want: []string{"-target", "x86_64-linux-gnu", "-c", "/build/foo.c"},
+		},
+		{
+			name: "ordinary -o path still resolves",
+			args: []string{"-c", "foo.c", "-o", "build/foo.o"},
+			want: []string{"-c", "/build/foo.c", "-o", "/build/build/foo.o"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveRelativePaths(tc.args, cwd)
+			if len(got) != len(tc.want) {
+				t.Fatalf("length mismatch: got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("arg %d: got %q, want %q (full: %v)", i, got[i], tc.want[i], got)
+				}
+			}
+		})
+	}
+}
+
 func TestDaemonGracefulDisconnect(t *testing.T) {
 	d := NewDefaultDaemon()
 	l := startTestDaemon(t, d)

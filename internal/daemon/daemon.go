@@ -189,10 +189,23 @@ func (d *DefaultDaemon) getOrCreateContext(cmd string) (*compiler.Context, error
 	return actual.(*compiler.Context), nil
 }
 
+// pathFlags lists separate-form flags whose next argv element is a
+// filesystem path the daemon must resolve to the client's cwd.
 var pathFlags = map[string]bool{
 	"-o": true, "-I": true, "-L": true,
 	"-isystem": true, "-iquote": true, "-isysroot": true,
 	"-include": true, "-MF": true, "-MQ": true, "-MT": true,
+}
+
+// nonPathValueFlags lists separate-form flags whose next argv element
+// is a *value* (language name, target triple, etc.) — NOT a path. The
+// walker must skip past these without applying the
+// "positional-arg → resolve" rule below, or it mangles values like
+// `-x assembler-with-cpp` into `/cwd/assembler-with-cpp`. The kernel's
+// scripts/as-version.sh probe was the case that surfaced this.
+var nonPathValueFlags = map[string]bool{
+	"-x":      true, // language: -x c, -x assembler-with-cpp, ...
+	"-target": true, // clang target triple
 }
 
 func resolveRelativePaths(args []string, cwd string) []string {
@@ -207,12 +220,18 @@ func resolveRelativePaths(args []string, cwd string) []string {
 	}
 
 	resolveNext := make(map[int]bool)
+	skipNext := make(map[int]bool)
 	for i, a := range resolved {
-		if resolveNext[i] {
+		switch {
+		case skipNext[i]:
+			// Value slot for a non-path flag; leave verbatim.
+		case resolveNext[i]:
 			resolved[i] = resolve(a)
-		} else if pathFlags[a] {
+		case pathFlags[a]:
 			resolveNext[i+1] = true
-		} else if !strings.HasPrefix(a, "-") {
+		case nonPathValueFlags[a]:
+			skipNext[i+1] = true
+		case !strings.HasPrefix(a, "-"):
 			resolved[i] = resolve(a)
 		}
 	}

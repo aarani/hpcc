@@ -82,6 +82,21 @@ func TestCacheable(t *testing.T) {
 			inv:  &Invocation{Mode: enum.CompileMode, Inputs: nil},
 			want: false,
 		},
+		{
+			name: "as-version.sh probe (/dev/null in+out) is not cacheable",
+			inv:  &Invocation{Mode: enum.CompileMode, Inputs: []string{"/dev/null"}, Output: "/dev/null"},
+			want: false,
+		},
+		{
+			name: "cc-option probe (/dev/null in, real out) is not cacheable",
+			inv:  &Invocation{Mode: enum.CompileMode, Inputs: []string{"/dev/null"}, Output: ".tmp/probe.o"},
+			want: false,
+		},
+		{
+			name: "compile discarding output is not cacheable",
+			inv:  &Invocation{Mode: enum.CompileMode, Inputs: []string{"foo.c"}, Output: "/dev/null"},
+			want: false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
