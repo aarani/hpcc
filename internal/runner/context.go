@@ -12,14 +12,14 @@ import (
 
 // NewContext detects the requested compiler, loads the config (from the
 // path in HPCC_CONFIG, or the default user-config-dir location), wires up
-// the configured cache stores behind a V1Cache facade, and returns a
+// the configured cache stores behind a CompileCache facade, and returns a
 // ready-to-use Context.
 //
 // A missing config file is fine — defaults apply. A malformed one is
 // surfaced as an error so a typo isn't silently ignored.
 //
 // This lives in the runner package, not compiler, because constructing
-// a cache.V1Cache requires importing the cache package, which itself
+// a cache.CompileCache requires importing the cache package, which itself
 // depends on compiler types — putting NewContext in compiler would form
 // an import cycle.
 func NewContext(compilerName string) (*compiler.Context, error) {
@@ -47,6 +47,6 @@ func NewContext(compilerName string) (*compiler.Context, error) {
 	}
 
 	ctx := &compiler.Context{Compiler: c, Config: &cfg}
-	ctx.Cache = cache.NewV1Cache(ctx, stores)
+	ctx.Cache = cache.NewCompileCache(ctx, stores)
 	return ctx, nil
 }

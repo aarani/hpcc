@@ -94,13 +94,30 @@ type Worker struct {
 	runtime runtime.Runtime
 
 	// caches is the worker-side cache backend list, built once from
-	// Config.Caches. A fresh V1Cache is wrapped around these per Compile
-	// RPC because V1Cache holds a *compiler.Context reference that's
+	// Config.Caches. A fresh CompileCache is wrapped around these per Compile
+	// RPC because CompileCache holds a *compiler.Context reference that's
 	// only valid for one invocation.
 	caches []store.Store
 
+	// sourceStore is the worker-local namespace for CAS source blobs.
+	// Initialized from the first disk-typed entry in Config.Caches,
+	// namespaced to "source" so it sits next to the "compile" entries
+	// under the same on-disk root without colliding. nil when no disk
+	// cache is configured — in that case CAS-mode RPCs
+	// (FindMissingBlobs / UploadBlobs) fail and the client falls back
+	// to PREPROCESSED. The CompileCache path is unaffected.
+	sourceStore store.Store
+
 	gen.UnimplementedWorkerServiceServer
 }
+
+// blobData is the named slot under each source-blob entry's key in
+// sourceStore. The Store interface keys are (digest, name); the
+// digest discriminates which blob, the name discriminates which
+// slot. Source blobs only have the one slot — the bytes themselves
+// — but the store API still requires a name, and a fixed constant
+// keeps the call sites unambiguous about what they're touching.
+const blobData = "data"
 
 var _ gen.WorkerServiceServer = (*Worker)(nil)
 
@@ -126,6 +143,18 @@ func NewWorker(cfg Config) (*Worker, error) {
 	caches, err := store.FromConfig(cfg.Caches)
 	if err != nil {
 		return nil, fmt.Errorf("init worker caches: %w", err)
+	}
+	// Pick the first disk-typed cache to back the CAS source-blob
+	// namespace. CompileCache will namespace its own view of the same
+	// underlying disk store to "compile"; we take "source". S3 caches
+	// are skipped — source blobs are worker-local-ephemeral by design
+	// (see docs/cas.md Step 4). Nil when no disk cache is configured.
+	var sourceStore store.Store
+	for i, c := range cfg.Caches {
+		if c.Type == enum.CacheDisk {
+			sourceStore = caches[i].Namespace("source")
+			break
+		}
 	}
 	rt, err := runtime.Select(cfg.Runtime.Handler, runtime.Options{
 		Firecracker: runtime.FirecrackerOptions{
@@ -165,7 +194,7 @@ func NewWorker(cfg Config) (*Worker, error) {
 		sessionTTL = d
 	}
 	rt = runtime.NewPooledRuntime(rt, idleTTL, sessionTTL, cfg.Pool.MaxActive)
-	return &Worker{Config: cfg, caches: caches, runtime: rt}, nil
+	return &Worker{Config: cfg, caches: caches, sourceStore: sourceStore, runtime: rt}, nil
 }
 
 func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.CompileResponse, error) {
@@ -189,6 +218,21 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 	containerID, err := uuid.NewV7()
 	if err != nil {
 		return nil, fmt.Errorf("generate compile UUID: %w", err)
+	}
+
+	// CAS-mode: re-verify the manifest digest BEFORE doing any other
+	// work for this request. We do this here (rather than next to the
+	// ManifestDigest bind below) so a tampered or malformed manifest
+	// is rejected before we pull an image, materialize blobs, or
+	// start a container — none of which produce useful state for a
+	// request we're about to refuse.
+	var verifiedManifestDigest *[32]byte
+	if cas := req.Descriptor_.GetCas(); cas != nil {
+		md, err := verifyManifestDigest(cas)
+		if err != nil {
+			return nil, fmt.Errorf("verify manifest digest: %w", err)
+		}
+		verifiedManifestDigest = &md
 	}
 
 	// Make sure the prepared image for this digest is on the worker
@@ -235,20 +279,34 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 	// For PREPROCESSED-mode requests we already have the preprocessed
 	// bytes in hand; hand the digest straight to the cache-key path so
 	// it doesn't try to re-run the preprocessor or read deps off the
-	// host filesystem (in-container paths don't translate there). CAS
-	// falls through to the executor-driven preprocessing, which is
-	// correct because the runtimeExecutor translates /src and /out at
-	// exec time.
+	// host filesystem (in-container paths don't translate there).
 	if pp := req.Descriptor_.GetPreprocessed(); pp != nil {
 		d := blake3.Sum256(pp.PreprocessedSource)
 		inv.PreprocessedDigest = &d
 	}
 
+	// For CAS-mode requests bind the (already-verified) manifest
+	// digest to the invocation so CacheKey short-circuits to the
+	// manifest-derived key. Without this rebind, CacheKey would fall
+	// through to running the preprocessor — which would not work,
+	// because the staged source paths only exist under /src
+	// in-container.
+	if verifiedManifestDigest != nil {
+		inv.ManifestDigest = verifiedManifestDigest
+	}
+
 	cctx := w.compileContext(c, req.Descriptor_.ImageDigest)
 
-	// Cache lookup is only meaningful in paranoid mode — otherwise the
-	// client owns the cache and the worker just runs the compile.
-	if w.Config.Paranoid {
+	// Cache lookup is used in two cases:
+	//   - Paranoid mode (PREPROCESSED or CAS): worker owns the cache,
+	//     client never reads or writes it.
+	//   - CAS mode (always): probe and Compile both consult the
+	//     compile cache. Skipping the recheck here would leave a race
+	//     window between probe miss and Compile where another tenant
+	//     could populate the cache and we'd still compile.
+	useCache := w.Config.Paranoid || req.Descriptor_.SourceMode == gen.SourceMode_CAS
+
+	if useCache {
 		if hit, err := cctx.Cache.Lookup(inv); err == nil && hit != nil {
 			return w.respond(cctx, req, container, inv, hit), nil
 		}
@@ -259,7 +317,7 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 		return nil, fmt.Errorf("invoke compiler: %w", err)
 	}
 
-	if w.Config.Paranoid {
+	if useCache {
 		// Store errors are non-fatal — we have the artifact, the next
 		// request can recompute and try again.
 		_ = cctx.Cache.Store(inv, result)
@@ -279,7 +337,7 @@ var workerCompileConfig = &config.Config{PreprocessingMode: enum.PreprocessLocal
 
 // compileContext bundles the compiler under test with the worker's
 // persistent cache stores into a fresh *compiler.Context. A new one is
-// built per RPC because V1Cache holds the Context by reference and the
+// built per RPC because CompileCache holds the Context by reference and the
 // Context is single-invocation by design (different runtime executor,
 // different request).
 //
@@ -294,7 +352,7 @@ func (w *Worker) compileContext(c compiler.Compiler, imageDigest string) *compil
 		Config:           workerCompileConfig,
 		IdentityOverride: []byte(imageDigest),
 	}
-	cctx.Cache = cache.NewV1Cache(cctx, w.caches)
+	cctx.Cache = cache.NewCompileCache(cctx, w.caches)
 	return cctx
 }
 
@@ -376,27 +434,38 @@ func logAudit(rec *gen.AuditRecord) {
 }
 
 func (w *Worker) ValidateToken(req *gen.CompileRequest) error {
-	// Verify the JWT in the request metadata using the scheduler's signing
-	// key. EdDSA verification expects an ed25519.PublicKey value, not a
-	// raw []byte — the JWT lib type-switches on the exact type. Convert at
-	// the boundary; ed25519.PublicKey is itself a []byte so this is a
+	if req.Descriptor_ == nil {
+		return fmt.Errorf("missing descriptor")
+	}
+	return w.validateSchedulerToken(req.Descriptor_.SchedulerToken, req.Descriptor_.TenantId, req.Descriptor_.ImageDigest)
+}
+
+// validateSchedulerToken verifies the JWT against the scheduler's
+// signing key and confirms its tenant_id / image_digest / worker_id
+// claims match the request. Pulled out as a separate helper so both
+// the Compile RPC (descriptor-shaped) and the CAS probe / upload
+// RPCs (flat-shaped, no Descriptor wrapper) can share one
+// implementation.
+func (w *Worker) validateSchedulerToken(rawToken, tenantID, imageDigest string) error {
+	// EdDSA verification expects an ed25519.PublicKey value, not a
+	// raw []byte — the JWT lib type-switches on the exact type. Convert
+	// at the boundary; ed25519.PublicKey is itself a []byte so this is a
 	// type rename, not a copy.
-	token, err := jwt.Parse(req.Descriptor_.SchedulerToken, func(token *jwt.Token) (any, error) {
+	token, err := jwt.Parse(rawToken, func(token *jwt.Token) (any, error) {
 		return ed25519.PublicKey(w.SchedulerSigningKey()), nil
 	}, jwt.WithValidMethods([]string{jwt.SigningMethodEdDSA.Alg()}))
 	if err != nil || !token.Valid {
 		return fmt.Errorf("invalid scheduler token: %w", err)
 	}
 
-	if token.Claims.(jwt.MapClaims)["tenant_id"] != req.Descriptor_.TenantId {
+	claims := token.Claims.(jwt.MapClaims)
+	if claims["tenant_id"] != tenantID {
 		return fmt.Errorf("scheduler token tenant ID does not match request")
 	}
-
-	if token.Claims.(jwt.MapClaims)["image_digest"] != req.Descriptor_.ImageDigest {
+	if claims["image_digest"] != imageDigest {
 		return fmt.Errorf("scheduler token image digest does not match request")
 	}
-
-	if token.Claims.(jwt.MapClaims)["worker_id"] != w.workerID {
+	if claims["worker_id"] != w.workerID {
 		return fmt.Errorf("scheduler token worker ID does not match request")
 	}
 

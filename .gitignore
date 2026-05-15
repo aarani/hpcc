@@ -8,3 +8,5 @@ bench/work/
 
 # `go build ./agent/...` from the repo root drops a binary here.
 /agent/agent
+# `go build ./pause/...` from the repo root drops binaries here.
+/pause/pause

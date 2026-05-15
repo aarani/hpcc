@@ -7,6 +7,65 @@ import (
 	"testing"
 )
 
+func TestRewriteForCAS_rewritesProjectPathsAndOutput(t *testing.T) {
+	inv := &Invocation{
+		Inputs: []string{"/home/alice/proj/src/main.c"},
+		Output: "/home/alice/proj/build/main.o",
+		RawArgs: []string{
+			"-c", "/home/alice/proj/src/main.c",
+			"-o", "/home/alice/proj/build/main.o",
+			"-I/home/alice/proj/include",
+			"-I/usr/include",
+			"-DDEBUG=1",
+		},
+	}
+	got := RewriteForCAS(inv, "/home/alice/proj", "/src", "/out")
+	wantRaw := []string{
+		"-c", "/src/src/main.c",
+		"-o", "/out/main.o",
+		"-I/src/include",
+		"-I/usr/include",
+		"-DDEBUG=1",
+	}
+	if len(got.RawArgs) != len(wantRaw) {
+		t.Fatalf("RawArgs len = %d, want %d (%v vs %v)", len(got.RawArgs), len(wantRaw), got.RawArgs, wantRaw)
+	}
+	for i := range wantRaw {
+		if got.RawArgs[i] != wantRaw[i] {
+			t.Errorf("RawArgs[%d] = %q, want %q", i, got.RawArgs[i], wantRaw[i])
+		}
+	}
+	if got.Output != "/out/main.o" {
+		t.Errorf("Output = %q, want /out/main.o", got.Output)
+	}
+}
+
+func TestRewriteForCAS_systemPathsUntouched(t *testing.T) {
+	inv := &Invocation{
+		RawArgs: []string{"-I/usr/include", "-I/opt/qt5/include"},
+	}
+	got := RewriteForCAS(inv, "/home/alice/proj", "/src", "/out")
+	for i, a := range got.RawArgs {
+		if a != inv.RawArgs[i] {
+			t.Errorf("system path RawArgs[%d] mutated: %q -> %q", i, inv.RawArgs[i], a)
+		}
+	}
+}
+
+func TestRewriteForCAS_handlesJoinedOutputFlag(t *testing.T) {
+	inv := &Invocation{
+		Output:  "/home/alice/proj/build/main.o",
+		RawArgs: []string{"-c", "/home/alice/proj/src/main.c", "-o/home/alice/proj/build/main.o"},
+	}
+	got := RewriteForCAS(inv, "/home/alice/proj", "/src", "/out")
+	want := []string{"-c", "/src/src/main.c", "-o/out/main.o"}
+	for i := range want {
+		if got.RawArgs[i] != want[i] {
+			t.Errorf("RawArgs[%d] = %q, want %q", i, got.RawArgs[i], want[i])
+		}
+	}
+}
+
 func TestRewritePathPrefix_JoinedAndSeparate(t *testing.T) {
 	inv, err := ParseGNU([]string{
 		"-c",

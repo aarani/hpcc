@@ -24,19 +24,33 @@ var File_worker_proto protoreflect.FileDescriptor
 
 const file_worker_proto_rawDesc = "" +
 	"\n" +
-	"\fworker.proto\x12\bprotocol\x1a\rcompile.proto2O\n" +
+	"\fworker.proto\x12\bprotocol\x1a\rcompile.proto2\x97\x02\n" +
 	"\rWorkerService\x12>\n" +
-	"\aCompile\x12\x18.protocol.CompileRequest\x1a\x19.protocol.CompileResponseB\aZ\x05./genb\x06proto3"
+	"\aCompile\x12\x18.protocol.CompileRequest\x1a\x19.protocol.CompileResponse\x12D\n" +
+	"\x11ProbeCompileCache\x12\x16.protocol.CompileProbe\x1a\x17.protocol.ProbeResponse\x12B\n" +
+	"\x10FindMissingBlobs\x12\x14.protocol.BlobDigest\x1a\x14.protocol.BlobDigest(\x010\x01\x12<\n" +
+	"\vUploadBlobs\x12\x13.protocol.BlobChunk\x1a\x16.protocol.UploadResult(\x01B\aZ\x05./genb\x06proto3"
 
 var file_worker_proto_goTypes = []any{
 	(*CompileRequest)(nil),  // 0: protocol.CompileRequest
-	(*CompileResponse)(nil), // 1: protocol.CompileResponse
+	(*CompileProbe)(nil),    // 1: protocol.CompileProbe
+	(*BlobDigest)(nil),      // 2: protocol.BlobDigest
+	(*BlobChunk)(nil),       // 3: protocol.BlobChunk
+	(*CompileResponse)(nil), // 4: protocol.CompileResponse
+	(*ProbeResponse)(nil),   // 5: protocol.ProbeResponse
+	(*UploadResult)(nil),    // 6: protocol.UploadResult
 }
 var file_worker_proto_depIdxs = []int32{
 	0, // 0: protocol.WorkerService.Compile:input_type -> protocol.CompileRequest
-	1, // 1: protocol.WorkerService.Compile:output_type -> protocol.CompileResponse
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
+	1, // 1: protocol.WorkerService.ProbeCompileCache:input_type -> protocol.CompileProbe
+	2, // 2: protocol.WorkerService.FindMissingBlobs:input_type -> protocol.BlobDigest
+	3, // 3: protocol.WorkerService.UploadBlobs:input_type -> protocol.BlobChunk
+	4, // 4: protocol.WorkerService.Compile:output_type -> protocol.CompileResponse
+	5, // 5: protocol.WorkerService.ProbeCompileCache:output_type -> protocol.ProbeResponse
+	2, // 6: protocol.WorkerService.FindMissingBlobs:output_type -> protocol.BlobDigest
+	6, // 7: protocol.WorkerService.UploadBlobs:output_type -> protocol.UploadResult
+	4, // [4:8] is the sub-list for method output_type
+	0, // [0:4] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name

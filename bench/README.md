@@ -1,13 +1,20 @@
 # Kernel-build benchmarks
 
-Two benchmark pipelines that compile a real Linux kernel through hpcc
-and report cache hit rate, cold-vs-warm wall time, and entry counts.
-They cover the two modes hpcc actually ships:
+Benchmark pipelines that compile a real Linux kernel through hpcc and
+report cache hit rate, cold-vs-warm wall time, and entry counts. They
+cover every shipped dispatch path:
 
-| Script                  | Mode             | hpcc surface exercised                             |
-|-------------------------|------------------|----------------------------------------------------|
-| `kernel-bench.sh`       | local            | `hpcc wrap` → in-process compile → disk cache      |
-| `kernel-bench-fc.sh`    | firecracker (P4) | `hpcc wrap` → dispatch → scheduler → worker → FC VM |
+| Script                     | Mode                              | hpcc surface exercised                                       |
+|----------------------------|-----------------------------------|--------------------------------------------------------------|
+| `kernel-bench.sh`          | local                             | `hpcc wrap` → in-process compile → disk cache                |
+| `kernel-bench-fc.sh`       | firecracker (P4), source mode picked by `HPCC_BENCH_SOURCE_MODE` | `hpcc wrap` → dispatch → scheduler → worker → FC VM |
+| `kernel-bench-fc-both.sh`  | firecracker, runs once per source mode | wraps `kernel-bench-fc.sh`; prints side-by-side summary |
+
+The FC bench defaults to `source_mode = "preprocessed"`; pass
+`HPCC_BENCH_SOURCE_MODE=cas` (or use the `-both.sh` wrapper) to
+exercise the CAS dispatch path. CAS mode also drops a `.hpcc` marker
+at the kernel root so manifest paths normalize project-relative — the
+gate for cross-worker / cross-developer compile-result hits.
 
 Each script:
 
@@ -88,6 +95,24 @@ means warm builds never hit the same speedup multiplier:
 | `HPCC_BENCH_POOL_MAX`            | `8` (concurrent VMs per tenant) |
 | `HPCC_BENCH_TOOLCHAIN_IMAGE`     | `docker.io/library/gcc:13.2.0` (matched to ubuntu-latest's apt gcc patch version) |
 | `HPCC_BENCH_WARM_RUNS`           | `2` (fewer than local — each FC build is much slower) |
+| `HPCC_BENCH_SOURCE_MODE`         | `preprocessed` (also accepts `cas`) |
+
+### Both source modes back-to-back
+
+```sh
+sudo -E \
+  HPCC_FIRECRACKER_BIN=/usr/local/bin/firecracker \
+  HPCC_JAILER_BIN=/usr/local/bin/jailer \
+  HPCC_TEST_KERNEL=/tmp/fcassets/vmlinux \
+  ./bench/kernel-bench-fc-both.sh
+```
+
+Runs `kernel-bench-fc.sh` once with `source_mode=preprocessed`, once
+with `source_mode=cas`, and prints a side-by-side table of cold
+seconds, warm-median, hit-rate, and cache size. Each leg gets its
+own `bench/results/<ts>-firecracker-<mode>/` directory and its own
+isolated stack (separate worker cache, daemon discovery file, xdg
+config root) so the runs don't share state.
 
 ## What's measured
 

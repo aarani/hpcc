@@ -28,8 +28,13 @@ type RemoteConfig struct {
 	TenantID    string          `toml:"tenant_id"`
 	ImageRef    string          `toml:"image_ref"`
 	ImageDigest string          `toml:"image_digest"`
-	Scheduler   SchedulerConfig `toml:"scheduler"`
-	OAuth       OAuthConfig     `toml:"oauth"`
+	// SourceMode picks the source-staging strategy: "preprocessed"
+	// (default — client preprocesses, ships bytes inline) or "cas"
+	// (client probes compile cache by manifest digest; on miss,
+	// streams missing source blobs). See docs/cas.md.
+	SourceMode enum.SourceMode `toml:"source_mode"`
+	Scheduler  SchedulerConfig `toml:"scheduler"`
+	OAuth      OAuthConfig     `toml:"oauth"`
 }
 
 // SchedulerConfig is the dial info for the scheduler gRPC endpoint.

@@ -107,22 +107,30 @@ func translateExecPath(s, srcHost, outHost string) string {
 	return s
 }
 
-// rewriteRoot replaces every occurrence of root in s with replacement,
-// but only on a path boundary (next char is "/" or end-of-string). One
-// pass, no regex; mirrors compiler.RewritePathPrefix's algorithm but
-// kept local to avoid a runtime → compiler dependency.
+// rewriteRoot replaces the FIRST occurrence of root in s with
+// replacement, but only when root sits on a path boundary (next char
+// is "/" or end-of-string). Stops after one match so that a CAS-mode
+// argv like "/src/src/main.c" maps to "<host>/src/main.c" (one
+// translation) rather than "<host><host>/main.c" (two). The leftmost
+// /src is always the in-container root marker; any subsequent /src
+// inside the path is a project-relative directory whose literal
+// bytes must survive the rewrite. One pass, no regex; mirrors
+// compiler.RewritePathPrefix's algorithm but kept local to avoid a
+// runtime → compiler dependency.
 func rewriteRoot(s, root, replacement string) string {
 	if !strings.Contains(s, root) {
 		return s
 	}
 	var b strings.Builder
 	b.Grow(len(s))
+	matched := false
 	for i := 0; i < len(s); {
-		if strings.HasPrefix(s[i:], root) {
+		if !matched && strings.HasPrefix(s[i:], root) {
 			end := i + len(root)
 			if end == len(s) || s[end] == '/' {
 				b.WriteString(replacement)
 				i = end
+				matched = true
 				continue
 			}
 		}

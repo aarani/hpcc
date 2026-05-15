@@ -33,4 +33,18 @@ type Store interface {
 	Clean(maxSize int64, maxAge time.Duration) error
 
 	Dir() string
+
+	// Namespace returns a Store view rooted at prefix within this
+	// store's address space. All Get/Put/Has/Stats/Clean calls on the
+	// returned store operate only on entries under that prefix; calls
+	// on the parent see entries from every namespace.
+	//
+	// Used to partition one underlying store across multiple cache
+	// facades — e.g. compile entries under "compile", CAS source
+	// blobs under "source", manifests under "manifest" — so the same
+	// disk root or S3 bucket backs all of them without key
+	// collision. Prefix must be a single path component (no slashes,
+	// no traversal); implementations validate and may panic on
+	// invalid input.
+	Namespace(prefix string) Store
 }

@@ -8,7 +8,7 @@ import (
 // compiler package — rather than importing the cache package directly —
 // because the cache package needs to reference Invocation/InvocationResult,
 // and pulling cache into compiler would form an import cycle. Any concrete
-// cache (e.g. cache.V1Cache) satisfies this interface via duck typing.
+// cache (e.g. cache.CompileCache) satisfies this interface via duck typing.
 type CacheBackend interface {
 	Lookup(inv *Invocation) (*InvocationResult, error)
 	Store(inv *Invocation, res *InvocationResult) error

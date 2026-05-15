@@ -125,11 +125,24 @@ func main() {
 		vmMem      = flag.String("vm-memory", "2GB", "per-VM memory")
 		vmVCPUs    = flag.Int("vm-vcpus", 2, "per-VM vCPUs")
 		poolMax    = flag.Int("pool-max-active", 8, "max concurrent VMs per tenant")
+		// sourceMode selects the client-side dispatch path baked into
+		// the generated client TOML. "preprocessed" is the v1 default
+		// (client runs gcc -E and ships bytes inline). "cas" makes
+		// the client build a content-addressed manifest and run the
+		// probe-then-upload dance; the bench script must drop a
+		// .hpcc marker at the kernel root for path normalization to
+		// fire. See docs/cas.md.
+		sourceMode = flag.String("source-mode", "preprocessed", `"preprocessed" or "cas"`)
 	)
 	flag.Parse()
 
 	if *stackDir == "" || *clientCfg == "" {
 		log.Fatalf("--stack-dir and --client-config are required")
+	}
+	switch *sourceMode {
+	case "preprocessed", "cas":
+	default:
+		log.Fatalf("--source-mode must be \"preprocessed\" or \"cas\"; got %q", *sourceMode)
 	}
 	if *fcBin == "" || *jailerBin == "" || *kernel == "" {
 		log.Fatalf("--firecracker-bin, --jailer-bin, --kernel are required (env HPCC_FIRECRACKER_BIN/HPCC_JAILER_BIN/HPCC_TEST_KERNEL)")
@@ -351,6 +364,7 @@ enabled      = true
 tenant_id    = %q
 image_ref    = %q
 image_digest = %q
+source_mode  = %q
 
 [remote.scheduler]
 url     = %q
@@ -363,7 +377,7 @@ client_secret = "unused"
 username      = "bench"
 password      = "unused"
 scope         = "hpcc"
-`, tenantID, pinnedRef, digest, schedAddr, certPath, idpURL+"/token")
+`, tenantID, pinnedRef, digest, *sourceMode, schedAddr, certPath, idpURL+"/token")
 
 	if err := os.WriteFile(*clientCfg, []byte(clientToml), 0o600); err != nil {
 		log.Fatalf("write client config: %v", err)

@@ -29,7 +29,8 @@ import (
 )
 
 // HandlerFirecracker is the config.toml runtime.handler value that
-// selects the raw Firecracker driver. Linux-only. See docs/plan.md §4.1
+// selects the raw Firecracker driver. Linux-only. See
+// docs/plan/phase-4-distributed.md §4.1
 // for why hpcc drives Firecracker directly instead of going through
 // firecracker-containerd.
 const HandlerFirecracker = "firecracker"
