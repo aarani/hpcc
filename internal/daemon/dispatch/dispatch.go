@@ -271,7 +271,17 @@ func (d *Dispatcher) workerClient(addr string, fingerprint []byte) (gen.WorkerSe
 	conn, err := grpc.NewClient(
 		addr,
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
-		grpc.WithDefaultCallOptions(grpc.UseCompressor(zstd.Name)),
+		grpc.WithDefaultCallOptions(
+			grpc.UseCompressor(zstd.Name),
+			// The unary worker.Compile RPC carries preprocessed
+			// source in the request and the compiled object in
+			// the response. Both can exceed gRPC's default 4 MiB
+			// — kernel TUs preprocess to 5-15 MiB routinely. Match
+			// the worker server's MaxRecvMsgSize so the call goes
+			// through in both directions.
+			grpc.MaxCallRecvMsgSize(gen.MaxCompileMessageBytes),
+			grpc.MaxCallSendMsgSize(gen.MaxCompileMessageBytes),
+		),
 	)
 	if err != nil {
 		return nil, err

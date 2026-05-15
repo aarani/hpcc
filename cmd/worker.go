@@ -75,7 +75,11 @@ of the worker process with no isolation at all.`,
 			return err
 		}
 
-		srv := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsCfg)))
+		srv := grpc.NewServer(
+			grpc.Creds(credentials.NewTLS(tlsCfg)),
+			grpc.MaxRecvMsgSize(gen.MaxCompileMessageBytes),
+			grpc.MaxSendMsgSize(gen.MaxCompileMessageBytes),
+		)
 		gen.RegisterWorkerServiceServer(srv, w)
 
 		lis, err := net.Listen("tcp", cfg.Listen)

@@ -291,10 +291,18 @@ func main() {
 	if err != nil {
 		log.Fatalf("load worker cert: %v", err)
 	}
-	workerSrv := grpc.NewServer(grpc.Creds(credentials.NewTLS(&tls.Config{
-		Certificates: []tls.Certificate{workerCert},
-		MinVersion:   tls.VersionTLS13,
-	})))
+	workerSrv := grpc.NewServer(
+		grpc.Creds(credentials.NewTLS(&tls.Config{
+			Certificates: []tls.Certificate{workerCert},
+			MinVersion:   tls.VersionTLS13,
+		})),
+		// gRPC's default 4 MiB cap rejects every real kernel TU
+		// (preprocessed Linux headers run 5-15 MiB per TU and the
+		// returned objects can be larger still). Set both directions
+		// to the shared compile limit.
+		grpc.MaxRecvMsgSize(gen.MaxCompileMessageBytes),
+		grpc.MaxSendMsgSize(gen.MaxCompileMessageBytes),
+	)
 	gen.RegisterWorkerServiceServer(workerSrv, w)
 	go func() { _ = workerSrv.Serve(workerLis) }()
 	defer workerSrv.GracefulStop()
