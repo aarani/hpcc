@@ -147,43 +147,33 @@ deployments leave it false. Standard AWS credential chain; no hpcc-specific
 auth layer.
 
 ### Phase 4 — Distributed Compilation in Per-Tenant VMs
-The differentiated phase. Raw Firecracker microVMs on Linux, driven
-directly by hpcc (Hyper-V-isolated containers via containerd + hcsshim
-on Windows, follow-up). One long-running VM per tenant session;
-per-compile work is dispatched as one gRPC bidi-streaming Exec call into
-the VM over vsock — header + input file chunks in, stdio + result + output
-file chunks back, all under a single `AgentService.Exec` stream. The user
-supplies an OCI image; the worker pulls + flattens it and streams the
-layer tar directly through an in-tree, clean-room Go squashfs writer
-(no staging dir on the host, no `tar -xpf` shell-out, no `mkfs.*` shell-out,
-no GPL deps in the build path), injecting the agent binary as PID 1 so
-the VM stays alive across compiles even for distroless/scratch images. We
-chose this over firecracker-containerd because that project has
-stagnated; we own a small image→rootfs pipeline and a one-method gRPC
-agent in exchange for not depending on unmaintained infra. The KVM
-boundary, no-NIC story, and audit pitch are unchanged. Server-side
-preprocessing (`cas` / `preprocessed` modes). Route-only scheduler
-(returns a worker address + TLS trust info, never touches compile
-payloads); client dials the worker directly over gRPC with per-call zstd,
-scheduler-signed JWT auth, and cancellation. Per-job audit log.
+The differentiated phase. Raw Firecracker microVMs on Linux driven
+directly by hpcc (Hyper-V-isolated containers via containerd +
+hcsshim on Windows is the follow-up). One long-running VM per
+tenant session; compiles dispatch as one gRPC bidi-streaming `Exec`
+call over vsock. The user supplies an OCI image; the worker pulls,
+flattens, and streams the layer tar through an in-tree clean-room
+squashfs writer — no host staging dir, no `tar -xpf` shell-out, no
+GPL deps in the build path — injecting `hpcc-agent` as PID 1 so the
+VM stays alive across compiles even on distroless/scratch images.
+This replaces firecracker-containerd (stagnated upstream) with a
+small image→rootfs pipeline and a one-method gRPC agent we own.
+Route-only scheduler (signs JWTs, never touches payloads); client
+dials the worker directly with per-call zstd, scheduler-signed
+auth, and cancellation. Per-job audit log. See
+[docs/plan.md §4](docs/plan.md#phase-4-distributed-compilation-in-per-tenant-vms)
+for the full design and the **Limitations** section below for
+what's still in flight.
 
-**Phase 4 status (today):** route-only scheduler, worker `Compile` RPC,
-per-tenant container pool with idle/session TTLs, streaming
-image→squashfs pipeline (in-tree clean-room Go writer; no tar /
-mkfs shell-outs, no host staging dir, on-wire format validated in CI
-via `unsquashfs` round-trip), raw Firecracker driver under jailer
-(vsock device, no-NIC, `/proc/<pid>/root` reach for the
-namespace-isolated socket, lazy-unmount cleanup), in-VM `hpcc-agent`
-(separate Go module, PID-1 init + bidi gRPC over vsock), shared
-`proto/agent` module for the runner↔agent wire schema, and an
-integration suite that downloads firecracker + jailer, builds a real
-chainguard `gcc-glibc` rootfs, and compiles a C source end-to-end on a
-GitHub Actions Ubuntu runner. Compiles dispatched through the
-Firecracker runtime work end-to-end on Linux. Still open: VM
-snapshot/restore on idle (today the pool just keeps warm VMs in RAM),
-CAS-mode source staging on the worker (today only `PREPROCESSED` mode
-works end-to-end), the Windows hcsshim path, and the residual
-extraction-pipeline hardening in §4.14 (tar-bomb size/entry caps).
+**Phase 4 status (today):** the Linux end-to-end remote-compile path
+is landed and CI-tested — route-only scheduler, worker `Compile`
+RPC, per-tenant container pool with idle/session TTLs, streaming
+image→squashfs build (clean-room Go writer; no tar/mkfs shell-outs,
+on-wire format validated in CI via `unsquashfs` round-trip), raw
+Firecracker driver under jailer, in-VM `hpcc-agent` as PID 1 over
+vsock, and an integration suite that boots a real toolchain rootfs
+and compiles end-to-end on a GitHub Actions runner. See
+**Limitations** below for what's still in-flight.
 
 ### Phase 5 — Observability & Polish
 `hpcc inspect <hash>` and `hpcc explain <file>` with structured miss
@@ -193,12 +183,42 @@ and VM snapshots.
 
 ---
 
-## Status
+## Limitations
 
-Phases 1, 2, and 3 are implemented. Phase 4 is in progress: the Linux
-end-to-end remote compile path — scheduler routing, worker dispatch,
-streaming image→squashfs build (clean-room Go writer, format-validated
-in CI via `unsquashfs`), raw-Firecracker boot, vsock + agent, real-gcc
-e2e — is landed and CI-tested. The remaining Phase 4 work is snapshot/
-restore for idle VMs, CAS-mode staging, the Windows backend, and the
-residual rootfs-extraction caps in §4.14. Phase 5 is unstarted.
+Known gaps and "won't currently do" — most are scheduled fixes, not
+design dead-ends. Tagged with the plan section that owns the
+follow-up.
+
+- **Remote dispatch demotes `-Werror[=*]`.** hpcc's preprocessed-
+  mode dispatch is a two-step compile (client `gcc -E`, worker
+  `gcc -x cpp-output -c`), and gcc's "suppress this warning inside
+  a macro expansion" heuristic depends on the in-memory macro table
+  the preprocessor builds — gone across the seam. Stripping
+  `-Werror` at the rewrite makes the worker compile match what
+  local-mode gcc one-step would have produced; warnings still emit.
+  One-shot yellow notice in the build log when this fires. CAS-mode
+  (§4.5) is the long-term fix.
+- **Assembly (`.S` / `.s`) compiles are not cacheable.** GAS
+  `.incbin` reads files at assemble time that preprocessed-mode
+  dispatch can't ship to the worker. Falls back to local. CAS-mode
+  removes the carve-out.
+- **Stdin (`gcc -c -`) and multi-input compiles are not cacheable.**
+  Stdin would need to be consumed twice (hash + compile); multi-
+  input produces one `.o` per source that V1Cache's single-output
+  shape can't represent.
+- **No CAS-mode dispatch yet.** PREPROCESSED only — wins on
+  bandwidth and cross-developer hit rate would come from §4.5.
+- **No Windows backend yet.** Linux/Firecracker only; the hcsshim
+  Hyper-V container runtime is planned (§4.1.1).
+- **No VM snapshot/restore yet.** The pool keeps warm VMs in RAM;
+  idle eviction frees memory but loses state (§4.2).
+- **Toolchain parity between local and FC is manual.** Local mode
+  runs the host's gcc; FC mode runs the OCI image's gcc. Different
+  versions silently produce different `.o` for the same cache key,
+  defeating cross-developer hit rates. Pin the image patch version
+  (e.g. `gcc:13.2.0`) to match the host until §4 ships an automatic
+  parity check.
+- **Rootfs extraction caps not yet enforced.** Tar-bomb size/entry
+  limits in §4.14 are unwired; treat user images as trusted for now.
+- **No `hpcc explain <file>`.** Structured cache-miss reasons are
+  Phase 5.
