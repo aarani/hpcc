@@ -211,6 +211,23 @@ bench::info "cold build: ${COLD_SECONDS}s"
 read -r ENTRIES_COLD SIZE_COLD < <(bench::worker_cache_stats "${WORKER_CACHE_DIR}")
 bench::info "after cold: ${ENTRIES_COLD} worker-cache entries, $(bench::fmt_bytes "${SIZE_COLD}")"
 
+# Fail fast: if the cold pass produced zero worker-cache entries the
+# warm pass can't possibly hit and we'd just burn ~2x cold wall time
+# to print the same answer. Surface the most recent dispatch failures
+# so the operator doesn't have to dig through the artifact tarball,
+# then bail before running the warm builds. Override by setting
+# HPCC_BENCH_ALLOW_EMPTY_CACHE=1 (e.g. when investigating performance
+# of the local-fallback path itself).
+HPCC_BENCH_ALLOW_EMPTY_CACHE="${HPCC_BENCH_ALLOW_EMPTY_CACHE:-0}"
+if [[ "${ENTRIES_COLD}" -eq 0 && "${HPCC_BENCH_ALLOW_EMPTY_CACHE}" != "1" ]]; then
+    bench::warn "cold pass populated 0 worker-cache entries — remote dispatch is failing on every cacheable TU"
+    if [[ -f "${DAEMON_LOG}" ]]; then
+        bench::warn "last 5 remote-dispatch failures from daemon.log:"
+        grep "remote dispatch failed" "${DAEMON_LOG}" | tail -n 5 >&2 || true
+    fi
+    bench::die "FC dispatch not producing cache writes; aborting before warm pass (set HPCC_BENCH_ALLOW_EMPTY_CACHE=1 to override)"
+fi
+
 # 6. Warm builds — HPCC_BENCH_WARM_RUNS of them. The worker-side
 #    cache is reused across runs so all warm passes should land in
 #    the same regime; multiple samples let us median over runner
