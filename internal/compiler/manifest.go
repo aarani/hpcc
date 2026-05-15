@@ -226,8 +226,8 @@ func isAssemblySource(p string) bool {
 
 // assemblyIncludeRe matches GAS .incbin and .include directives:
 //
-//	  .incbin "path"
-//	  .include "path"
+//	.incbin "path"
+//	.include "path"
 //
 // One per line at any indentation. Capture 1 is the directive name
 // ("incbin" or "include"); capture 2 is the quoted path. Anchored

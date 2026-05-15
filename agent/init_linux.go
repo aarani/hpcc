@@ -39,7 +39,7 @@ var bootMounts = []initMount{
 		flags: syscall.MS_NOSUID, data: "mode=0755"},
 	{source: "devpts", target: "/dev/pts", fstype: "devpts",
 		flags: syscall.MS_NOSUID | syscall.MS_NOEXEC,
-		data: "newinstance,ptmxmode=0666,mode=0620,gid=5"},
+		data:  "newinstance,ptmxmode=0666,mode=0620,gid=5"},
 	{source: "tmpfs", target: "/dev/shm", fstype: "tmpfs",
 		flags: syscall.MS_NOSUID | syscall.MS_NODEV, data: "mode=1777"},
 	{source: "tmpfs", target: "/tmp", fstype: "tmpfs",

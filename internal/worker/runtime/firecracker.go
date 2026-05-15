@@ -282,13 +282,13 @@ func (f *Firecracker) Start(ctx context.Context, spec ContainerSpec) (Container,
 	}
 
 	return &firecrackerContainer{
-		spec:       spec,
-		cmd:        cmd,
-		exited:     exited,
-		chrootDir:  chrootDir,
-		fc:         fc,
-		agentConn:  agentConn,
-		agent:      agentpb.NewAgentServiceClient(agentConn),
+		spec:      spec,
+		cmd:       cmd,
+		exited:    exited,
+		chrootDir: chrootDir,
+		fc:        fc,
+		agentConn: agentConn,
+		agent:     agentpb.NewAgentServiceClient(agentConn),
 	}, nil
 }
 
@@ -412,7 +412,6 @@ func (c *firecrackerContainer) Stop(_ context.Context) error {
 	_ = os.RemoveAll(c.chrootDir)
 	return nil
 }
-
 
 // agentSrcDir / agentOutDir build the in-VM staging paths the agent
 // uses for the given exec. Mirrored verbatim in agent/server_linux.go;

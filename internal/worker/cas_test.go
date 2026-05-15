@@ -386,10 +386,10 @@ func TestMkdirOutputParents_createsForEveryOutPathInArgv(t *testing.T) {
 	args := []string{
 		"clang",
 		"-c", "/src/main.c",
-		"-o", "/out/build/main.o",                     // separate -o
-		"-Wp,-MMD,/out/scripts/mod/.empty.o.d",        // -Wp,-M*, embedded
-		"-MF", "/out/deep/nested/path/foo.d",          // separate -MF
-		"-I/usr/include",                              // no /out/, ignored
+		"-o", "/out/build/main.o", // separate -o
+		"-Wp,-MMD,/out/scripts/mod/.empty.o.d", // -Wp,-M*, embedded
+		"-MF", "/out/deep/nested/path/foo.d",   // separate -MF
+		"-I/usr/include", // no /out/, ignored
 	}
 	if err := mkdirOutputParents(args, root); err != nil {
 		t.Fatalf("mkdirOutputParents: %v", err)
@@ -441,18 +441,18 @@ func TestMkdirSearchPaths_createsForEveryRecognisedFlag(t *testing.T) {
 	args := []string{
 		"gcc",
 		"-c", "/src/drivers/foo.c",
-		"-I/src/include",                              // joined, absolute /src/
-		"-I", "/src/arch/x86/include",                 // separate, absolute /src/
-		"-I./include/generated/uapi",                  // relative — the bug case
-		"-Iinclude/generated",                         // bare relative, no leading ./
-		"-iquote", "/src/include/uapi",                // separate -iquote
-		"-isystem/src/tools/include",                  // joined -isystem
-		"-idirafter", "./scripts/dtc",                 // separate -idirafter, relative
-		"-L/src/build/lib",                            // joined -L absolute
-		"-L", "./out/libs",                            // separate -L relative
+		"-I/src/include",              // joined, absolute /src/
+		"-I", "/src/arch/x86/include", // separate, absolute /src/
+		"-I./include/generated/uapi",   // relative — the bug case
+		"-Iinclude/generated",          // bare relative, no leading ./
+		"-iquote", "/src/include/uapi", // separate -iquote
+		"-isystem/src/tools/include",  // joined -isystem
+		"-idirafter", "./scripts/dtc", // separate -idirafter, relative
+		"-L/src/build/lib", // joined -L absolute
+		"-L", "./out/libs", // separate -L relative
 		"-I/usr/include",                              // system absolute — ignored
 		"-isystem", "/opt/cross/lib/gcc/x/13/include", // system absolute — ignored
-		"-L/usr/lib",                                  // system -L — ignored
+		"-L/usr/lib", // system -L — ignored
 		"-o", "/out/foo.o",
 	}
 	if err := mkdirSearchPaths(args, root); err != nil {
@@ -545,11 +545,11 @@ func probeWith(t *testing.T, priv ed25519.PrivateKey, manifestDigest []byte, arg
 		"worker_id":    testWorkerID,
 	})
 	return &gen.CompileProbe{
-		ManifestDigest:  manifestDigest,
-		Args:            args,
-		TenantId:        tenant,
-		ImageDigest:     image,
-		SchedulerToken:  tok,
+		ManifestDigest: manifestDigest,
+		Args:           args,
+		TenantId:       tenant,
+		ImageDigest:    image,
+		SchedulerToken: tok,
 	}
 }
 
@@ -678,11 +678,11 @@ func TestProbeCompileCache_missOnDifferentImage(t *testing.T) {
 func TestProbeCompileCache_rejectsBadToken(t *testing.T) {
 	w, _ := newProbeTestWorker(t)
 	req := &gen.CompileProbe{
-		ManifestDigest:  bytes.Repeat([]byte{0xab}, 32),
-		Args:            []string{"clang", "-c", "/src/main.i", "-o", "/out/main.o"},
-		TenantId:        "t1",
-		ImageDigest:     "d1",
-		SchedulerToken:  "not-a-jwt",
+		ManifestDigest: bytes.Repeat([]byte{0xab}, 32),
+		Args:           []string{"clang", "-c", "/src/main.i", "-o", "/out/main.o"},
+		TenantId:       "t1",
+		ImageDigest:    "d1",
+		SchedulerToken: "not-a-jwt",
 	}
 	_, err := w.ProbeCompileCache(context.Background(), req)
 	if err == nil {

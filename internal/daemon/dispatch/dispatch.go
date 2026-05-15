@@ -34,7 +34,6 @@ import (
 	"github.com/aarani/hpcc/internal/protocol/gen"
 )
 
-
 // Dispatcher is the daemon-side handle to the scheduler+worker mesh.
 // One per daemon process; goroutine-safe. Dial happens once at New;
 // session tokens are refreshed on demand.

@@ -54,13 +54,13 @@ func TestParseSize_Suffixes(t *testing.T) {
 
 func TestParseSize_RejectsBadInput(t *testing.T) {
 	cases := []string{
-		"abc",     // no digits at all
-		"1XB",     // unknown unit
-		"1.5G",    // no fractional support
-		"-1G",     // leading sign not in digit set
-		"1 GBs",   // unknown unit "gbs"
-		"GB",      // suffix only
-		"1Z",      // unknown unit
+		"abc",   // no digits at all
+		"1XB",   // unknown unit
+		"1.5G",  // no fractional support
+		"-1G",   // leading sign not in digit set
+		"1 GBs", // unknown unit "gbs"
+		"GB",    // suffix only
+		"1Z",    // unknown unit
 	}
 	for _, in := range cases {
 		if _, err := ParseSize(in); err == nil {

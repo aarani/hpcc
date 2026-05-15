@@ -8,9 +8,9 @@ import (
 	"testing"
 
 	"github.com/aarani/hpcc/internal/cache"
-	"github.com/aarani/hpcc/internal/config"
 	"github.com/aarani/hpcc/internal/cache/store"
 	"github.com/aarani/hpcc/internal/compiler"
+	"github.com/aarani/hpcc/internal/config"
 	"github.com/aarani/hpcc/internal/enum"
 )
 

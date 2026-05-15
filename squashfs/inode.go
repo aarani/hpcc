@@ -35,10 +35,10 @@ type entry struct {
 	attrs Attrs
 
 	// Resolved during finalization.
-	inodeNumber uint32   // 1-based; root is always 1
-	inodeRef    metaRef  // location in the inode-table metaWriter
-	nlinks      uint32   // hard link count exposed to the kernel
-	uidIdx      uint16   // index into ID table
+	inodeNumber uint32  // 1-based; root is always 1
+	inodeRef    metaRef // location in the inode-table metaWriter
+	nlinks      uint32  // hard link count exposed to the kernel
+	uidIdx      uint16  // index into ID table
 	gidIdx      uint16
 
 	// File-only state, populated during streaming.

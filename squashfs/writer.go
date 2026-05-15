@@ -488,17 +488,17 @@ func (w *Writer) Close() error {
 
 	// Emit everything past the data-block region.
 	sb := superblock{
-		inodeCount:          w.totalInodeCount(),
-		modTime:             w.imageMtime(),
-		blockSize:           w.cfg.blockSize,
-		fragCount:           0,
-		compressor:          uint16(w.cfg.compressor.ID()),
-		blockLog:            blockLogFor(w.cfg.blockSize),
-		flags:               FlagNoFragments | FlagNoXattrs,
-		idCount:             w.ids.Count(),
-		xattrTableStart:     0xFFFFFFFFFFFFFFFF,
-		fragmentTableStart:  0xFFFFFFFFFFFFFFFF,
-		exportTableStart:    0xFFFFFFFFFFFFFFFF,
+		inodeCount:         w.totalInodeCount(),
+		modTime:            w.imageMtime(),
+		blockSize:          w.cfg.blockSize,
+		fragCount:          0,
+		compressor:         uint16(w.cfg.compressor.ID()),
+		blockLog:           blockLogFor(w.cfg.blockSize),
+		flags:              FlagNoFragments | FlagNoXattrs,
+		idCount:            w.ids.Count(),
+		xattrTableStart:    0xFFFFFFFFFFFFFFFF,
+		fragmentTableStart: 0xFFFFFFFFFFFFFFFF,
+		exportTableStart:   0xFFFFFFFFFFFFFFFF,
 	}
 
 	sb.inodeTableStart = w.outPos

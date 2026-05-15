@@ -19,8 +19,8 @@ import (
 // machine. System dirs like /usr, /opt, /tmp, /var live both on the host
 // and inside the toolchain image and are intentionally not flagged.
 var hostPathSubstrings = []string{
-	"/home/",  // Linux user homes
-	"/Users/", // macOS user homes
+	"/home/",   // Linux user homes
+	"/Users/",  // macOS user homes
 	`:\Users\`, // Windows user homes (any drive letter)
 	`:\users\`, // Windows user homes, lowercase variant
 }
