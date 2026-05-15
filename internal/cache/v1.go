@@ -89,10 +89,25 @@ func (c *V1Cache) Lookup(inv *compiler.Invocation) (*compiler.InvocationResult, 
 }
 
 // Store writes the result of a freshly-completed compile to every
-// wrapped store. The output object is read from disk (at inv.Output) so
-// callers don't need to keep the artifact in memory after Invoke. A
-// missing output file is tolerated — modes that don't produce a single
-// output file simply skip the output blob.
+// wrapped store. The output bytes are taken from res.Output when
+// populated (the executor — LocalExecutor on the daemon-host path,
+// runtimeExecutor on the worker-in-VM path — has already read them
+// via its own ReadOutput, which knows how to resolve in-VM staging
+// paths back to host-side mount points). If res.Output is empty we
+// fall back to reading inv.Output off disk; this covers callers
+// that haven't populated res.Output yet (and the local fast-path,
+// where inv.Output resolves correctly relative to the daemon's
+// cwd anyway).
+//
+// The fallback's os.ReadFile is the source of a subtle bug on the
+// worker side: inv.Output there is an in-VM path like /out/foo.o
+// that doesn't exist on the host, so ReadFile returns ENOENT, the
+// "tolerate missing" branch leaves output = nil, and the output
+// blob is silently skipped — caches end up with metadata-only
+// entries that report as misses on lookup. Preferring res.Output
+// fixes that without needing to teach Store about the runtime
+// path translation. A missing output is still tolerated (modes
+// that don't produce a single output file simply skip the blob).
 func (c *V1Cache) Store(inv *compiler.Invocation, res *compiler.InvocationResult) error {
 	if len(c.stores) == 0 || res == nil {
 		return nil
@@ -103,7 +118,10 @@ func (c *V1Cache) Store(inv *compiler.Invocation, res *compiler.InvocationResult
 	}
 
 	var output []byte
-	if inv.Output != "" {
+	switch {
+	case len(res.Output) > 0:
+		output = res.Output
+	case inv.Output != "":
 		data, err := os.ReadFile(inv.Output)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("read output %q: %w", inv.Output, err)
