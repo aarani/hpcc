@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/aarani/hpcc/internal/config"
 	"github.com/aarani/hpcc/internal/enum"
@@ -421,6 +422,247 @@ func TestBuildManifest_relativeDepResolvedAgainstInvCwd(t *testing.T) {
 	}
 	if !sawHeader {
 		t.Errorf("manifest missing the relative dep; blobs=%v", m.Blobs)
+	}
+}
+
+// Regression: kernel .S files use GAS .incbin / .include directives
+// that the C preprocessor never sees. gcc -M (preprocessor-only)
+// doesn't report them as dependencies, so without explicit scanning
+// in BuildManifest the worker materializes only the .S and gas
+// fails at assemble time with "file not found" — exactly the
+// failure mode observed against usr/initramfs_data.S and
+// arch/x86/realmode/rmpiggy.S.
+func TestScanAssemblyIncludes_kernelShapes(t *testing.T) {
+	dir := t.TempDir()
+	// usr/initramfs_data.S — one .incbin
+	a := filepath.Join(dir, "initramfs_data.S")
+	if err := os.WriteFile(a, []byte(`/* initramfs cpio archive */
+.section .init.ramfs,"a"
+.globl __initramfs_start
+__initramfs_start:
+.incbin "usr/initramfs_inc_data"
+.globl __initramfs_end
+__initramfs_end:
+`), 0o644); err != nil {
+		t.Fatalf("write a: %v", err)
+	}
+	gotA, err := scanAssemblyIncludes(a)
+	if err != nil {
+		t.Fatalf("scan a: %v", err)
+	}
+	if len(gotA.Incbin) != 1 || gotA.Incbin[0] != "usr/initramfs_inc_data" {
+		t.Errorf("initramfs_data.S Incbin got %v, want [usr/initramfs_inc_data]", gotA.Incbin)
+	}
+	if len(gotA.Include) != 0 {
+		t.Errorf("initramfs_data.S Include got %v, want empty", gotA.Include)
+	}
+
+	// rmpiggy.S — two .incbin in one file
+	b := filepath.Join(dir, "rmpiggy.S")
+	if err := os.WriteFile(b, []byte(`/* x86 realmode trampoline */
+	.section ".init.data","aw"
+	.balign 16
+	.globl real_mode_blob
+real_mode_blob:
+	.incbin "arch/x86/realmode/rm/realmode.bin"
+real_mode_blob_end:
+	.globl real_mode_relocs
+real_mode_relocs:
+	.incbin "arch/x86/realmode/rm/realmode.relocs"
+`), 0o644); err != nil {
+		t.Fatalf("write b: %v", err)
+	}
+	gotB, err := scanAssemblyIncludes(b)
+	if err != nil {
+		t.Fatalf("scan b: %v", err)
+	}
+	wantBin := []string{
+		"arch/x86/realmode/rm/realmode.bin",
+		"arch/x86/realmode/rm/realmode.relocs",
+	}
+	if len(gotB.Incbin) != len(wantBin) {
+		t.Fatalf("rmpiggy.S Incbin got %v, want %v", gotB.Incbin, wantBin)
+	}
+	for i := range wantBin {
+		if gotB.Incbin[i] != wantBin[i] {
+			t.Errorf("rmpiggy.S Incbin[%d] got %q, want %q", i, gotB.Incbin[i], wantBin[i])
+		}
+	}
+
+	// .include "header.inc" → Include slice, not Incbin
+	c := filepath.Join(dir, "with_include.S")
+	if err := os.WriteFile(c, []byte(".include \"shared.inc\"\n"), 0o644); err != nil {
+		t.Fatalf("write c: %v", err)
+	}
+	gotC, err := scanAssemblyIncludes(c)
+	if err != nil {
+		t.Fatalf("scan c: %v", err)
+	}
+	if len(gotC.Include) != 1 || gotC.Include[0] != "shared.inc" {
+		t.Errorf("with_include.S Include got %v, want [shared.inc]", gotC.Include)
+	}
+	if len(gotC.Incbin) != 0 {
+		t.Errorf("with_include.S Incbin got %v, want empty", gotC.Incbin)
+	}
+
+	// No directive → empty.
+	d := filepath.Join(dir, "plain.S")
+	if err := os.WriteFile(d, []byte("nop\n"), 0o644); err != nil {
+		t.Fatalf("write d: %v", err)
+	}
+	gotD, err := scanAssemblyIncludes(d)
+	if err != nil {
+		t.Fatalf("scan d: %v", err)
+	}
+	if len(gotD.Incbin)+len(gotD.Include) != 0 {
+		t.Errorf("plain.S got %+v, want all empty", gotD)
+	}
+}
+
+// scanAssemblyClosure follows nested .include chains and scans
+// cpp-discovered headers for embedded .incbin. Each is a distinct
+// gap in the bare-.S scan; pin them all here.
+func TestScanAssemblyClosure_recursesIncludes(t *testing.T) {
+	dir := t.TempDir()
+	// root.S → .include "level1.inc" + own .incbin
+	root := filepath.Join(dir, "root.S")
+	level1 := filepath.Join(dir, "level1.inc")
+	level2 := filepath.Join(dir, "level2.inc")
+	if err := os.WriteFile(root, []byte(`.incbin "root_data.bin"
+.include "level1.inc"
+`), 0o644); err != nil {
+		t.Fatalf("root: %v", err)
+	}
+	if err := os.WriteFile(level1, []byte(`.incbin "level1_data.bin"
+.include "level2.inc"
+`), 0o644); err != nil {
+		t.Fatalf("level1: %v", err)
+	}
+	if err := os.WriteFile(level2, []byte(`.incbin "level2_data.bin"
+`), 0o644); err != nil {
+		t.Fatalf("level2: %v", err)
+	}
+
+	got := scanAssemblyClosure(root, nil, dir)
+	want := map[string]bool{
+		"root_data.bin":   true,
+		"level1.inc":      true,
+		"level1_data.bin": true,
+		"level2.inc":      true,
+		"level2_data.bin": true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want every key in %v", got, want)
+	}
+	for _, g := range got {
+		if !want[g] {
+			t.Errorf("unexpected path in closure: %q", g)
+		}
+	}
+}
+
+func TestScanAssemblyClosure_handlesCycles(t *testing.T) {
+	// .include cycle: a → b → a. Must terminate.
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.S")
+	b := filepath.Join(dir, "b.inc")
+	if err := os.WriteFile(a, []byte(".include \"b.inc\"\n.incbin \"data.bin\"\n"), 0o644); err != nil {
+		t.Fatalf("a: %v", err)
+	}
+	if err := os.WriteFile(b, []byte(".include \"a.S\"\n"), 0o644); err != nil {
+		t.Fatalf("b: %v", err)
+	}
+
+	done := make(chan []string, 1)
+	go func() { done <- scanAssemblyClosure(a, nil, dir) }()
+	select {
+	case got := <-done:
+		// We don't care about exact contents, just that we returned.
+		// Both b.inc and data.bin (and a.S re-entrant) must dedupe.
+		if !containsStr(got, "data.bin") {
+			t.Errorf("got %v, want data.bin captured", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("scanAssemblyClosure didn't terminate on .include cycle")
+	}
+}
+
+func TestScanAssemblyClosure_scansCppDeps(t *testing.T) {
+	// Case 3: .S has #include "header.h"; the header itself has
+	// .incbin. cpp inlines the header, gas sees .incbin "X". Our
+	// scanner needs to look at header.h (provided as cpp dep) too.
+	dir := t.TempDir()
+	rootS := filepath.Join(dir, "root.S")
+	header := filepath.Join(dir, "macros.h")
+	if err := os.WriteFile(rootS, []byte(`#include "macros.h"
+`), 0o644); err != nil {
+		t.Fatalf("rootS: %v", err)
+	}
+	if err := os.WriteFile(header, []byte(`#ifndef MACROS_H
+#define MACROS_H
+.incbin "via_header.bin"
+#endif
+`), 0o644); err != nil {
+		t.Fatalf("header: %v", err)
+	}
+
+	got := scanAssemblyClosure(rootS, []string{header}, dir)
+	if !containsStr(got, "via_header.bin") {
+		t.Errorf(".incbin reached via cpp #include'd header was missed; got %v", got)
+	}
+}
+
+func containsStr(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// End-to-end: BuildManifest on a .S input that .incbin's a sibling
+// file lands the binary in the manifest, so the worker has it at
+// assemble time. Without this, kernel TUs like usr/initramfs_data.S
+// fail with "file not found" because gcc -M didn't report the
+// .incbin'd file.
+func TestBuildManifest_assemblyIncbinFileIsCaptured(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".hpcc"), nil, 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "usr"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	src := filepath.Join(dir, "usr", "initramfs_data.S")
+	if err := os.WriteFile(src, []byte(`.section .init.ramfs,"a"
+.incbin "usr/initramfs_inc_data"
+`), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	bin := filepath.Join(dir, "usr", "initramfs_inc_data")
+	if err := os.WriteFile(bin, []byte("\x00\x01\x02\x03"), 0o644); err != nil {
+		t.Fatalf("write bin: %v", err)
+	}
+
+	inv := &Invocation{
+		Inputs: []string{src},
+		Mode:   enum.CompileMode,
+		Cwd:    dir,
+	}
+	m, err := BuildManifest(inv, &Context{Compiler: &fakeCompiler{}})
+	if err != nil {
+		t.Fatalf("BuildManifest: %v", err)
+	}
+
+	var sawIncbin bool
+	for _, b := range m.Blobs {
+		if b.Path == filepath.Join("usr", "initramfs_inc_data") {
+			sawIncbin = true
+		}
+	}
+	if !sawIncbin {
+		t.Errorf("manifest missing .incbin'd file; blobs=%v", m.Blobs)
 	}
 }
 
