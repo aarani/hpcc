@@ -11,7 +11,6 @@ import (
 	"github.com/aarani/hpcc/internal/enum"
 )
 
-
 // fakeCompiler is a minimal Compiler used by manifest / cache-key
 // tests to drive BuildManifest without spawning a real toolchain.
 // Only the methods CacheKey / BuildManifest touch are implemented;
@@ -21,13 +20,13 @@ type fakeCompiler struct {
 	deps     []string
 }
 
-func (f *fakeCompiler) Name() string                                             { return "fake" }
-func (f *fakeCompiler) Family() enum.Family                                      { return enum.GNUFamily }
-func (f *fakeCompiler) Parse(args []string) (*Invocation, error)                 { panic("unused") }
-func (f *fakeCompiler) Preprocess(inv *Invocation) (*PreprocessResult, error)    { panic("unused") }
-func (f *fakeCompiler) Invoke(inv *Invocation) (*InvocationResult, error)        { panic("unused") }
-func (f *fakeCompiler) FindDependencies(inv *Invocation) ([]string, error)       { return f.deps, nil }
-func (f *fakeCompiler) Identity() ([]byte, error)                                { return f.identity, nil }
+func (f *fakeCompiler) Name() string                                          { return "fake" }
+func (f *fakeCompiler) Family() enum.Family                                   { return enum.GNUFamily }
+func (f *fakeCompiler) Parse(args []string) (*Invocation, error)              { panic("unused") }
+func (f *fakeCompiler) Preprocess(inv *Invocation) (*PreprocessResult, error) { panic("unused") }
+func (f *fakeCompiler) Invoke(inv *Invocation) (*InvocationResult, error)     { panic("unused") }
+func (f *fakeCompiler) FindDependencies(inv *Invocation) ([]string, error)    { return f.deps, nil }
+func (f *fakeCompiler) Identity() ([]byte, error)                             { return f.identity, nil }
 func (f *fakeCompiler) RewriteForPreprocessed(inv *Invocation, srcPath string) (*Invocation, error) {
 	panic("unused")
 }

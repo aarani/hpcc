@@ -95,6 +95,7 @@ type CacheConfig struct {
 	// permissions. Default false.
 	AutoCreate bool `toml:"auto_create,omitempty"`
 }
+
 // DefaultConfig returns the values used when no config file is present.
 func DefaultConfig() Config {
 	// Default: no caches configured. Require explicit TOML `[[cache]]`

@@ -41,7 +41,7 @@ type Routing struct {
 func DefaultConfig() Config {
 	return Config{
 		Listen: ":9091",
-		Auth: Auth{},
+		Auth:   Auth{},
 		Routing: Routing{
 			StickyTenants: true,
 		},
@@ -96,4 +96,3 @@ func (c Config) Validate() error {
 	}
 	return nil
 }
-

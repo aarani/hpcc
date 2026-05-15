@@ -17,23 +17,23 @@ const (
 type Category int
 
 const (
-	CatUnknown Category = iota
-	CatMode             // -c, -E, -S, -M, -MM
-	CatOutput           // -o
-	CatInclude          // -I
-	CatSystemInclude    // -isystem, -iquote
-	CatDefine           // -D
-	CatUndefine         // -U
-	CatLibrary          // -l
-	CatLibraryDir       // -L
-	CatStandard         // -std=
-	CatOptim            // -O
-	CatDebug            // -g
-	CatWarning          // -W
-	CatFeature          // -f
-	CatMachine          // -m
-	CatLanguage         // -x
-	CatPassthrough      // -Wl,..., -Xlinker, -include, -MD, etc.
+	CatUnknown       Category = iota
+	CatMode                   // -c, -E, -S, -M, -MM
+	CatOutput                 // -o
+	CatInclude                // -I
+	CatSystemInclude          // -isystem, -iquote
+	CatDefine                 // -D
+	CatUndefine               // -U
+	CatLibrary                // -l
+	CatLibraryDir             // -L
+	CatStandard               // -std=
+	CatOptim                  // -O
+	CatDebug                  // -g
+	CatWarning                // -W
+	CatFeature                // -f
+	CatMachine                // -m
+	CatLanguage               // -x
+	CatPassthrough            // -Wl,..., -Xlinker, -include, -MD, etc.
 )
 
 type FlagSpec struct {

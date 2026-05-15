@@ -13,19 +13,19 @@ const superblockSize = 96
 // superblock carries the 96-byte squashfs 4.0 superblock fields in
 // host form. Marshaled by encode().
 type superblock struct {
-	inodeCount        uint32
-	modTime           uint32
-	blockSize         uint32
-	fragCount         uint32
-	compressor        uint16
-	blockLog          uint16
-	flags             uint16
-	idCount           uint16
-	rootInodeRef      uint64
-	bytesUsed         uint64
-	idTableStart      uint64
-	xattrTableStart   uint64
-	inodeTableStart   uint64
+	inodeCount          uint32
+	modTime             uint32
+	blockSize           uint32
+	fragCount           uint32
+	compressor          uint16
+	blockLog            uint16
+	flags               uint16
+	idCount             uint16
+	rootInodeRef        uint64
+	bytesUsed           uint64
+	idTableStart        uint64
+	xattrTableStart     uint64
+	inodeTableStart     uint64
 	directoryTableStart uint64
 	fragmentTableStart  uint64
 	exportTableStart    uint64

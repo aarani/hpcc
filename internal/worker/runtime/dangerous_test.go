@@ -120,7 +120,7 @@ func TestRewriteRoot_BoundaryAware(t *testing.T) {
 		{"/src/foo.cpp", "/src", "/tmp/staged", "/tmp/staged/foo.cpp"},
 		{"-I/src/include", "/src", "/tmp/staged", "-I/tmp/staged/include"},
 		{"/src", "/src", "/tmp/staged", "/tmp/staged"},
-		{"/src-other/x", "/src", "/tmp/staged", "/src-other/x"},   // sibling, not rewritten
+		{"/src-other/x", "/src", "/tmp/staged", "/src-other/x"}, // sibling, not rewritten
 		{"-DFOO=/src/x", "/src", "/tmp/staged", "-DFOO=/tmp/staged/x"},
 		// CAS-mode path: a project-relative path that contains "src"
 		// as a directory name must NOT be double-rewritten. The

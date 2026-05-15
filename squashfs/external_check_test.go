@@ -260,4 +260,3 @@ func statIno(t *testing.T, p string) uint64 {
 	}
 	return uint64(sys.Ino)
 }
-

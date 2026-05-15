@@ -12,10 +12,10 @@ import "sort"
 //     joined values.
 var msvcFlags = []FlagSpec{
 	// Modes
-	{"/c", NoValue, CatMode},      // compile only
-	{"/E", NoValue, CatMode},      // preprocess to stdout
-	{"/EP", NoValue, CatMode},     // preprocess to stdout, no #line
-	{"/P", NoValue, CatMode},      // preprocess to file
+	{"/c", NoValue, CatMode},  // compile only
+	{"/E", NoValue, CatMode},  // preprocess to stdout
+	{"/EP", NoValue, CatMode}, // preprocess to stdout, no #line
+	{"/P", NoValue, CatMode},  // preprocess to file
 
 	// Output
 	{"/Fo", JoinedValue, CatOutput}, // object file

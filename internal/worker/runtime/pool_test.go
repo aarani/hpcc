@@ -24,17 +24,19 @@ func (r *fakeRuntime) Start(_ context.Context, spec ContainerSpec) (Container, e
 func (r *fakeRuntime) Close() error { r.closes.Add(1); return nil }
 
 type fakeContainer struct {
-	spec    ContainerSpec
-	parent  *fakeRuntime
-	stops   atomic.Int32
+	spec   ContainerSpec
+	parent *fakeRuntime
+	stops  atomic.Int32
 }
 
-func (c *fakeContainer) ID() string                                            { return c.spec.ID }
-func (c *fakeContainer) TenantID() string                                      { return c.spec.TenantID }
-func (c *fakeContainer) ImageDigest() string                                   { return c.spec.ImageDigest }
-func (c *fakeContainer) State() gen.VMState                                    { return gen.VMState_RUNNING }
-func (c *fakeContainer) Exec(context.Context, ExecRequest) (ExecResult, error) { return ExecResult{}, nil }
-func (c *fakeContainer) Stop(context.Context) error                            { c.stops.Add(1); return nil }
+func (c *fakeContainer) ID() string          { return c.spec.ID }
+func (c *fakeContainer) TenantID() string    { return c.spec.TenantID }
+func (c *fakeContainer) ImageDigest() string { return c.spec.ImageDigest }
+func (c *fakeContainer) State() gen.VMState  { return gen.VMState_RUNNING }
+func (c *fakeContainer) Exec(context.Context, ExecRequest) (ExecResult, error) {
+	return ExecResult{}, nil
+}
+func (c *fakeContainer) Stop(context.Context) error { c.stops.Add(1); return nil }
 
 func TestPool_ReusesContainerForSameKey(t *testing.T) {
 	inner := &fakeRuntime{}

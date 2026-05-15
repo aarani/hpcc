@@ -10,10 +10,10 @@ import (
 // cleanupJailerMounts lazy-unmounts anything jailer left behind
 // inside chrootDir. jailer's setup does:
 //
-//   1. mount --bind <chrootRoot> <chrootRoot> (in the host ns,
-//      inheriting whatever propagation flags the host's root has)
-//   2. unshare CLONE_NEWNS into a new mount ns
-//   3. mount tmpfs over <chrootRoot>/run inside the new ns
+//  1. mount --bind <chrootRoot> <chrootRoot> (in the host ns,
+//     inheriting whatever propagation flags the host's root has)
+//  2. unshare CLONE_NEWNS into a new mount ns
+//  3. mount tmpfs over <chrootRoot>/run inside the new ns
 //
 // On systems where the host root mount is MS_SHARED (default on
 // most distros — Ubuntu/Debian/Fedora all do this), step (3)'s

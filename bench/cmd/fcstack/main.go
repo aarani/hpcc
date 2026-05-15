@@ -87,11 +87,11 @@ const (
 
 func main() {
 	var (
-		stackDir   = flag.String("stack-dir", "", "scratch dir for certs/agent/rootfs (required)")
-		clientCfg  = flag.String("client-config", "", "where to write the client TOML (required)")
-		fcBin      = flag.String("firecracker-bin", os.Getenv("HPCC_FIRECRACKER_BIN"), "firecracker binary path")
-		jailerBin  = flag.String("jailer-bin", os.Getenv("HPCC_JAILER_BIN"), "jailer binary path")
-		kernel     = flag.String("kernel", os.Getenv("HPCC_TEST_KERNEL"), "vmlinux for the microVMs")
+		stackDir  = flag.String("stack-dir", "", "scratch dir for certs/agent/rootfs (required)")
+		clientCfg = flag.String("client-config", "", "where to write the client TOML (required)")
+		fcBin     = flag.String("firecracker-bin", os.Getenv("HPCC_FIRECRACKER_BIN"), "firecracker binary path")
+		jailerBin = flag.String("jailer-bin", os.Getenv("HPCC_JAILER_BIN"), "jailer binary path")
+		kernel    = flag.String("kernel", os.Getenv("HPCC_TEST_KERNEL"), "vmlinux for the microVMs")
 		// Pinned to the same gcc *patch* version that
 		// `apt install gcc` on ubuntu-latest gives the local-mode
 		// bench (gcc 13.2.0). The floating `gcc:13` tag on Docker
@@ -118,7 +118,7 @@ func main() {
 		// bench's local-vs-FC comparison isn't measuring the same
 		// compiler. Options: snapshot the host toolchain into the
 		// image at fcstack startup, or assert/refuse on mismatch.
-		imageRef = flag.String("image-ref", "docker.io/library/gcc:13.2.0", "OCI toolchain image")
+		imageRef   = flag.String("image-ref", "docker.io/library/gcc:13.2.0", "OCI toolchain image")
 		schedBind  = flag.String("scheduler-listen", "127.0.0.1:0", "scheduler bind address")
 		workerBind = flag.String("worker-listen", "127.0.0.1:0", "worker bind address")
 		idpBind    = flag.String("idp-listen", "127.0.0.1:0", "IdP HTTP bind address")

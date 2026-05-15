@@ -61,7 +61,7 @@ type Worker struct {
 	// presence of an entry means "the prepared image for this digest
 	// is locally available." Pulls add entries on success; advertised
 	// and previously-prepared digests pre-populate at bootstrap.
-	Images     sync.Map
+	Images sync.Map
 	// ImageStore prepares per-tenant images for the runtime. nil means
 	// "no image store" — the dev-mode dangerous runtime takes that
 	// path: ensureImage records every digest as locally-present
