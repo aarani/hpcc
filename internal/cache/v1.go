@@ -170,6 +170,20 @@ func (c *V1Cache) Store(inv *compiler.Invocation, res *compiler.InvocationResult
 // caller can fall through to the next store rather than failing the
 // whole Lookup. exit_code is the canary: a present-but-unparsable code
 // signals a half-written entry written by an older or buggy implementation.
+//
+// outputPath is the path the *caller* expects the artifact to land at;
+// loadEntry uses it only as a signal that the caller wants the output
+// blob loaded. We populate res.Output with the bytes and leave it to
+// the caller to materialize the file via whatever path translation it
+// has — runner.Run and daemon.handleRequest already do `os.WriteFile
+// (inv.Output, result.Output, …)` after Lookup returns, and the
+// worker hit path forwards res.Output as the CompileResponse's
+// OutputArtifact. An earlier version of this function wrote the file
+// here, which silently broke FC-paranoid lookups: on the worker side
+// outputPath is an in-VM staging path like /out/foo.o that doesn't
+// exist on the host, so os.WriteFile failed, Lookup returned err,
+// the worker treated every hit as a miss, and warm builds re-
+// compiled every TU despite the cache being intact.
 func loadEntry(s store.Store, key []byte, outputPath string) (*compiler.InvocationResult, bool, error) {
 	exitCodeRaw, err := s.Get(key, blobExitCode)
 	if err != nil {
@@ -192,22 +206,26 @@ func loadEntry(s store.Store, key []byte, outputPath string) (*compiler.Invocati
 		return nil, false, fmt.Errorf("get stderr: %w", err)
 	}
 
+	res := &compiler.InvocationResult{
+		Stdout:   stdout,
+		Stderr:   stderr,
+		ExitCode: exitCode,
+	}
+
 	if outputPath != "" {
 		output, err := s.Get(key, blobOutput)
 		if err != nil {
 			return nil, false, fmt.Errorf("get output: %w", err)
 		}
 		if output == nil {
+			// Caller expected an output for this entry but none was
+			// stored — treat as a miss so the wrap path proceeds to
+			// re-invoke the compiler and (we hope) writes a complete
+			// entry on Store.
 			return nil, false, nil
 		}
-		if err := os.WriteFile(outputPath, output, 0o644); err != nil {
-			return nil, false, fmt.Errorf("write output %q: %w", outputPath, err)
-		}
+		res.Output = output
 	}
 
-	return &compiler.InvocationResult{
-		Stdout:   stdout,
-		Stderr:   stderr,
-		ExitCode: exitCode,
-	}, true, nil
+	return res, true, nil
 }

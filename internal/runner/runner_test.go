@@ -105,13 +105,14 @@ func TestCacheMissThenHit(t *testing.T) {
 		t.Errorf("cached ExitCode = %d, want 0", cached.ExitCode)
 	}
 
-	// The cache hit should have restored the output file.
-	restored, err := os.ReadFile(out)
-	if err != nil {
-		t.Fatalf("output file not restored by cache hit: %v", err)
-	}
-	if !bytes.Equal(restored, origOutput) {
-		t.Errorf("restored output (%d bytes) differs from original (%d bytes)", len(restored), len(origOutput))
+	// The cache hit should have returned the output bytes in
+	// cached.Output. The caller (runner.Run / daemon.handleRequest /
+	// worker.respond) is responsible for materializing them to
+	// disk; loadEntry deliberately doesn't write to disk itself
+	// because outputPath on the worker side is an in-VM staging
+	// path that doesn't exist on the host.
+	if !bytes.Equal(cached.Output, origOutput) {
+		t.Errorf("cached.Output (%d bytes) differs from original (%d bytes)", len(cached.Output), len(origOutput))
 	}
 }
 
