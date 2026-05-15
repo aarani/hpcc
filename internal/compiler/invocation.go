@@ -179,7 +179,57 @@ func (inv *Invocation) cacheableShape() bool {
 	if inv.isProbeInvocation() {
 		return false
 	}
+	if HasUncapturedSideEffectFlag(inv.RawArgs) {
+		return false
+	}
 	return true
+}
+
+// HasUncapturedSideEffectFlag reports whether argv carries a flag
+// known to produce output files alongside the primary -o artifact
+// that the dispatch/cache layer can't currently round-trip. Hitting
+// any of these short-circuits Cacheable / DispatchableUnderCAS to
+// false so the user's invocation falls through to a direct local
+// Compiler.Invoke — they get exactly the files they asked for, just
+// without remote dispatch or caching for that TU.
+//
+// The list is curated, not exhaustive: gcc has dozens of dump/trace
+// flags and chasing them generically (parse every gcc option, know
+// which write files) would be brittle across compiler versions.
+// We catch the categories that actually surface in real builds and
+// leave room to add more as they're reported. Common-case dep
+// emission (-MD/-MMD/-MF) is handled by RewriteDepEmissionForCAS +
+// the CompileResponse.extra_outputs pipeline, not by this opt-out.
+//
+// Recognised:
+//   - -save-temps [=cwd|=obj]: dumps .i, .s, .o intermediates
+//   - -fdump-*: every -fdump-tree-/rtl-/ipa-/passes/etc. variant
+//   - -fcallgraph-info [=…]: writes <output>.ci
+//   - -fprofile-generate [=…], -fprofile-arcs, -ftest-coverage,
+//     --coverage: gcov instrumentation writes .gcno at compile time
+//   - -gsplit-dwarf: writes <output>.dwo alongside the .o
+//   - -fdiagnostics-format=sarif-file / =json-file: writes a
+//     structured diagnostics file
+func HasUncapturedSideEffectFlag(args []string) bool {
+	for _, a := range args {
+		switch {
+		case a == "-save-temps" || strings.HasPrefix(a, "-save-temps="):
+			return true
+		case strings.HasPrefix(a, "-fdump-"):
+			return true
+		case a == "-fcallgraph-info" || strings.HasPrefix(a, "-fcallgraph-info="):
+			return true
+		case a == "-fprofile-generate" || strings.HasPrefix(a, "-fprofile-generate="):
+			return true
+		case a == "-fprofile-arcs" || a == "-ftest-coverage" || a == "--coverage":
+			return true
+		case a == "-gsplit-dwarf":
+			return true
+		case a == "-fdiagnostics-format=sarif-file" || a == "-fdiagnostics-format=json-file":
+			return true
+		}
+	}
+	return false
 }
 
 // isAssembly reports whether the invocation compiles an assembly

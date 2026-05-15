@@ -194,6 +194,72 @@ func TestDispatchableUnderCAS(t *testing.T) {
 	}
 }
 
+// TestHasUncapturedSideEffectFlag pins the curated list of gcc flags
+// that bypass dispatch+cache so users keep the side-effect files they
+// asked for (.dwo, .ci, .gcno, .ii dumps, …). Adding a flag to the
+// helper should also add a row here so the predicate's surface area
+// is reviewable.
+func TestHasUncapturedSideEffectFlag(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"empty argv", nil, false},
+		{"normal compile", []string{"-c", "-O2", "foo.c", "-o", "foo.o"}, false},
+		{"plain -save-temps", []string{"-save-temps", "-c", "foo.c"}, true},
+		{"-save-temps=cwd", []string{"-save-temps=cwd", "-c", "foo.c"}, true},
+		{"-save-temps=obj", []string{"-save-temps=obj", "-c", "foo.c"}, true},
+		{"-fdump-tree-all", []string{"-fdump-tree-all", "-c", "foo.c"}, true},
+		{"-fdump-rtl-all", []string{"-fdump-rtl-all", "-c", "foo.c"}, true},
+		{"-fdump-ipa-all", []string{"-fdump-ipa-all", "-c", "foo.c"}, true},
+		{"-fdump-passes", []string{"-fdump-passes", "-c", "foo.c"}, true},
+		{"-fdump-go-spec=file", []string{"-fdump-go-spec=foo.spec", "-c", "foo.c"}, true},
+		{"-fcallgraph-info", []string{"-fcallgraph-info", "-c", "foo.c"}, true},
+		{"-fcallgraph-info=su,da", []string{"-fcallgraph-info=su,da", "-c", "foo.c"}, true},
+		{"-fprofile-generate", []string{"-fprofile-generate", "-c", "foo.c"}, true},
+		{"-fprofile-generate=path", []string{"-fprofile-generate=/tmp/p", "-c", "foo.c"}, true},
+		{"-fprofile-arcs", []string{"-fprofile-arcs", "-c", "foo.c"}, true},
+		{"-ftest-coverage", []string{"-ftest-coverage", "-c", "foo.c"}, true},
+		{"--coverage", []string{"--coverage", "-c", "foo.c"}, true},
+		{"-gsplit-dwarf", []string{"-c", "-gsplit-dwarf", "foo.c"}, true},
+		{"-fdiagnostics-format=sarif-file", []string{"-fdiagnostics-format=sarif-file", "-c", "foo.c"}, true},
+		{"-fdiagnostics-format=json-file", []string{"-fdiagnostics-format=json-file", "-c", "foo.c"}, true},
+		{"-fdiagnostics-format=text (default)", []string{"-fdiagnostics-format=text", "-c", "foo.c"}, false},
+
+		// Common kernel flags should NOT trigger — pinning the false
+		// negatives matters more than the positives here.
+		{"kernel cflags don't trigger", []string{
+			"-c", "-Wp,-MMD,foo.d", "-nostdinc", "-isystem", "/x",
+			"-O2", "-Wall", "-Werror", "-fno-strict-aliasing", "foo.c",
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := HasUncapturedSideEffectFlag(tc.args); got != tc.want {
+				t.Errorf("HasUncapturedSideEffectFlag(%v) = %v, want %v", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCacheable_rejectsUncapturedSideEffectFlags confirms the gate
+// flows through Cacheable (and therefore DispatchableUnderCAS, via
+// their shared cacheableShape predicate).
+func TestCacheable_rejectsUncapturedSideEffectFlags(t *testing.T) {
+	inv := &Invocation{
+		Mode:    enum.CompileMode,
+		Inputs:  []string{"foo.c"},
+		RawArgs: []string{"-c", "-save-temps", "foo.c", "-o", "foo.o"},
+	}
+	if inv.Cacheable() {
+		t.Errorf("Cacheable() should be false for -save-temps invocation")
+	}
+	if inv.DispatchableUnderCAS() {
+		t.Errorf("DispatchableUnderCAS() should be false for -save-temps invocation")
+	}
+}
+
 // TestCacheableAndCASDivergeOnAssembly pins the specific contract
 // that powers Step 8: an assembly invocation isn't Cacheable (local
 // cache key is unsound) but IS DispatchableUnderCAS (CAS handles it
