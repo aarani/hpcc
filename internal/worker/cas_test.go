@@ -436,6 +436,78 @@ func TestMkdirOutputParents_skipsTopLevelOnlyPath(t *testing.T) {
 	}
 }
 
+func TestMkdirSearchPaths_createsForEveryRecognisedFlag(t *testing.T) {
+	root := t.TempDir()
+	args := []string{
+		"gcc",
+		"-c", "/src/drivers/foo.c",
+		"-I/src/include",                              // joined, absolute /src/
+		"-I", "/src/arch/x86/include",                 // separate, absolute /src/
+		"-I./include/generated/uapi",                  // relative — the bug case
+		"-Iinclude/generated",                         // bare relative, no leading ./
+		"-iquote", "/src/include/uapi",                // separate -iquote
+		"-isystem/src/tools/include",                  // joined -isystem
+		"-idirafter", "./scripts/dtc",                 // separate -idirafter, relative
+		"-L/src/build/lib",                            // joined -L absolute
+		"-L", "./out/libs",                            // separate -L relative
+		"-I/usr/include",                              // system absolute — ignored
+		"-isystem", "/opt/cross/lib/gcc/x/13/include", // system absolute — ignored
+		"-L/usr/lib",                                  // system -L — ignored
+		"-o", "/out/foo.o",
+	}
+	if err := mkdirSearchPaths(args, root); err != nil {
+		t.Fatalf("mkdirSearchPaths: %v", err)
+	}
+
+	wantDirs := []string{
+		filepath.Join(root, "include"),
+		filepath.Join(root, "arch", "x86", "include"),
+		filepath.Join(root, "include", "generated", "uapi"),
+		filepath.Join(root, "include", "generated"),
+		filepath.Join(root, "include", "uapi"),
+		filepath.Join(root, "tools", "include"),
+		filepath.Join(root, "scripts", "dtc"),
+		filepath.Join(root, "build", "lib"),
+		filepath.Join(root, "out", "libs"),
+	}
+	for _, d := range wantDirs {
+		info, err := os.Stat(d)
+		if err != nil {
+			t.Errorf("expected dir %q to exist: %v", d, err)
+			continue
+		}
+		if !info.IsDir() {
+			t.Errorf("%q exists but isn't a dir", d)
+		}
+	}
+
+	mustNotExist := []string{
+		filepath.Join(root, "usr"),
+		filepath.Join(root, "opt"),
+	}
+	for _, d := range mustNotExist {
+		if _, err := os.Stat(d); err == nil {
+			t.Errorf("system path %q should not have been created under srcHostPath", d)
+		}
+	}
+}
+
+func TestMkdirSearchPaths_idempotent(t *testing.T) {
+	root := t.TempDir()
+	args := []string{"-I/src/include", "-I./scripts/mod", "-L./out/libs"}
+	for i := 0; i < 3; i++ {
+		if err := mkdirSearchPaths(args, root); err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+	}
+}
+
+func TestMkdirSearchPaths_emptySrcHostPathIsNoOp(t *testing.T) {
+	if err := mkdirSearchPaths([]string{"-I/src/include", "-L/src/lib"}, ""); err != nil {
+		t.Fatalf("mkdirSearchPaths(\"\"): %v", err)
+	}
+}
+
 // --- ProbeCompileCache tests ---------------------------------------
 
 // newProbeTestWorker builds a Worker with a disk-backed compile cache

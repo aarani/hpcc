@@ -102,6 +102,18 @@ func (s *execServer) Exec(stream agentpb.AgentService_ExecServer) error {
 		return fmt.Errorf("stage inputs: %w", err)
 	}
 
+	// CAS only ships files in the dep closure, so a search-path
+	// directory whose contents this TU doesn't pull in never gets
+	// created during stageInputs. -Werror=missing-include-dirs
+	// (kernel and many other builds enable it) and
+	// -Werror=missing-library-dirs then fail before the
+	// compile/link runs. Materialise each -I/-iquote/-isystem/
+	// -idirafter/-L dir that resolves into srcDir; system paths
+	// under /usr etc. are left alone since the rootfs provides them.
+	if err := mkdirSearchPaths(hdr.Argv, srcDir); err != nil {
+		return fmt.Errorf("mkdir search-path dirs: %w", err)
+	}
+
 	exitCode, err := runCompiler(stream, hdr, srcDir)
 	if err != nil {
 		return err
@@ -340,6 +352,94 @@ func mkdirOutputParents(args []string, outDir string) error {
 			full := filepath.Join(outDir, parent)
 			if err := os.MkdirAll(full, 0o755); err != nil {
 				return fmt.Errorf("mkdir %q: %w", full, err)
+			}
+		}
+	}
+	return nil
+}
+
+// searchPathFlags is the in-agent twin of worker.searchPathFlags —
+// argv flags whose value is a directory the compiler/linker will
+// search (gcc's -I/-iquote/-isystem/-idirafter header search and the
+// linker's -L). Longer prefixes first so HasPrefix("-isystem", "-i")
+// doesn't shadow them.
+var searchPathFlags = []string{
+	"-idirafter",
+	"-isystem",
+	"-iquote",
+	"-I",
+	"-L",
+}
+
+// mkdirSearchPaths walks argv for compiler/linker search-path flags
+// (see searchPathFlags) and ensures each named directory exists
+// under srcDir. Handles joined (-Idir) and separate (-I dir) forms.
+//
+// Two path shapes get materialised:
+//
+//   - Absolute paths under srcDir: stripped to the relative
+//     component and created beneath srcDir. Firecracker translates
+//     /src/<rel> to <srcDir>/<rel> before forwarding the argv here.
+//   - Relative paths (e.g. ./include/generated/uapi or include/foo):
+//     created under srcDir as-is, since the compiler runs with
+//     cwd = srcDir.
+//
+// Everything else (system paths like /usr/include/foo) is skipped —
+// the rootfs provides those; creating them under srcDir would only
+// confuse the header search.
+//
+// Mirrors worker.mkdirSearchPaths; duplicated rather than imported
+// because the agent is a separate Go module.
+//
+// Idempotent: MkdirAll is a no-op on existing dirs.
+func mkdirSearchPaths(args []string, srcDir string) error {
+	if srcDir == "" {
+		return nil
+	}
+	srcAbs := filepath.Clean(srcDir)
+	srcPrefix := srcAbs + "/"
+	mkRel := func(rel string) error {
+		if rel == "" || rel == "." {
+			return nil
+		}
+		full := filepath.Join(srcAbs, filepath.FromSlash(rel))
+		if err := os.MkdirAll(full, 0o755); err != nil {
+			return fmt.Errorf("mkdir %q: %w", full, err)
+		}
+		return nil
+	}
+	mkOne := func(p string) error {
+		if p == "" {
+			return nil
+		}
+		if p == srcAbs {
+			return nil
+		}
+		if strings.HasPrefix(p, srcPrefix) {
+			return mkRel(p[len(srcPrefix):])
+		}
+		if filepath.IsAbs(p) {
+			return nil
+		}
+		return mkRel(p)
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		for _, f := range searchPathFlags {
+			if a == f {
+				if i+1 < len(args) {
+					if err := mkOne(args[i+1]); err != nil {
+						return err
+					}
+					i++
+				}
+				break
+			}
+			if strings.HasPrefix(a, f) {
+				if err := mkOne(a[len(f):]); err != nil {
+					return err
+				}
+				break
 			}
 		}
 	}
