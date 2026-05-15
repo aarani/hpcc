@@ -92,7 +92,21 @@ func main() {
 		fcBin      = flag.String("firecracker-bin", os.Getenv("HPCC_FIRECRACKER_BIN"), "firecracker binary path")
 		jailerBin  = flag.String("jailer-bin", os.Getenv("HPCC_JAILER_BIN"), "jailer binary path")
 		kernel     = flag.String("kernel", os.Getenv("HPCC_TEST_KERNEL"), "vmlinux for the microVMs")
-		imageRef   = flag.String("image-ref", "cgr.dev/chainguard/gcc-glibc:latest-dev", "OCI toolchain image")
+		// Default to gcc:13 because that's what `apt install gcc` on
+		// ubuntu-latest gives the local-mode bench. Keeping both
+		// halves on the same gcc minor version is the only way the
+		// local-vs-FC comparison is apples-to-apples — and is also
+		// our evidence the build works, since the local bench
+		// (same kernel, same gcc 13) compiles cleanly. gcc:14
+		// tightened -Wtautological-compare and now flags kernel
+		// macros (BUILD_BUG_ON_ZERO and friends use `(x) == (x)` as
+		// a deliberate SFINAE-style type check), tripping -Werror in
+		// kernel/time/namespace.c and kernel/cgroup/cgroup.c. Stock
+		// Debian-bookworm rootfs. We previously defaulted to
+		// chainguard's gcc-glibc:latest-dev; same -Werror failure
+		// mode, different cause (hardened-warning toolchain
+		// defaults).
+		imageRef = flag.String("image-ref", "docker.io/library/gcc:13", "OCI toolchain image")
 		schedBind  = flag.String("scheduler-listen", "127.0.0.1:0", "scheduler bind address")
 		workerBind = flag.String("worker-listen", "127.0.0.1:0", "worker bind address")
 		idpBind    = flag.String("idp-listen", "127.0.0.1:0", "IdP HTTP bind address")

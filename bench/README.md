@@ -86,7 +86,7 @@ means warm builds never hit the same speedup multiplier:
 | `HPCC_BENCH_VM_MEMORY`           | `2GB` |
 | `HPCC_BENCH_VM_VCPUS`            | `2` |
 | `HPCC_BENCH_POOL_MAX`            | `8` (concurrent VMs per tenant) |
-| `HPCC_BENCH_TOOLCHAIN_IMAGE`     | `cgr.dev/chainguard/gcc-glibc:latest-dev` |
+| `HPCC_BENCH_TOOLCHAIN_IMAGE`     | `docker.io/library/gcc:13` (matched to ubuntu-latest's apt gcc) |
 | `HPCC_BENCH_WARM_RUNS`           | `2` (fewer than local — each FC build is much slower) |
 
 ## What's measured
