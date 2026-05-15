@@ -37,7 +37,7 @@ func (c *clangCompiler) FindDependencies(inv *Invocation) ([]string, error) {
 	// to stdout. Includes system headers; for cache keys this is correct.
 	// Use -MM later if/when we want to elide system headers (e.g. when
 	// the toolchain identity already pins them via image digest).
-	args := append([]string{"-M"}, stripGNUModeAndOutput(inv.RawArgs)...)
+	args := append([]string{"-M"}, stripGNUModeOutputAndDepEmission(inv.RawArgs)...)
 	stdout, stderr, exitCode, err := runCompilerCmd(c.exec, c.path, args, nil, inv.Cwd)
 	if err != nil {
 		return nil, err

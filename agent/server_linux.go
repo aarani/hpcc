@@ -88,6 +88,16 @@ func (s *execServer) Exec(stream agentpb.AgentService_ExecServer) error {
 		_ = os.RemoveAll(outDir)
 	}()
 
+	// Compilers refuse to create the parent directory of an output
+	// file — they open(...O_CREAT) the leaf only. CAS-mode argv
+	// frequently has -Wp,-MMD,<outDir>/build/main.d which needs
+	// build/ to exist or clang errors with ENOENT. Scan argv for
+	// substrings under outDir and mkdir each parent before invoking
+	// the compiler. Compiler-agnostic — just substring search.
+	if err := mkdirOutputParents(hdr.Argv, outDir); err != nil {
+		return fmt.Errorf("mkdir output parents: %w", err)
+	}
+
 	if err := stageInputs(stream, srcDir); err != nil {
 		return fmt.Errorf("stage inputs: %w", err)
 	}
@@ -283,6 +293,57 @@ func streamOneOutput(stream agentpb.AgentService_ExecServer, full, rel string) e
 			Output: &agentpb.OutputFile{Path: rel, Eof: true},
 		},
 	})
+}
+
+// mkdirOutputParents walks argv for substrings under outDir and
+// creates the parent directory of each. Compilers (gcc, clang) open
+// output files with O_CREAT but don't mkdir missing parents — without
+// this, a CAS-mode -Wp,-MMD,<outDir>/build/foo.d errors with ENOENT
+// because build/ doesn't exist. Mirrors the host-side worker.go
+// helper of the same name; duplicated rather than imported because
+// the agent is a separate Go module.
+//
+// The substring scan handles every shape the compiler driver uses:
+// positional (-o <path>), joined (-o<path>), and embedded inside
+// another flag's value (-Wp,-MMD,<path>). Stops at the first
+// path-impossible char (comma, whitespace, end-of-string) so a flag
+// carrying multiple comma-separated values is segmented correctly.
+func mkdirOutputParents(args []string, outDir string) error {
+	prefix := outDir
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	for _, a := range args {
+		rest := a
+		for {
+			idx := strings.Index(rest, prefix)
+			if idx < 0 {
+				break
+			}
+			tail := rest[idx+len(prefix):]
+			end := strings.IndexAny(tail, ", \t")
+			var rel string
+			if end < 0 {
+				rel = tail
+				rest = ""
+			} else {
+				rel = tail[:end]
+				rest = tail[end:]
+			}
+			if rel == "" {
+				continue
+			}
+			parent := filepath.Dir(rel)
+			if parent == "" || parent == "." {
+				continue
+			}
+			full := filepath.Join(outDir, parent)
+			if err := os.MkdirAll(full, 0o755); err != nil {
+				return fmt.Errorf("mkdir %q: %w", full, err)
+			}
+		}
+	}
+	return nil
 }
 
 // safeRel rejects paths that would escape the staging dir. The

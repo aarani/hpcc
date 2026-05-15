@@ -307,13 +307,18 @@ func (d *Dispatcher) dispatchCAS(ctx context.Context, c compiler.Compiler, inv *
 	}
 
 	rewritten := compiler.RewriteForCAS(inv, projectRoot, "/src", "/out")
+	// Rewrite dep-emission paths (-Wp,-MMD,X / -MF X) to live under
+	// /out so the worker writes the resulting .d files where the
+	// agent already auto-streams from. The list of original paths
+	// drives the client-side write-back after the response.
+	finalArgs, extraOutputPaths := compiler.RewriteDepEmissionForCAS(rewritten.RawArgs, "/out")
 	entryPath, err := projectRelative(projectRoot, inv.Inputs[0])
 	if err != nil {
 		return nil, fmt.Errorf("compute entry_path: %w", err)
 	}
 
 	req := &gen.CompileRequest{
-		Args: append([]string{c.Name()}, rewritten.RawArgs...),
+		Args: append([]string{c.Name()}, finalArgs...),
 		Descriptor_: &gen.RemoteDescriptor{
 			TenantId:       d.cfg.TenantID,
 			ImageDigest:    d.cfg.ImageDigest,
@@ -334,6 +339,33 @@ func (d *Dispatcher) dispatchCAS(ctx context.Context, c compiler.Compiler, inv *
 	if err != nil {
 		return nil, fmt.Errorf("worker Compile RPC: %w", err)
 	}
+
+	// Write side-effect outputs (.d files) back to the host. The
+	// /out-relative path the worker keyed by matches the original
+	// path the user passed (cwd-relative), so writing under inv.Cwd
+	// lands the file where `make` expects to find it. We iterate the
+	// requested paths rather than blindly trusting whatever's in the
+	// map so the worker can't drop unexpected files on the client
+	// filesystem.
+	if len(extraOutputPaths) > 0 {
+		for _, p := range extraOutputPaths {
+			bytes, ok := compileResp.ExtraOutputs[p]
+			if !ok {
+				// Cache hit (no fresh compile, no extras) or the
+				// compile produced no .d for this path. Either way,
+				// nothing to write.
+				continue
+			}
+			full := filepath.Join(inv.Cwd, p)
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				return nil, fmt.Errorf("mkdir for extra output %q: %w", p, err)
+			}
+			if err := os.WriteFile(full, bytes, 0o644); err != nil {
+				return nil, fmt.Errorf("write extra output %q: %w", p, err)
+			}
+		}
+	}
+
 	return compileResponseToResult(compileResp), nil
 }
 

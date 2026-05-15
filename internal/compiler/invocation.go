@@ -357,6 +357,15 @@ func (inv *Invocation) ComputeHash(ctx *Context) (string, error) {
 // InvocationResult is the captured output of a single compile run. It is
 // what the cache stores on a miss and replays on a hit; the duration is
 // recorded for metadata only and is not part of the cache key.
+//
+// Extras carries side-effect output files the compile produced besides
+// the primary -o artifact — typically .d dep files written by
+// -Wp,-MMD,<path> for incremental-build dep tracking. Keyed by path
+// (relative to the per-RPC output staging dir). The cache stores it
+// alongside Output so warm hits replay the same dep files the cold
+// compile produced; without that, deleting a .d on disk would leave
+// `make` re-firing the rule forever on cache-hit responses that
+// returned the .o but no .d.
 type InvocationResult struct {
 	Output   []byte
 	Stdout   []byte
@@ -364,4 +373,5 @@ type InvocationResult struct {
 	ExitCode int
 	Duration time.Duration
 	Err      error
+	Extras   map[string][]byte
 }

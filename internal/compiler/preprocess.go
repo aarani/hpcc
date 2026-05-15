@@ -107,10 +107,15 @@ func filterSources(deps, sources []string) []string {
 	return out
 }
 
-// stripGNUModeAndOutput drops -c/-E/-S/-M/-MM and -o (with its value) from
-// args, preserving everything else in original order. Used to build a
-// preprocess-only command line from an invocation that may have been a
-// compile or link.
+// stripGNUModeAndOutput drops -c/-E/-S/-M/-MM and -o (with its value)
+// from args, preserving everything else in original order — including
+// the dep-emission family (-MD/-MMD/-MF/...) and the `-Wp,-MMD,…`
+// passthrough. Used to build a preprocess-only command line for the
+// PREPROCESSED dispatch path: client runs `gcc -E <args>` to produce
+// preprocessed bytes for shipping, AND the user's -Wp,-MMD,foo.d side
+// effect runs as part of that preprocess pass — without which `make`'s
+// incremental dep tracking would lose the .d file the kernel build
+// expects to find locally.
 func stripGNUModeAndOutput(args []string) []string {
 	out := make([]string, 0, len(args))
 	i := 0
@@ -130,6 +135,68 @@ func stripGNUModeAndOutput(args []string) []string {
 		i++
 	}
 	return out
+}
+
+// stripGNUModeOutputAndDepEmission is the stricter variant used for
+// building an internal `gcc -M` invocation (FindDependencies). Same as
+// stripGNUModeAndOutput PLUS the dep-emission family
+// (-MD/-MMD/-MF/-MT/-MQ and the `-Wp,-M*,…` preprocessor-passthrough
+// forms).
+//
+// Those flags must not survive into our `-M` call: the kernel build's
+// `-Wp,-MMD,foo.d` is passed via `-Wp,` directly to cpp, which then
+// honours `-MMD`'s "user headers only, write to file" semantics and
+// silently shadows our driver-level `-M`. Symptom: our stdout
+// dep-list misses -include'd headers reached via `-isystem` (e.g.
+// `include/linux/compiler-version.h`), the CAS manifest is incomplete,
+// and the worker compile fails on the missing -include.
+//
+// The PREPROCESSED dispatch path uses stripGNUModeAndOutput (NOT this
+// one) so the client's `gcc -E` still writes the .d side-effect.
+func stripGNUModeOutputAndDepEmission(args []string) []string {
+	out := make([]string, 0, len(args))
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		if !strings.HasPrefix(a, "-") || a == "-" || a == "--" {
+			out = append(out, a)
+			i++
+			continue
+		}
+		if isGNUDepEmissionFlag(a) {
+			consumed := 1
+			if (a == "-MF" || a == "-MT" || a == "-MQ") && i+1 < len(args) {
+				consumed = 2
+			}
+			i += consumed
+			continue
+		}
+		spec, _, consumed, ok := matchGNUFlag(args, i)
+		if ok && (spec.Category == CatMode || spec.Category == CatOutput) {
+			i += consumed
+			continue
+		}
+		out = append(out, a)
+		i++
+	}
+	return out
+}
+
+// isGNUDepEmissionFlag reports whether arg is a Make-dependency-emission
+// flag that conflicts with `-M` mode in FindDependencies. Includes the
+// preprocessor-passthrough form (`-Wp,-MMD,foo.d`, `-Wp,-MD,foo.d`)
+// the Linux kernel build uses extensively.
+func isGNUDepEmissionFlag(a string) bool {
+	switch a {
+	case "-MD", "-MMD", "-MF", "-MT", "-MQ":
+		return true
+	}
+	if strings.HasPrefix(a, "-Wp,-MMD,") || strings.HasPrefix(a, "-Wp,-MD,") ||
+		strings.HasPrefix(a, "-Wp,-MF,") || strings.HasPrefix(a, "-Wp,-MT,") ||
+		strings.HasPrefix(a, "-Wp,-MQ,") {
+		return true
+	}
+	return false
 }
 
 // stripMSVCModeAndOutput is the cl.exe counterpart of stripGNUModeAndOutput.

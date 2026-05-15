@@ -134,6 +134,65 @@ func RewriteForCAS(inv *Invocation, projectRoot, srcRoot, outRoot string) *Invoc
 	return cp
 }
 
+// RewriteDepEmissionForCAS rewrites every dep-emission path in args to
+// live under outRoot inside the container, returning the new argv and
+// the list of /out-relative paths the worker will produce. The client
+// uses the second return to know which side-effect files to expect
+// back in CompileResponse.extra_outputs and where to write them on
+// the host (joined against inv.Cwd, which has the same relative
+// structure).
+//
+// Rewrites two forms:
+//
+//   - `-Wp,-MMD,<path>` and the rest of the `-Wp,-M*,<path>` family
+//     (the kernel build uses these on every TU).
+//   - Separate-form `-MF <path>` (the standalone version of the same).
+//
+// Bare `-MD` / `-MMD` (no explicit path) is intentionally not handled —
+// gcc derives the default path from `-o`, and the rules are
+// platform-specific (`<output_basename>.d` in the same dir). Easy to
+// add when something asks for it.
+func RewriteDepEmissionForCAS(args []string, outRoot string) (newArgs []string, paths []string) {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if rewritten, p, ok := rewriteWpDepEmission(a, outRoot); ok {
+			out = append(out, rewritten)
+			paths = append(paths, p)
+			continue
+		}
+		if (a == "-MF" || a == "-MT" || a == "-MQ") && i+1 < len(args) {
+			// -MF specifies the dep-file output path; rewrite its
+			// value. -MT/-MQ name the *target* in the .d rule, not
+			// an output path, so leave them alone.
+			if a == "-MF" {
+				orig := args[i+1]
+				out = append(out, a, filepath.ToSlash(filepath.Join(outRoot, orig)))
+				paths = append(paths, orig)
+				i++
+				continue
+			}
+			out = append(out, a, args[i+1])
+			i++
+			continue
+		}
+		out = append(out, a)
+	}
+	return out, paths
+}
+
+// rewriteWpDepEmission rewrites a -Wp,-M*,PATH flag to point under
+// outRoot, returning (newFlag, originalPath, true) on a match.
+func rewriteWpDepEmission(a, outRoot string) (string, string, bool) {
+	for _, prefix := range []string{"-Wp,-MMD,", "-Wp,-MD,", "-Wp,-MF,"} {
+		if strings.HasPrefix(a, prefix) {
+			orig := a[len(prefix):]
+			return prefix + filepath.ToSlash(filepath.Join(outRoot, orig)), orig, true
+		}
+	}
+	return "", "", false
+}
+
 // rewriteOutputFlagGNU walks args looking for `-o <value>` or `-o<value>`
 // and replaces the value. Returns a new slice; does not mutate the input.
 // Handles both the separate form (-o foo.o, two argv slots) and the

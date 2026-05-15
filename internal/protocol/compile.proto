@@ -128,6 +128,21 @@ message CompileResponse {
   optional bytes output_artifact = 4;
   optional string cache_key = 5;
   optional AuditRecord audit = 6;
+  // Side-effect output files the compile produced besides the primary
+  // `-o` artifact — typically `.d` files written by `-Wp,-MMD,<path>`
+  // / `-MF <path>` for the Make-style dep tracking the kernel build
+  // depends on for incremental builds. Keys are paths relative to
+  // the per-RPC output staging dir (`/out` in-container); the client
+  // writes each back to the corresponding path under its `inv.Cwd`.
+  //
+  // Populated for CAS-mode dispatches whether the response was a
+  // fresh compile or a cache hit — the CompileCache stores extras
+  // alongside the primary artifact (as a single `extras` blob,
+  // JSON-encoded) so warm hits replay the same .d files cold
+  // compiles produced. Without that, deleting a .d on disk would
+  // leave `make` re-firing the compile rule forever on cache-hit
+  // responses that returned the .o but no .d.
+  map<string, bytes> extra_outputs = 7;
 }
 
 message AuditRecord {

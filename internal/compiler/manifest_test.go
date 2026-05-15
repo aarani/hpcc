@@ -368,6 +368,62 @@ func TestBuildManifest_systemHeadersStayAbsolute(t *testing.T) {
 	}
 }
 
+// Regression: kernel-style builds invoke gcc with relative paths
+// (e.g. `-include include/generated/autoconf.h`) and `gcc -M` echoes
+// those paths back as-is. BuildManifest must open them relative to
+// inv.Cwd (where `make` is running) rather than the daemon's process
+// cwd — without that, every cacheable kernel TU silently falls back
+// to local with "no such file or directory" on the dep file.
+func TestBuildManifest_relativeDepResolvedAgainstInvCwd(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, ".hpcc"), nil, 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(projectDir, "include", "generated"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	src := filepath.Join(projectDir, "main.c")
+	if err := os.WriteFile(src, []byte("int main(void){return 0;}\n"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	hdr := filepath.Join(projectDir, "include", "generated", "autoconf.h")
+	if err := os.WriteFile(hdr, []byte("#define FOO 1\n"), 0o644); err != nil {
+		t.Fatalf("write hdr: %v", err)
+	}
+
+	// Switch process cwd to somewhere OTHER than projectDir so any
+	// code path that uses process cwd for relative-path resolution
+	// will fail to find the dep file. t.Chdir restores on test end
+	// (Go 1.24+).
+	other := t.TempDir()
+	t.Chdir(other)
+
+	inv := &Invocation{
+		Inputs: []string{src}, // absolute; sidesteps the bug for the input itself
+		Mode:   enum.CompileMode,
+		Cwd:    projectDir,
+	}
+	// Dep returned by gcc -M as a RELATIVE path — the kernel build's
+	// real shape. With the bug, hashFileBlob("include/generated/...")
+	// would os.Open against process cwd (`other`) and ENOENT.
+	deps := []string{filepath.Join("include", "generated", "autoconf.h")}
+
+	m, err := BuildManifest(inv, &Context{Compiler: &fakeCompiler{deps: deps}})
+	if err != nil {
+		t.Fatalf("BuildManifest: %v (this is the kernel-bench regression)", err)
+	}
+	// Both inputs and the relative dep should be in the manifest.
+	var sawHeader bool
+	for _, b := range m.Blobs {
+		if b.Path == filepath.Join("include", "generated", "autoconf.h") {
+			sawHeader = true
+		}
+	}
+	if !sawHeader {
+		t.Errorf("manifest missing the relative dep; blobs=%v", m.Blobs)
+	}
+}
+
 func TestBuildManifest_noMarkerKeepsAbsolutePaths(t *testing.T) {
 	dir := t.TempDir() // no .hpcc marker
 	src := filepath.Join(dir, "main.c")

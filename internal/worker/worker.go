@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -249,6 +251,20 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 	}
 	defer cleanup()
 
+	// Pre-create parent directories for every /out/<path> the argv
+	// mentions. Compilers (clang, gcc) refuse to create missing
+	// parent dirs for output files — they open(...O_CREAT) the leaf
+	// only. Today's PREPROCESSED path gets away with a single
+	// /out/foo.o whose parent (outHostPath) always exists; CAS-mode
+	// argv with -Wp,-MMD,/out/build/main.d needs /out/build/ to be
+	// created first or clang errors with ENOENT before producing any
+	// output. Substring-search across all argv elements catches the
+	// joined -o<path>, separate -o <path>, and -Wp,-M*,<path> forms
+	// uniformly without compiler-flag-aware parsing.
+	if err := mkdirOutputParents(req.Args, outHostPath); err != nil {
+		return nil, fmt.Errorf("prepare output dirs: %w", err)
+	}
+
 	spec := runtime.ContainerSpec{
 		ID:          containerID.String(),
 		TenantID:    req.Descriptor_.TenantId,
@@ -308,6 +324,10 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 
 	if useCache {
 		if hit, err := cctx.Cache.Lookup(inv); err == nil && hit != nil {
+			// Cache hit. hit.Extras was populated by loadEntry from
+			// the cached `extras` blob, so the client gets the same
+			// .d files the original cold compile produced — even
+			// though no gcc ran this time.
 			return w.respond(cctx, req, container, inv, hit), nil
 		}
 	}
@@ -317,13 +337,129 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 		return nil, fmt.Errorf("invoke compiler: %w", err)
 	}
 
+	// Collect side-effect output files (typically .d files from
+	// -MMD/-MD) that the client expects back. The agent has already
+	// streamed everything from /out into outHostPath; walk it and
+	// extract anything that isn't the primary -o artifact. The
+	// client rewrote dep-emission paths to live under /out before
+	// sending, so the relative key here matches the path it remembers.
+	extras, err := collectExtraOutputs(outHostPath, inv.Output)
+	if err != nil {
+		return nil, fmt.Errorf("collect extra outputs: %w", err)
+	}
+	result.Extras = extras
+
 	if useCache {
 		// Store errors are non-fatal — we have the artifact, the next
-		// request can recompute and try again.
+		// request can recompute and try again. Extras go into the
+		// cache too so warm hits replay the same .d files cold
+		// compiles produced.
 		_ = cctx.Cache.Store(inv, result)
 	}
 
 	return w.respond(cctx, req, container, inv, result), nil
+}
+
+// mkdirOutputParents walks argv looking for any substring matching
+// "/out/<path>" and creates the host-side parent directory of <path>
+// under outHostPath. The substring scan handles every shape the
+// compiler driver uses: positional (-o /out/build/foo.o), joined
+// (-o/out/build/foo.o), and embedded inside another flag's value
+// (-Wp,-MMD,/out/build/foo.d). Stops at the first character that
+// can't appear in a path (comma, whitespace, end-of-string) so a
+// flag carrying multiple comma-separated values is segmented
+// correctly.
+//
+// Idempotent: MkdirAll is a no-op when the dir already exists, so
+// concurrent compiles writing to overlapping subtrees don't race.
+func mkdirOutputParents(args []string, outHostPath string) error {
+	if outHostPath == "" {
+		return nil
+	}
+	const outPrefix = "/out/"
+	for _, a := range args {
+		rest := a
+		for {
+			idx := strings.Index(rest, outPrefix)
+			if idx < 0 {
+				break
+			}
+			tail := rest[idx+len(outPrefix):]
+			// End of path = first char that can't legitimately appear
+			// in a filesystem path argv element: comma (segments
+			// -Wp,X,Y), whitespace (paranoia — argv shouldn't have
+			// any but cheap to guard).
+			end := strings.IndexAny(tail, ", \t")
+			var rel string
+			if end < 0 {
+				rel = tail
+				rest = ""
+			} else {
+				rel = tail[:end]
+				rest = tail[end:]
+			}
+			if rel == "" {
+				continue
+			}
+			parent := filepath.Dir(rel)
+			if parent == "" || parent == "." {
+				continue
+			}
+			full := filepath.Join(outHostPath, filepath.FromSlash(parent))
+			if err := os.MkdirAll(full, 0o755); err != nil {
+				return fmt.Errorf("mkdir %q: %w", full, err)
+			}
+		}
+	}
+	return nil
+}
+
+// collectExtraOutputs walks outHostPath and returns every regular
+// file it finds keyed by its path relative to outHostPath, EXCEPT
+// the primary artifact named by inv.Output. The primary is excluded
+// because it's already returned as CompileResponse.output_artifact;
+// returning it twice would double-encode bytes on the wire.
+//
+// primaryInContainer is the inv.Output path as the compiler argv
+// references it — e.g. "/out/scripts/mod/empty.o". The primary's
+// relative-to-outHost key is everything after the "/out" prefix
+// (or "out/" once translated by the runtime layer), so we just
+// strip it and use that.
+func collectExtraOutputs(outHostPath, primaryInContainer string) (map[string][]byte, error) {
+	if outHostPath == "" {
+		return nil, nil
+	}
+	primaryRel := strings.TrimPrefix(filepath.ToSlash(primaryInContainer), "/out/")
+	extras := map[string][]byte{}
+	err := filepath.WalkDir(outHostPath, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(outHostPath, path)
+		if err != nil {
+			return err
+		}
+		key := filepath.ToSlash(rel)
+		if key == primaryRel {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		extras[key] = data
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(extras) == 0 {
+		return nil, nil
+	}
+	return extras, nil
 }
 
 // workerCompileConfig is the worker-side stand-in Config every per-RPC
@@ -382,6 +518,11 @@ func (w *Worker) respond(ctx *compiler.Context, req *gen.CompileRequest, contain
 	}
 	if len(r.Output) > 0 {
 		resp.OutputArtifact = r.Output
+	}
+	// Same source on fresh compile (Extras set by collectExtraOutputs)
+	// and on cache hit (Extras set by loadEntry from the cached blob).
+	if len(r.Extras) > 0 {
+		resp.ExtraOutputs = r.Extras
 	}
 	return resp
 }
