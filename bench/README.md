@@ -22,7 +22,7 @@ Each script:
 2. Materializes the right config (a single disk cache for local
    mode; a `remote = enabled` TOML pointing at the in-process Phase 4
    stack for FC mode).
-3. Shallow-clones a pinned Linux tag (`v6.6` by default) and runs the
+3. Shallow-clones a pinned Linux tag (`v7.0` by default) and runs the
    chosen kconfig target.
 4. Builds the kernel once cold, once warm (`make clean` between, so
    only object files vanish — `.config` and the prepared sources
@@ -47,7 +47,7 @@ Knobs (env vars, all optional):
 
 | Var                              | Default       | Meaning |
 |----------------------------------|---------------|---------|
-| `HPCC_BENCH_KERNEL_TAG`          | `v6.6`        | Git tag in torvalds/linux to clone |
+| `HPCC_BENCH_KERNEL_TAG`          | `v7.0`        | Git tag in torvalds/linux to clone |
 | `HPCC_BENCH_JOBS`                | `nproc`       | `make -j` parallelism |
 | `HPCC_BENCH_CONFIG`              | `defconfig`   | kconfig target |
 | `HPCC_BENCH_TARGET`              | `vmlinux`     | Top-level `make` target |

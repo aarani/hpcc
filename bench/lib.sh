@@ -10,7 +10,7 @@
 # Pin to a recent stable LTS so two benchmark runs months apart still
 # compare apples to apples. Bump when intentionally upgrading. The
 # tag must exist on kernel.org git mirror.
-HPCC_BENCH_KERNEL_TAG="${HPCC_BENCH_KERNEL_TAG:-v6.6}"
+HPCC_BENCH_KERNEL_TAG="${HPCC_BENCH_KERNEL_TAG:-v7.0}"
 
 HPCC_BENCH_JOBS="${HPCC_BENCH_JOBS:-}"
 if [[ -z "${HPCC_BENCH_JOBS}" ]]; then

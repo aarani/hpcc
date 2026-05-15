@@ -19,7 +19,7 @@ on:
       kernel_tag:
         description: "Linux git tag to benchmark"
         required: false
-        default: "v6.6"
+        default: "v7.0"
       config:
         description: "kconfig target (defconfig / tinyconfig / allnoconfig)"
         required: false
@@ -55,7 +55,7 @@ jobs:
 
       - name: Run local kernel bench
         env:
-          HPCC_BENCH_KERNEL_TAG: ${{ inputs.kernel_tag || 'v6.6' }}
+          HPCC_BENCH_KERNEL_TAG: ${{ inputs.kernel_tag || 'v7.0' }}
           HPCC_BENCH_CONFIG: ${{ inputs.config || 'defconfig' }}
         run: ./bench/kernel-bench.sh
 
@@ -137,7 +137,7 @@ jobs:
           HPCC_FIRECRACKER_BIN: /usr/local/bin/firecracker
           HPCC_JAILER_BIN: /usr/local/bin/jailer
           HPCC_TEST_KERNEL: /tmp/fcassets/vmlinux
-          HPCC_BENCH_KERNEL_TAG: ${{ inputs.kernel_tag || 'v6.6' }}
+          HPCC_BENCH_KERNEL_TAG: ${{ inputs.kernel_tag || 'v7.0' }}
           # tinyconfig by default — defconfig under FC dispatch is
           # multi-hour on a 2-vCPU FC runner.
           HPCC_BENCH_CONFIG: ${{ inputs.config || 'tinyconfig' }}
