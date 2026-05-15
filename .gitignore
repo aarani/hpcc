@@ -5,3 +5,6 @@ chats/
 # bench/ outputs: per-run results, kernel checkouts, scratch caches.
 bench/results/
 bench/work/
+
+# `go build ./agent/...` from the repo root drops a binary here.
+/agent/agent

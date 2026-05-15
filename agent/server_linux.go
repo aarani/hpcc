@@ -27,58 +27,6 @@ const agentVsockPort = 17727
 // part of init bootstrap on a fresh /run tmpfs.
 const stagingRoot = "/run/hpcc"
 
-// defaultPath is the PATH the agent injects when the request doesn't
-// carry one. The agent runs as PID 1 directly off the kernel, so its
-// own environment has only what the boot args supplied — typically
-// HOME=/ and nothing else. Without an explicit PATH the spawned
-// compiler can't find `gcc`/`cc`/etc. by name even when the rootfs
-// has them at /usr/bin or /usr/local/bin.
-//
-// This is the conventional POSIX search order. If a user image
-// installs its toolchain somewhere exotic, the dispatcher / worker
-// should pass an explicit PATH in ExecHeader.Env (which resolveEnv
-// will let win below).
-const defaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-// resolveEnv builds the child process environment from the request,
-// inheriting any agent-process env the request didn't override and
-// guaranteeing a sensible PATH. Request-supplied vars win over both
-// the agent's env and the default PATH.
-func resolveEnv(reqEnv []string) []string {
-	keys := make(map[string]struct{}, len(reqEnv)+len(os.Environ())+1)
-	out := make([]string, 0, len(reqEnv)+len(os.Environ())+1)
-	for _, kv := range reqEnv {
-		if k := envKey(kv); k != "" {
-			keys[k] = struct{}{}
-		}
-		out = append(out, kv)
-	}
-	for _, kv := range os.Environ() {
-		k := envKey(kv)
-		if k == "" {
-			continue
-		}
-		if _, dup := keys[k]; dup {
-			continue
-		}
-		keys[k] = struct{}{}
-		out = append(out, kv)
-	}
-	if _, hasPath := keys["PATH"]; !hasPath {
-		out = append(out, "PATH="+defaultPath)
-	}
-	return out
-}
-
-// envKey returns the variable name from a "KEY=VALUE" entry, or ""
-// if the entry is malformed.
-func envKey(kv string) string {
-	if i := strings.IndexByte(kv, '='); i > 0 {
-		return kv[:i]
-	}
-	return ""
-}
-
 // outputChunkSize bounds one OutputFile.chunk frame. Picked to keep
 // per-frame allocations in the same neighbourhood as gRPC's default
 // 4 MiB frame cap with headroom for protobuf overhead — large enough

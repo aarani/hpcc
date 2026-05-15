@@ -1,5 +1,3 @@
-//go:build linux
-
 package main
 
 import (
@@ -24,13 +22,23 @@ func findEnv(env []string, key string) string {
 // failure mode this protects against is `exec: "gcc": executable
 // file not found in $PATH` from inside the FC VM where the agent's
 // own env (set by the kernel) carries no PATH at all.
+//
+// Note: t.Setenv("PATH", "") would *keep* PATH= in os.Environ() (with
+// empty value), which isn't the same as the real PID-1 case where the
+// kernel never set the var at all. Unset it outright and restore on
+// cleanup.
 func TestResolveEnv_supplements_default_PATH(t *testing.T) {
-	// Snapshot and clear the agent's PATH for the duration of the
-	// test, mirroring the kernel-boot environment a real PID-1 agent
-	// runs under.
-	t.Setenv("PATH", "")
-	if got := os.Getenv("PATH"); got != "" {
-		t.Fatalf("setup: PATH = %q, want empty", got)
+	orig, had := os.LookupEnv("PATH")
+	if err := os.Unsetenv("PATH"); err != nil {
+		t.Fatalf("unset PATH: %v", err)
+	}
+	t.Cleanup(func() {
+		if had {
+			_ = os.Setenv("PATH", orig)
+		}
+	})
+	if _, ok := os.LookupEnv("PATH"); ok {
+		t.Fatalf("setup: PATH still set after Unsetenv")
 	}
 
 	env := resolveEnv(nil)

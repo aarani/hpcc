@@ -22,6 +22,19 @@ func main() {
 	if err := setupInit(); err != nil {
 		log.Fatalf("hpcc-agent: init: %v", err)
 	}
+
+	// Ensure PATH is set on the agent process itself so exec.Command
+	// can resolve bare compiler names ("gcc", "cc", …) via LookPath.
+	// LookPath reads os.Getenv("PATH") from the CURRENT process, not
+	// from any cmd.Env we set on the child — so a child-env-only
+	// default isn't enough. The kernel passes init=/.hpcc/agent with
+	// a near-empty environment (often just HOME=/), which would make
+	// every bare-name compile fail with "executable file not found in
+	// $PATH" inside the guest. Set our own PATH if the kernel didn't.
+	if os.Getenv("PATH") == "" {
+		_ = os.Setenv("PATH", defaultPath)
+	}
+
 	go reapLoop()
 
 	// Run the gRPC server on a goroutine and surface its errors via
