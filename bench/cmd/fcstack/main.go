@@ -92,21 +92,33 @@ func main() {
 		fcBin      = flag.String("firecracker-bin", os.Getenv("HPCC_FIRECRACKER_BIN"), "firecracker binary path")
 		jailerBin  = flag.String("jailer-bin", os.Getenv("HPCC_JAILER_BIN"), "jailer binary path")
 		kernel     = flag.String("kernel", os.Getenv("HPCC_TEST_KERNEL"), "vmlinux for the microVMs")
-		// Default to gcc:13 because that's what `apt install gcc` on
-		// ubuntu-latest gives the local-mode bench. Keeping both
-		// halves on the same gcc minor version is the only way the
-		// local-vs-FC comparison is apples-to-apples — and is also
-		// our evidence the build works, since the local bench
-		// (same kernel, same gcc 13) compiles cleanly. gcc:14
-		// tightened -Wtautological-compare and now flags kernel
-		// macros (BUILD_BUG_ON_ZERO and friends use `(x) == (x)` as
-		// a deliberate SFINAE-style type check), tripping -Werror in
-		// kernel/time/namespace.c and kernel/cgroup/cgroup.c. Stock
-		// Debian-bookworm rootfs. We previously defaulted to
-		// chainguard's gcc-glibc:latest-dev; same -Werror failure
-		// mode, different cause (hardened-warning toolchain
-		// defaults).
-		imageRef = flag.String("image-ref", "docker.io/library/gcc:13", "OCI toolchain image")
+		// Pinned to the same gcc *patch* version that
+		// `apt install gcc` on ubuntu-latest gives the local-mode
+		// bench (gcc 13.2.0). The floating `gcc:13` tag on Docker
+		// Hub currently resolves to gcc 13.4, which ships
+		// -Wtautological-compare tightening that fires on kernel
+		// macros (BUILD_BUG_ON_ZERO / __same_type expansions in
+		// kernel/cgroup/cgroup.c, kernel/time/namespace.c,
+		// arch/x86/kernel/alternative.c, …) and trips -Werror. The
+		// older 13.2.0 patch doesn't have that diagnostic and the
+		// kernel compiles clean. gcc:14 is even worse on the same
+		// warning class. Stock Debian-bookworm rootfs; no hardening
+		// flags baked into the toolchain defaults. (We previously
+		// tried chainguard's gcc-glibc:latest-dev and that hit the
+		// same -Werror failure mode from a different angle —
+		// hardened-warning toolchain defaults rather than a newer
+		// gcc patch.)
+		//
+		// TODO(bench-fc): the real fix is toolchain-identity parity
+		// between local and FC modes. The "image digest IS the
+		// toolchain identity" pitch (plan §4) is only meaningful
+		// when local-mode and FC-mode share that identity; today
+		// they don't (host's apt gcc vs the OCI image's gcc), which
+		// breaks the cross-developer hit-rate story and means the
+		// bench's local-vs-FC comparison isn't measuring the same
+		// compiler. Options: snapshot the host toolchain into the
+		// image at fcstack startup, or assert/refuse on mismatch.
+		imageRef = flag.String("image-ref", "docker.io/library/gcc:13.2.0", "OCI toolchain image")
 		schedBind  = flag.String("scheduler-listen", "127.0.0.1:0", "scheduler bind address")
 		workerBind = flag.String("worker-listen", "127.0.0.1:0", "worker bind address")
 		idpBind    = flag.String("idp-listen", "127.0.0.1:0", "IdP HTTP bind address")

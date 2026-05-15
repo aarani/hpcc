@@ -86,7 +86,7 @@ means warm builds never hit the same speedup multiplier:
 | `HPCC_BENCH_VM_MEMORY`           | `2GB` |
 | `HPCC_BENCH_VM_VCPUS`            | `2` |
 | `HPCC_BENCH_POOL_MAX`            | `8` (concurrent VMs per tenant) |
-| `HPCC_BENCH_TOOLCHAIN_IMAGE`     | `docker.io/library/gcc:13` (matched to ubuntu-latest's apt gcc) |
+| `HPCC_BENCH_TOOLCHAIN_IMAGE`     | `docker.io/library/gcc:13.2.0` (matched to ubuntu-latest's apt gcc patch version) |
 | `HPCC_BENCH_WARM_RUNS`           | `2` (fewer than local — each FC build is much slower) |
 
 ## What's measured
@@ -119,4 +119,20 @@ client has no `hpcc stats` surface.
 - **`make modules` target.** `vmlinux` covers the bulk of the TU
   count but excludes most of `drivers/`. Adding a second pass with
   `make modules` would round out the workload.
+
+- **Toolchain-identity parity between local and FC modes.** Today
+  the local bench uses the host's apt `gcc` (gcc 13.2.0 on
+  ubuntu-latest) and the FC bench uses whatever the configured OCI
+  image ships. We pin `gcc:13.2.0` as a workaround so the two
+  versions match, but that's a manual chase — every kernel-tag bump
+  or `gcc:13` retag could break it again. The real fix is making
+  the FC stack's toolchain provably the same as the host's: snapshot
+  the host gcc/binutils/libc into a custom image at fcstack startup,
+  or run a startup probe that asserts `gcc --version` parity inside
+  vs outside the VM and refuses to run on mismatch. This is also
+  what makes the README's "image digest IS the toolchain identity"
+  pitch (plan §4) meaningful for cross-developer hit rates — without
+  parity, two developers with nominally identical hpcc setups can
+  produce bit-different `.o` outputs depending on which dispatch
+  path their compiles took.
 

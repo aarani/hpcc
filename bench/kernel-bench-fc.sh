@@ -22,12 +22,14 @@
 #   HPCC_BENCH_VM_VCPUS   — per-VM vCPUs, default 2
 #   HPCC_BENCH_POOL_MAX   — max concurrent VMs per tenant, default 8
 #   HPCC_BENCH_TOOLCHAIN_IMAGE — OCI ref for toolchain image
-#                           default docker.io/library/gcc:13, matched
-#                           to ubuntu-latest's apt gcc so local-mode
-#                           and FC-mode benches use the same compiler
-#                           version. gcc:14 trips
-#                           -Werror=tautological-compare on kernel
-#                           macros; gcc:13 doesn't.
+#                           default docker.io/library/gcc:13.2.0,
+#                           pinned to the same gcc patch version as
+#                           ubuntu-latest's apt gcc. The floating
+#                           gcc:13 tag drifts to gcc 13.4 which has
+#                           a tightened -Wtautological-compare that
+#                           kernel macros trip; pinning the patch
+#                           keeps the bench buildable across kernel
+#                           tags without disabling -Werror.
 #
 # Run as root (jailer needs CAP_SYS_ADMIN + chroot). The CI workflow
 # invokes via `sudo -E`.
@@ -51,7 +53,7 @@ HPCC_BENCH_MIN_HIT_RATE="${HPCC_BENCH_MIN_HIT_RATE:-90}"
 HPCC_BENCH_VM_MEMORY="${HPCC_BENCH_VM_MEMORY:-2GB}"
 HPCC_BENCH_VM_VCPUS="${HPCC_BENCH_VM_VCPUS:-2}"
 HPCC_BENCH_POOL_MAX="${HPCC_BENCH_POOL_MAX:-8}"
-HPCC_BENCH_TOOLCHAIN_IMAGE="${HPCC_BENCH_TOOLCHAIN_IMAGE:-docker.io/library/gcc:13}"
+HPCC_BENCH_TOOLCHAIN_IMAGE="${HPCC_BENCH_TOOLCHAIN_IMAGE:-docker.io/library/gcc:13.2.0}"
 HPCC_BENCH_KEEP="${HPCC_BENCH_KEEP:-0}"
 # FC builds are much slower per-iteration than local, so default to
 # fewer warm repeats. Override with HPCC_BENCH_WARM_RUNS to trade
