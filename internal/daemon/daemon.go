@@ -34,7 +34,28 @@ type DefaultDaemon struct {
 	AuthToken  string
 	dispatcher *dispatch.Dispatcher
 	compiles   singleflight.Group
+
+	// sideEffectNoticeOnce fires the first time we bypass cache+dispatch
+	// because the argv carries a flag that produces output files we
+	// don't currently round-trip (-save-temps, -fdump-*, -gsplit-dwarf,
+	// gcov instrumentation, …). One-shot per daemon lifetime so a build
+	// using -save-temps on every TU doesn't spam the log — the user
+	// reads it once on the first such compile and knows.
+	sideEffectNoticeOnce sync.Once
 }
+
+// sideEffectBypassNotice is the one-time message the daemon prepends
+// to the first local-invoke fallthrough whose argv triggered
+// HasUncapturedSideEffectFlag. Yellow-ANSI to match the existing
+// -Werror demotion notice in the dispatch package; same shape so the
+// two reads consistently in build logs.
+const sideEffectBypassNotice = "\033[33mhpcc: " +
+	"this compile carries a flag (e.g. -save-temps, -gsplit-dwarf, " +
+	"-fdump-*, --coverage) that writes output files alongside the .o " +
+	"that hpcc can't currently round-trip through the cache/dispatch " +
+	"path. Running locally so you get every file you asked for; this " +
+	"TU and any like it won't hit the remote worker or the cache. " +
+	"This notice appears once per daemon lifetime.\033[0m\n"
 
 // NewDefaultDaemon loads the daemon's config and, if remote dispatch is
 // enabled, prepares a Dispatcher. Failures to construct the dispatcher
@@ -311,6 +332,18 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 			log.Println(fmt.Errorf("compile: %w", invokeErr))
 			d.writeErrorResponse(conn, writeMu, fmt.Sprintf("compile: %v", invokeErr), 1)
 			return
+		}
+		// One-shot user-visible warning when the bypass is due to an
+		// uncaptured-side-effect flag specifically (not the other
+		// non-dispatchable cases like stdin / multi-input / link,
+		// which are silently expected). Prepend to the compile's
+		// stderr so it surfaces in the build log.
+		if compiler.HasUncapturedSideEffectFlag(inv.RawArgs) {
+			d.sideEffectNoticeOnce.Do(func() {
+				if result != nil {
+					result.Stderr = append([]byte(sideEffectBypassNotice), result.Stderr...)
+				}
+			})
 		}
 		d.writeCompileResult(conn, writeMu, inv, result)
 		return
