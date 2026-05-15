@@ -149,6 +149,62 @@ func TestRewriteForPreprocessed_PicksCxxFromExtension(t *testing.T) {
 	}
 }
 
+// TestRewriteForPreprocessed_PicksAssemblerFromExtension pins the
+// fix for the .S regression: before this, the rewriter labeled
+// preprocessed assembly as "cpp-output" (C source), and the
+// downstream worker compile cascaded with "stray '@' in program" /
+// "invalid suffix 'b' on integer constant" / "expected identifier
+// or '(' before '.' token". The Linux kernel build has dozens of
+// .S files (efi-mixed.S, initramfs_data.S, asm-offsets, etc.) so
+// the bug killed every FC-mode kernel build the moment one was
+// dispatched.
+func TestRewriteForPreprocessed_PicksAssemblerFromExtension(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"uppercase .S", "/src/efi-mixed.S"},
+		{"lowercase .s (already preprocessed)", "/src/foo.s"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &clangCompiler{name: "gcc"}
+			inv, err := ParseGNU([]string{"-c", tc.input})
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			got, err := c.RewriteForPreprocessed(inv, "/staged/foo.s")
+			if err != nil {
+				t.Fatalf("rewrite: %v", err)
+			}
+			if got.RawArgs[1] != "assembler" {
+				t.Errorf("expected -x assembler for %s, got -x %q (full: %v)",
+					tc.input, got.RawArgs[1], got.RawArgs)
+			}
+		})
+	}
+}
+
+// TestRewriteForPreprocessed_PicksAssemblerFromXFlag covers the
+// explicit `-x assembler-with-cpp` path the kernel passes for .S
+// files where the make rule wants to force the language regardless
+// of extension.
+func TestRewriteForPreprocessed_PicksAssemblerFromXFlag(t *testing.T) {
+	c := &clangCompiler{name: "gcc"}
+	inv, err := ParseGNU([]string{"-c", "-x", "assembler-with-cpp", "/src/foo.S"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	got, err := c.RewriteForPreprocessed(inv, "/staged/foo.s")
+	if err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	if got.RawArgs[1] != "assembler" {
+		t.Errorf("expected -x assembler for -x assembler-with-cpp input, got -x %q",
+			got.RawArgs[1])
+	}
+}
+
 func TestRewriteForPreprocessed_PicksCxxFromClangPlusPlus(t *testing.T) {
 	c := &clangCompiler{name: "clang++"}
 	inv, err := ParseGNU([]string{"-c", "/src/foo.c"})

@@ -201,19 +201,36 @@ func gnuKeepForPreprocessed(args []string) []string {
 	return out
 }
 
-// gnuPreprocessedLanguage picks the -x value for clang's preprocessed
-// compile. clang uses "cpp-output" for C and "c++-cpp-output" for C++;
-// pick C++ if the compiler is one of the C++ drivers (clang++, g++,
-// c++), if the invocation forced -x c++, or if any input has a
-// C++-flavored extension.
+// gnuPreprocessedLanguage picks the -x value for the post-preprocess
+// compile. Three families:
+//
+//   - C++ source ("c++-cpp-output"): the compiler is a C++ driver
+//     (clang++, g++, c++), the invocation forced -x c++, or the input
+//     has a C++-flavored extension.
+//   - Assembly ("assembler"): the invocation forced -x assembler /
+//     -x assembler-with-cpp, or the input is .s/.S. Once we've run
+//     -E ourselves the cpp pass is already done; "assembler" tells
+//     gcc to skip it on the second pass. The Linux kernel build is
+//     full of .S files (arch/x86/boot/startup/efi-mixed.S,
+//     usr/initramfs_data.S, …); without this branch the rewriter
+//     mislabels them as "cpp-output" and gcc tries to parse the
+//     assembly as C, producing 200-line cascades of "invalid suffix
+//     'b' on integer constant" / "stray '\' in program" / "expected
+//     identifier or '(' before '.' token".
+//   - C source ("cpp-output"): the default for everything else.
 func gnuPreprocessedLanguage(compilerName string, inv *Invocation) string {
 	if compilerName == "clang++" || compilerName == "g++" || compilerName == "c++" || inv.Language == "c++" {
 		return "c++-cpp-output"
+	}
+	if inv.Language == "assembler" || inv.Language == "assembler-with-cpp" {
+		return "assembler"
 	}
 	for _, in := range inv.Inputs {
 		switch strings.ToLower(filepath.Ext(in)) {
 		case ".cpp", ".cxx", ".cc", ".c++", ".cp", ".hpp", ".hxx":
 			return "c++-cpp-output"
+		case ".s", ".S":
+			return "assembler"
 		}
 	}
 	return "cpp-output"
