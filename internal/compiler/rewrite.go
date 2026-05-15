@@ -134,6 +134,46 @@ func RewriteForCAS(inv *Invocation, projectRoot, srcRoot, outRoot string) *Invoc
 	return cp
 }
 
+// ExtractDepEmissionPaths returns the list of dep-file output paths
+// the argv asks the compiler to write — i.e. the `<path>` in any
+// `-Wp,-MMD,<path>` / `-Wp,-MD,<path>` / `-Wp,-MF,<path>` form, plus
+// the separate `-MF <path>` form. The caller treats these as
+// expected side-effect outputs to capture after running the
+// compiler (PREPROCESSED dispatch) or expects them back from the
+// worker (CAS, via RewriteDepEmissionForCAS).
+//
+// Pure read; doesn't modify args. Paths are returned in argv order
+// and as-spelled (no normalization), so the caller can use them as
+// keys/paths against the same cwd the compiler ran in.
+func ExtractDepEmissionPaths(args []string) []string {
+	out := make([]string, 0)
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if _, p, ok := splitWpDepEmission(a); ok {
+			out = append(out, p)
+			continue
+		}
+		if a == "-MF" && i+1 < len(args) {
+			out = append(out, args[i+1])
+			i++
+			continue
+		}
+	}
+	return out
+}
+
+// splitWpDepEmission parses a -Wp,-M*,PATH flag into (prefix, path).
+// Mirrors rewriteWpDepEmission's prefix table; refactored out so
+// extraction and rewriting share the same set of recognised forms.
+func splitWpDepEmission(a string) (prefix, path string, ok bool) {
+	for _, pfx := range []string{"-Wp,-MMD,", "-Wp,-MD,", "-Wp,-MF,"} {
+		if strings.HasPrefix(a, pfx) {
+			return pfx, a[len(pfx):], true
+		}
+	}
+	return "", "", false
+}
+
 // RewriteDepEmissionForCAS rewrites every dep-emission path in args to
 // live under outRoot inside the container, returning the new argv and
 // the list of /out-relative paths the worker will produce. The client
@@ -184,13 +224,11 @@ func RewriteDepEmissionForCAS(args []string, outRoot string) (newArgs []string, 
 // rewriteWpDepEmission rewrites a -Wp,-M*,PATH flag to point under
 // outRoot, returning (newFlag, originalPath, true) on a match.
 func rewriteWpDepEmission(a, outRoot string) (string, string, bool) {
-	for _, prefix := range []string{"-Wp,-MMD,", "-Wp,-MD,", "-Wp,-MF,"} {
-		if strings.HasPrefix(a, prefix) {
-			orig := a[len(prefix):]
-			return prefix + filepath.ToSlash(filepath.Join(outRoot, orig)), orig, true
-		}
+	prefix, orig, ok := splitWpDepEmission(a)
+	if !ok {
+		return "", "", false
 	}
-	return "", "", false
+	return prefix + filepath.ToSlash(filepath.Join(outRoot, orig)), orig, true
 }
 
 // rewriteOutputFlagGNU walks args looking for `-o <value>` or `-o<value>`
