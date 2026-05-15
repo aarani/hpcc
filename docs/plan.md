@@ -570,7 +570,18 @@ does the equivalent.
 
 - **Image digest is the toolchain identity** for cache keys. Same image
   used by 50 developers → one prepared rootfs on the worker, one
-  toolchain identity in the cache.
+  toolchain identity in the cache. **Caveat**: this only holds when
+  the dispatch path actually uses the image's toolchain end-to-end.
+  Today the preprocessor runs client-side (§4.5) against whatever
+  gcc the developer's machine has, so a cache-hit from one developer's
+  preprocess + a worker compile against the image gcc would only be
+  byte-identical if the two compilers agreed. In practice this means
+  the deployment needs to enforce *toolchain parity* — either by
+  building the image from a known apt source, by asserting
+  `gcc --version` parity at session-open, or eventually by moving
+  preprocessing into the VM (the CAS-mode path discussed in §4.5).
+  The bench currently pins a specific patch-level Docker tag as a
+  workaround.
 - The kernel is **hpcc's**, not the image's — the worker boots the microVM
   with a `vmlinux` hpcc provides, ignoring whatever kernel the image might
   ship.
@@ -589,9 +600,11 @@ which fills all three roles:
 - **Linux**: a statically-linked `hpcc-agent` (~10 MB stripped). Acts as
   the long-running PID 1: `setupInit` mounts `/proc`, `/sys`, `/dev`
   (devtmpfs), `/dev/pts`, `/dev/shm`, `/tmp`, and `/run` with the
-  conventional flag set; a SIGCHLD-driven reap loop drains zombies the
-  compiler's helper processes leave behind; a gRPC server on AF_VSOCK
-  port 17727 serves `AgentService.Exec` (§4.4.1). Lives in the `agent/`
+  conventional flag set; a periodic `Wait4(-1, WNOHANG)` reap loop
+  (every 5s, no SIGCHLD subscription) drains zombies from orphaned
+  compiler-helper grandchildren without racing Go's exec.Cmd waits on
+  direct children; a gRPC server on AF_VSOCK port 17727 serves
+  `AgentService.Exec` (§4.4.1). Lives in the `agent/`
   module of the repo as a separate Go module so the in-VM binary doesn't
   drag in the worker's heavy dependency graph.
 - **Windows**: `hpcc-pause.exe` only — Windows uses containerd `Task.Exec`
@@ -745,6 +758,21 @@ hit rate on a real workload, or preprocessed-bytes upload becoming the
 build's bottleneck on a typical workstation — this is the section to
 re-open. The implementation cost we'd skip now is exactly the cost
 we'd pay then; it doesn't compound.
+
+**Caveat: PREPROCESSED can't represent every workload.** The model
+assumes the preprocessor output is a self-contained translation unit.
+That holds for C/C++ (cpp inlines every `#include`), but **not** for
+GAS assembly with `.incbin "path"` directives — the assembler resolves
+those files at assemble time against its own cwd. The Linux kernel has
+about a dozen such .S files (`usr/initramfs_data.S`,
+`arch/x86/realmode/rmpiggy.S`, `arch/*/kernel/vdso/…`, etc.) and any
+codebase using `xxd -i` outputs or similar embedded-blob patterns will
+hit the same shape. In the current PREPROCESSED-only world,
+`Invocation.Cacheable()` falls these inputs back to local Invoke; the
+hit-rate impact is negligible (kernel = ~30 .S vs ~30k .c) but the
+correctness story is "we can't dispatch this." Re-opening CAS would
+let the worker materialize the full source closure and run the
+assembler against it like a normal build, fixing the carve-out.
 
 (A `shared_root` mode that mounted the host tree directly into the
 worker container was scoped earlier and dropped — too coupled to a
