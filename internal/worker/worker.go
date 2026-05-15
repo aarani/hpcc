@@ -265,6 +265,20 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 		return nil, fmt.Errorf("prepare output dirs: %w", err)
 	}
 
+	// Pre-create every search-path directory the argv names that
+	// resolves into the source-staging tree (-I/-iquote/-isystem/
+	// -idirafter for header search, -L for library search). CAS only
+	// stages files in the dep closure, so a search-path dir whose
+	// contents aren't pulled in by this TU never gets materialised —
+	// and gcc's -Werror=missing-include-dirs (kernel and many other
+	// builds) and -Werror=missing-library-dirs fire before the
+	// compile/link step even starts. Materialising the dir (empty if
+	// needed) makes the flag-validation step pass without bloating
+	// CAS with files we don't need.
+	if err := mkdirSearchPaths(req.Args, srcHostPath); err != nil {
+		return nil, fmt.Errorf("prepare search-path dirs: %w", err)
+	}
+
 	spec := runtime.ContainerSpec{
 		ID:          containerID.String(),
 		TenantID:    req.Descriptor_.TenantId,
@@ -408,6 +422,102 @@ func mkdirOutputParents(args []string, outHostPath string) error {
 			full := filepath.Join(outHostPath, filepath.FromSlash(parent))
 			if err := os.MkdirAll(full, 0o755); err != nil {
 				return fmt.Errorf("mkdir %q: %w", full, err)
+			}
+		}
+	}
+	return nil
+}
+
+// searchPathFlags lists the argv flags whose value is a directory the
+// compiler/linker will search for headers or libraries. Each entry is
+// matched both as an exact argv element (separate form, value in the
+// next slot) and as a prefix (joined form, value glued onto the same
+// element). Order matters: longer prefixes are listed first so
+// HasPrefix("-isystem", "-i") doesn't shadow them.
+//
+// Covers gcc's standard header search (-I, -iquote, -isystem,
+// -idirafter — the set -Wmissing-include-dirs validates) and the
+// linker's library search (-L — what -Wmissing-library-dirs
+// validates). Add new flags here as builds turn up new failure modes;
+// the rest of the helper doesn't care which family a flag belongs to.
+var searchPathFlags = []string{
+	"-idirafter",
+	"-isystem",
+	"-iquote",
+	"-I",
+	"-L",
+}
+
+// mkdirSearchPaths walks argv for compiler/linker search-path flags
+// (see searchPathFlags) and ensures each named directory exists
+// under srcHostPath. Handles both the joined (-Idir) and separate
+// (-I dir) forms.
+//
+// Two path shapes get materialised:
+//
+//   - Absolute paths under /src/<rel>: stripped to <rel> and created
+//     under srcHostPath. These come from RewriteForCAS rewriting the
+//     project root.
+//   - Relative paths (e.g. ./include/generated/uapi or include/foo):
+//     created under srcHostPath as-is, since the compiler runs with
+//     cwd = srcHostPath (dangerous runtime) or the in-VM equivalent.
+//
+// Everything else (system paths like /usr/include/foo) is skipped —
+// those exist in the container image's rootfs, not in our staging
+// tree, and creating them under srcHostPath would just confuse the
+// header search later.
+//
+// Idempotent: MkdirAll is a no-op on existing dirs, so concurrent
+// compiles whose search-path sets overlap don't race.
+func mkdirSearchPaths(args []string, srcHostPath string) error {
+	if srcHostPath == "" {
+		return nil
+	}
+	const srcPrefix = "/src/"
+	mkRel := func(rel string) error {
+		if rel == "" || rel == "." {
+			return nil
+		}
+		full := filepath.Join(srcHostPath, filepath.FromSlash(rel))
+		if err := os.MkdirAll(full, 0o755); err != nil {
+			return fmt.Errorf("mkdir %q: %w", full, err)
+		}
+		return nil
+	}
+	mkOne := func(p string) error {
+		if p == "" {
+			return nil
+		}
+		if strings.HasPrefix(p, srcPrefix) {
+			return mkRel(p[len(srcPrefix):])
+		}
+		if p == "/src" {
+			return nil
+		}
+		// Other absolute paths are system dirs the container image
+		// provides; not our concern.
+		if filepath.IsAbs(p) {
+			return nil
+		}
+		return mkRel(p)
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		for _, f := range searchPathFlags {
+			if a == f {
+				if i+1 < len(args) {
+					if err := mkOne(args[i+1]); err != nil {
+						return err
+					}
+					i++
+				}
+				break
+			}
+			if strings.HasPrefix(a, f) {
+				if err := mkOne(a[len(f):]); err != nil {
+					return err
+				}
+				break
 			}
 		}
 	}
