@@ -52,7 +52,7 @@ error so a typo isn't silently ignored.
 Eventual settings, organized as TOML tables:
 
 ```toml
-preprocessing_mode = "local"  # "local" | "remote"
+source_mode = "cas"  # "cas" | "preprocessed"
 
 [[cache]]
 type     = "disk"

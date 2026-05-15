@@ -36,7 +36,7 @@ func setupContext(t *testing.T) *compiler.Context {
 
 	ctx := &compiler.Context{
 		Compiler: c,
-		Config:   &config.Config{PreprocessingMode: enum.PreprocessLocal},
+		Config:   &config.Config{SourceMode: enum.SourceModeCAS},
 	}
 	ctx.Cache = cache.NewCompileCache(ctx, []store.Store{ds})
 	return ctx

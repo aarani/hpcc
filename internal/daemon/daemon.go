@@ -76,7 +76,7 @@ func NewDefaultDaemon() *DefaultDaemon {
 		return d
 	}
 	if cfg.Remote.Enabled {
-		dp, err := dispatch.New(cfg.Remote)
+		dp, err := dispatch.New(cfg.Remote, cfg.SourceMode)
 		if err != nil {
 			log.Printf("daemon: init remote dispatcher: %v (continuing local-only)", err)
 		} else {

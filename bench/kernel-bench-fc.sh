@@ -30,14 +30,16 @@
 #                           kernel macros trip; pinning the patch
 #                           keeps the bench buildable across kernel
 #                           tags without disabling -Werror.
-#   HPCC_BENCH_SOURCE_MODE — "preprocessed" (default) or "cas".
-#                           Picks the client-side dispatch path.
-#                           Each mode partitions its own OUT_DIR,
-#                           STACK_DIR, and xdg so back-to-back runs
-#                           (see kernel-bench-fc-both.sh) don't
-#                           collide. For "cas", a .hpcc marker is
-#                           dropped at the kernel root so manifest
-#                           paths normalize project-relative.
+#   HPCC_BENCH_SOURCE_MODE — "cas" (default) or "preprocessed".
+#                           Picks both the local cache-key algorithm
+#                           and the client-side dispatch path (see
+#                           enum.SourceMode). Each mode partitions
+#                           its own OUT_DIR, STACK_DIR, and xdg so
+#                           back-to-back runs (see
+#                           kernel-bench-fc-both.sh) don't collide.
+#                           For "cas", a .hpcc marker is dropped at
+#                           the kernel root so manifest paths
+#                           normalize project-relative.
 #
 # Run as root (jailer needs CAP_SYS_ADMIN + chroot). The CI workflow
 # invokes via `sudo -E`.
@@ -71,11 +73,11 @@ HPCC_BENCH_VM_VCPUS="${HPCC_BENCH_VM_VCPUS:-2}"
 HPCC_BENCH_POOL_MAX="${HPCC_BENCH_POOL_MAX:-8}"
 HPCC_BENCH_TOOLCHAIN_IMAGE="${HPCC_BENCH_TOOLCHAIN_IMAGE:-docker.io/library/gcc:13.2.0}"
 HPCC_BENCH_KEEP="${HPCC_BENCH_KEEP:-0}"
-HPCC_BENCH_SOURCE_MODE="${HPCC_BENCH_SOURCE_MODE:-preprocessed}"
+HPCC_BENCH_SOURCE_MODE="${HPCC_BENCH_SOURCE_MODE:-cas}"
 case "${HPCC_BENCH_SOURCE_MODE}" in
-    preprocessed|cas) ;;
+    cas|preprocessed) ;;
     *)
-        bench::die "HPCC_BENCH_SOURCE_MODE must be 'preprocessed' or 'cas'; got '${HPCC_BENCH_SOURCE_MODE}'"
+        bench::die "HPCC_BENCH_SOURCE_MODE must be 'cas' or 'preprocessed'; got '${HPCC_BENCH_SOURCE_MODE}'"
         ;;
 esac
 # FC builds are much slower per-iteration than local, so default to

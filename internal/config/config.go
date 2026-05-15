@@ -14,27 +14,30 @@ import (
 // Config is the on-disk configuration shape. TOML keys are snake_case;
 // Go fields use the standard tag.
 type Config struct {
-	PreprocessingMode enum.PreprocessingMode `toml:"preprocessing_mode"`
-	Caches            []CacheConfig          `toml:"cache"`
-	Remote            RemoteConfig           `toml:"remote"`
+	// SourceMode picks both the local cache-key derivation and the
+	// dispatch wire format. The two have to track the same value so
+	// client and worker compute matching keys for shared caches —
+	// see enum.SourceMode for the full story.
+	SourceMode enum.SourceMode `toml:"source_mode"`
+	Caches     []CacheConfig   `toml:"cache"`
+	Remote     RemoteConfig    `toml:"remote"`
 }
 
 // RemoteConfig drives the daemon's distributed-compile path. When
 // Enabled is false (the default) the daemon stays local. When true,
 // each compile request is routed through the scheduler to a worker;
 // failures fall back to local execution with a warning.
+//
+// SourceMode lives on the parent Config, not here — it drives the
+// local cache key too, not just dispatch, and a daemon with no
+// [remote] block still needs a value for its cache key.
 type RemoteConfig struct {
 	Enabled     bool            `toml:"enabled"`
 	TenantID    string          `toml:"tenant_id"`
 	ImageRef    string          `toml:"image_ref"`
 	ImageDigest string          `toml:"image_digest"`
-	// SourceMode picks the source-staging strategy: "preprocessed"
-	// (default — client preprocesses, ships bytes inline) or "cas"
-	// (client probes compile cache by manifest digest; on miss,
-	// streams missing source blobs). See docs/cas.md.
-	SourceMode enum.SourceMode `toml:"source_mode"`
-	Scheduler  SchedulerConfig `toml:"scheduler"`
-	OAuth      OAuthConfig     `toml:"oauth"`
+	Scheduler   SchedulerConfig `toml:"scheduler"`
+	OAuth       OAuthConfig     `toml:"oauth"`
 }
 
 // SchedulerConfig is the dial info for the scheduler gRPC endpoint.
@@ -96,7 +99,9 @@ type CacheConfig struct {
 func DefaultConfig() Config {
 	// Default: no caches configured. Require explicit TOML `[[cache]]`
 	// entries to enable disk or S3 backends.
-	return Config{PreprocessingMode: enum.PreprocessLocal}
+	// Default source mode is CAS: cache key uses the (cheap) dep
+	// walk and dispatch (when [remote] is enabled) ships via CAS.
+	return Config{SourceMode: enum.SourceModeCAS}
 }
 
 // DefaultConfigPath returns ~/.config/hpcc/config.toml on Unix and the

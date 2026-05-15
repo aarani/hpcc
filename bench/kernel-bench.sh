@@ -33,12 +33,27 @@ HPCC_BENCH_KEEP="${HPCC_BENCH_KEEP:-0}"
 # cold is what the threshold checks. 3 is a reasonable noise filter
 # without doubling CI wall time over the 1-warm baseline.
 HPCC_BENCH_WARM_RUNS="${HPCC_BENCH_WARM_RUNS:-3}"
+# Source mode — picks the cache-key algorithm in local mode (and,
+# under remote dispatch, also the wire protocol; this bench is
+# local-only). "cas" walks the dep closure (cheap); "preprocessed"
+# runs the full preprocessor. Same cache contents either way.
+# kernel-bench-both.sh runs both legs back to back and prints a
+# side-by-side.
+HPCC_BENCH_SOURCE_MODE="${HPCC_BENCH_SOURCE_MODE:-cas}"
+case "${HPCC_BENCH_SOURCE_MODE}" in
+    cas|preprocessed) ;;
+    *)
+        echo "HPCC_BENCH_SOURCE_MODE must be 'cas' or 'preprocessed' (got '${HPCC_BENCH_SOURCE_MODE}')" >&2
+        exit 2
+        ;;
+esac
 
 # Output directory — under bench/results/ so it's gitignored alongside
 # CI artifacts. Timestamped so repeated runs accumulate rather than
-# clobbering each other.
+# clobbering each other. Suffix includes the source mode so paired
+# runs from kernel-bench-both.sh land in distinct dirs.
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
-OUT_DIR="${REPO_ROOT}/bench/results/${TS}-local"
+OUT_DIR="${REPO_ROOT}/bench/results/${TS}-local-${HPCC_BENCH_SOURCE_MODE}"
 mkdir -p "${OUT_DIR}"
 
 # Work area — kernel checkout + per-run cache + per-run hpcc config.
@@ -46,7 +61,7 @@ mkdir -p "${OUT_DIR}"
 # kernel clone across runs by caching that directory.
 WORK_DIR="${REPO_ROOT}/bench/work/local"
 KERNEL_DIR="${WORK_DIR}/linux"
-CACHE_DIR="${WORK_DIR}/cache-${TS}"
+CACHE_DIR="${WORK_DIR}/cache-${TS}-${HPCC_BENCH_SOURCE_MODE}"
 CONFIG_TOML="${OUT_DIR}/hpcc-config.toml"
 mkdir -p "${WORK_DIR}" "${CACHE_DIR}"
 
@@ -70,10 +85,10 @@ bench::info "building hpcc → ${HPCC_BIN}"
 
 # 2. Write the per-run hpcc config. Single disk cache, generous size
 #    cap so eviction doesn't interfere with the warm-build hit-rate
-#    measurement. Preprocessing mode "local" because in local mode
-#    there is no worker to do remote preprocessing.
+#    measurement. source_mode picks the cache-key algorithm for the
+#    leg under test.
 cat >"${CONFIG_TOML}" <<EOF
-preprocessing_mode = "local"
+source_mode = "${HPCC_BENCH_SOURCE_MODE}"
 
 [[cache]]
 type     = "disk"
@@ -122,7 +137,7 @@ bench::info "after warm: ${ENTRIES_WARM} entries, $(bench::fmt_bytes "${SIZE_WAR
 # 6. Report + thresholds.
 bench::write_report \
     "${OUT_DIR}" \
-    "local" \
+    "local-${HPCC_BENCH_SOURCE_MODE}" \
     "${COLD_SECONDS}" \
     "${ENTRIES_COLD}" \
     "${ENTRIES_WARM}" \

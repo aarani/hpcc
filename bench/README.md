@@ -4,17 +4,21 @@ Benchmark pipelines that compile a real Linux kernel through hpcc and
 report cache hit rate, cold-vs-warm wall time, and entry counts. They
 cover every shipped dispatch path:
 
-| Script                     | Mode                              | hpcc surface exercised                                       |
-|----------------------------|-----------------------------------|--------------------------------------------------------------|
-| `kernel-bench.sh`          | local                             | `hpcc wrap` → in-process compile → disk cache                |
-| `kernel-bench-fc.sh`       | firecracker (P4), source mode picked by `HPCC_BENCH_SOURCE_MODE` | `hpcc wrap` → dispatch → scheduler → worker → FC VM |
-| `kernel-bench-fc-both.sh`  | firecracker, runs once per source mode | wraps `kernel-bench-fc.sh`; prints side-by-side summary |
+| Script                     | Mode                                                                   | hpcc surface exercised                                       |
+|----------------------------|------------------------------------------------------------------------|--------------------------------------------------------------|
+| `kernel-bench.sh`          | local, source mode picked by `HPCC_BENCH_SOURCE_MODE`                  | `hpcc wrap` → in-process compile → disk cache                |
+| `kernel-bench-both.sh`     | local, runs once per source mode                                       | wraps `kernel-bench.sh`; prints side-by-side summary         |
+| `kernel-bench-fc.sh`       | firecracker (P4), source mode picked by `HPCC_BENCH_SOURCE_MODE`       | `hpcc wrap` → dispatch → scheduler → worker → FC VM          |
+| `kernel-bench-fc-both.sh`  | firecracker, runs once per source mode                                 | wraps `kernel-bench-fc.sh`; prints side-by-side summary      |
 
-The FC bench defaults to `source_mode = "preprocessed"`; pass
-`HPCC_BENCH_SOURCE_MODE=cas` (or use the `-both.sh` wrapper) to
-exercise the CAS dispatch path. CAS mode also drops a `.hpcc` marker
-at the kernel root so manifest paths normalize project-relative — the
-gate for cross-worker / cross-developer compile-result hits.
+Both benches default to `source_mode = "cas"`; pass
+`HPCC_BENCH_SOURCE_MODE=preprocessed` (or use a `-both.sh` wrapper)
+to exercise the preprocessed-bytes path. `source_mode` drives both
+the local cache-key algorithm (cas → manifest digest, preprocessed →
+hashed `gcc -E` output) and, under remote dispatch, the wire-format
+choice. CAS mode also drops a `.hpcc` marker at the kernel root so
+manifest paths normalize project-relative — the gate for cross-worker
+/ cross-developer compile-result hits.
 
 Each script:
 
@@ -55,6 +59,7 @@ Knobs (env vars, all optional):
 | `HPCC_BENCH_MAX_WARM_PCT`        | `50`          | Max acceptable median warm wall time as % of cold |
 | `HPCC_BENCH_WARM_RUNS`           | `3`           | Warm-build repeats after the cold pass (median is the headline number) |
 | `HPCC_BENCH_KEEP`                | `0`           | `1` preserves the work dir for inspection |
+| `HPCC_BENCH_SOURCE_MODE`         | `cas`         | `cas` or `preprocessed`; picks the local cache-key algorithm |
 
 ### Firecracker mode
 
@@ -95,7 +100,7 @@ means warm builds never hit the same speedup multiplier:
 | `HPCC_BENCH_POOL_MAX`            | `8` (concurrent VMs per tenant) |
 | `HPCC_BENCH_TOOLCHAIN_IMAGE`     | `docker.io/library/gcc:13.2.0` (matched to ubuntu-latest's apt gcc patch version) |
 | `HPCC_BENCH_WARM_RUNS`           | `2` (fewer than local — each FC build is much slower) |
-| `HPCC_BENCH_SOURCE_MODE`         | `preprocessed` (also accepts `cas`) |
+| `HPCC_BENCH_SOURCE_MODE`         | `cas` (also accepts `preprocessed`) |
 
 ### Both source modes back-to-back
 
@@ -107,12 +112,17 @@ sudo -E \
   ./bench/kernel-bench-fc-both.sh
 ```
 
-Runs `kernel-bench-fc.sh` once with `source_mode=preprocessed`, once
-with `source_mode=cas`, and prints a side-by-side table of cold
+Runs `kernel-bench-fc.sh` once with `source_mode=cas`, once with
+`source_mode=preprocessed`, and prints a side-by-side table of cold
 seconds, warm-median, hit-rate, and cache size. Each leg gets its
 own `bench/results/<ts>-firecracker-<mode>/` directory and its own
 isolated stack (separate worker cache, daemon discovery file, xdg
 config root) so the runs don't share state.
+
+`./bench/kernel-bench-both.sh` is the local-mode equivalent: same
+side-by-side shape, but exercising `kernel-bench.sh` instead — so
+the comparison is between local cache-key strategies rather than
+between dispatch wire formats.
 
 ## What's measured
 

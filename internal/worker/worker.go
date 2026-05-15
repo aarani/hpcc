@@ -573,13 +573,15 @@ func collectExtraOutputs(outHostPath, primaryInContainer string) (map[string][]b
 }
 
 // workerCompileConfig is the worker-side stand-in Config every per-RPC
-// compiler.Context points at. PreprocessLocal because the worker has
-// an in-VM preprocessor (via runtimeExecutor) — re-preprocessing for
-// cache-key derivation goes through that, not through dep-walking on
-// the host filesystem. PREPROCESSED-mode requests don't even take
-// this path: the worker stashes a precomputed digest on Invocation
-// and CacheKey short-circuits before consulting Config.
-var workerCompileConfig = &config.Config{PreprocessingMode: enum.PreprocessLocal}
+// compiler.Context points at. SourceMode=preprocessed because the
+// worker has an in-VM preprocessor (via runtimeExecutor) — if
+// anything ever reaches the cache-key default branch from here, the
+// right tool is the preprocessor, not a host-side dep walk over
+// paths that only exist inside the guest. In practice neither
+// short-circuit path (PreprocessedDigest for PREPROCESSED,
+// ManifestDigest for CAS) ever falls through to read this field;
+// it's a defensive default.
+var workerCompileConfig = &config.Config{SourceMode: enum.SourceModePreprocessed}
 
 // compileContext bundles the compiler under test with the worker's
 // persistent cache stores into a fresh *compiler.Context. A new one is

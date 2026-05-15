@@ -357,14 +357,13 @@ func main() {
 	//    dispatch, and supplies OAuth credentials the dispatcher
 	//    will exchange for a JWT at session-open time.
 	clientToml := fmt.Sprintf(`# fcstack-generated hpcc client config — do not edit by hand
-preprocessing_mode = "local"
+source_mode = %q
 
 [remote]
 enabled      = true
 tenant_id    = %q
 image_ref    = %q
 image_digest = %q
-source_mode  = %q
 
 [remote.scheduler]
 url     = %q
@@ -377,7 +376,7 @@ client_secret = "unused"
 username      = "bench"
 password      = "unused"
 scope         = "hpcc"
-`, tenantID, pinnedRef, digest, *sourceMode, schedAddr, certPath, idpURL+"/token")
+`, *sourceMode, tenantID, pinnedRef, digest, schedAddr, certPath, idpURL+"/token")
 
 	if err := os.WriteFile(*clientCfg, []byte(clientToml), 0o600); err != nil {
 		log.Fatalf("write client config: %v", err)

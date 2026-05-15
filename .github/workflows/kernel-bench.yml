@@ -31,9 +31,17 @@ on:
 
 jobs:
   local-bench:
-    name: Local-mode kernel bench
+    name: Local-mode kernel bench (${{ matrix.source_mode }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # Run cas and preprocessed source modes as separate parallel
+    # jobs (same shape as fc-bench's matrix below). A regression in
+    # one leg shouldn't cancel the other, and both legs share most
+    # of the setup cost so exercising both is nearly free.
+    strategy:
+      fail-fast: false
+      matrix:
+        source_mode: [cas, preprocessed]
     steps:
       - uses: actions/checkout@v4
 
@@ -57,13 +65,14 @@ jobs:
         env:
           HPCC_BENCH_KERNEL_TAG: ${{ inputs.kernel_tag || 'v7.0' }}
           HPCC_BENCH_CONFIG: ${{ inputs.config || 'defconfig' }}
+          HPCC_BENCH_SOURCE_MODE: ${{ matrix.source_mode }}
         run: ./bench/kernel-bench.sh
 
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-bench-local
+          name: kernel-bench-local-${{ matrix.source_mode }}
           path: bench/results/
 
   fc-bench:

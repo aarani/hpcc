@@ -39,7 +39,8 @@ import (
 // One per daemon process; goroutine-safe. Dial happens once at New;
 // session tokens are refreshed on demand.
 type Dispatcher struct {
-	cfg config.RemoteConfig
+	cfg        config.RemoteConfig
+	sourceMode enum.SourceMode
 
 	schedConn *grpc.ClientConn
 	sched     gen.SchedulerServiceClient
@@ -82,7 +83,12 @@ type workerHandle struct {
 // connection is lazy at the gRPC layer (no actual TCP until first RPC),
 // so a misconfigured scheduler URL surfaces on the first compile, not
 // at daemon startup.
-func New(cfg config.RemoteConfig) (*Dispatcher, error) {
+//
+// sourceMode is taken from the top-level config (it drives both the
+// dispatch wire format AND the local cache key — see enum.SourceMode);
+// it's threaded in here rather than read off RemoteConfig because the
+// field lives on the parent Config now.
+func New(cfg config.RemoteConfig, sourceMode enum.SourceMode) (*Dispatcher, error) {
 	if cfg.Scheduler.URL == "" {
 		return nil, fmt.Errorf("remote.scheduler.url is required when remote is enabled")
 	}
@@ -110,10 +116,11 @@ func New(cfg config.RemoteConfig) (*Dispatcher, error) {
 	}
 
 	return &Dispatcher{
-		cfg:       cfg,
-		schedConn: conn,
-		sched:     gen.NewSchedulerServiceClient(conn),
-		workers:   map[string]*workerHandle{},
+		cfg:        cfg,
+		sourceMode: sourceMode,
+		schedConn:  conn,
+		sched:      gen.NewSchedulerServiceClient(conn),
+		workers:    map[string]*workerHandle{},
 	}, nil
 }
 
@@ -121,7 +128,7 @@ func New(cfg config.RemoteConfig) (*Dispatcher, error) {
 // strategy (preprocessed or CAS). The daemon reads this to widen
 // the dispatch gate for invocations that PREPROCESSED can't safely
 // handle (e.g. GAS .S with .incbin — see Cacheable's comments).
-func (d *Dispatcher) SourceMode() enum.SourceMode { return d.cfg.SourceMode }
+func (d *Dispatcher) SourceMode() enum.SourceMode { return d.sourceMode }
 
 // Close shuts down all gRPC connections (scheduler + worker pool).
 func (d *Dispatcher) Close() error {
@@ -146,7 +153,7 @@ func (d *Dispatcher) Close() error {
 // is cleared (next call re-authenticates) and the error is returned —
 // the caller is responsible for falling back to local execution.
 func (d *Dispatcher) Dispatch(ctx context.Context, c compiler.Compiler, inv *compiler.Invocation) (*compiler.InvocationResult, error) {
-	if d.cfg.SourceMode == enum.SourceModeCAS {
+	if d.sourceMode == enum.SourceModeCAS {
 		return d.dispatchCAS(ctx, c, inv)
 	}
 	return d.dispatchPreprocessed(ctx, c, inv)
