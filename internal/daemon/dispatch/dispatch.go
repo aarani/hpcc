@@ -233,6 +233,36 @@ func (d *Dispatcher) dispatchPreprocessed(ctx context.Context, c compiler.Compil
 		result.Output = resp.OutputArtifact
 	}
 
+	// Promote the cpp-side-effect .d files into result.Extras so they
+	// flow through the same cache + writeback pipeline as CAS-mode
+	// extras. The client-side Preprocess pass above ran with the user's
+	// -Wp,-MMD,<path> flags intact and wrote the .d file(s) to the
+	// requested paths under inv.Cwd; we just capture them here. After
+	// this returns, the daemon's writeCompileResult materialises
+	// result.Extras (so cache HITS on later compiles replay the .d
+	// file even though no cpp ran — same property CAS gets from the
+	// worker shipping extras back over the wire).
+	if depPaths := compiler.ExtractDepEmissionPaths(inv.RawArgs); len(depPaths) > 0 {
+		extras := make(map[string][]byte, len(depPaths))
+		for _, p := range depPaths {
+			full := p
+			if !filepath.IsAbs(p) && inv.Cwd != "" {
+				full = filepath.Join(inv.Cwd, p)
+			}
+			b, err := os.ReadFile(full)
+			if err != nil {
+				// The cpp pass may have produced no .d for this path
+				// (e.g. -MMD on a no-include source); not an error,
+				// just nothing to cache for that entry.
+				continue
+			}
+			extras[p] = b
+		}
+		if len(extras) > 0 {
+			result.Extras = extras
+		}
+	}
+
 	// One-shot user-visible notice: if the user's argv carried
 	// -Werror[=…] and we just stripped it across the rewrite seam,
 	// prepend an explanation to this compile's stderr so it lands
@@ -340,33 +370,26 @@ func (d *Dispatcher) dispatchCAS(ctx context.Context, c compiler.Compiler, inv *
 		return nil, fmt.Errorf("worker Compile RPC: %w", err)
 	}
 
-	// Write side-effect outputs (.d files) back to the host. The
-	// /out-relative path the worker keyed by matches the original
-	// path the user passed (cwd-relative), so writing under inv.Cwd
-	// lands the file where `make` expects to find it. We iterate the
-	// requested paths rather than blindly trusting whatever's in the
-	// map so the worker can't drop unexpected files on the client
-	// filesystem.
+	result := compileResponseToResult(compileResp)
+	// Promote side-effect outputs (.d files) into result.Extras so
+	// the daemon's writeCompileResult is the single place that
+	// materialises them on disk. Iterating the *requested* paths
+	// rather than the raw response map keeps a buggy/hostile worker
+	// from inserting extra entries that would land on the client's
+	// filesystem under inv.Cwd. The /out-relative path the worker
+	// keyed by matches the cwd-relative path the user passed.
 	if len(extraOutputPaths) > 0 {
+		filtered := make(map[string][]byte, len(extraOutputPaths))
 		for _, p := range extraOutputPaths {
-			bytes, ok := compileResp.ExtraOutputs[p]
-			if !ok {
-				// Cache hit (no fresh compile, no extras) or the
-				// compile produced no .d for this path. Either way,
-				// nothing to write.
-				continue
-			}
-			full := filepath.Join(inv.Cwd, p)
-			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-				return nil, fmt.Errorf("mkdir for extra output %q: %w", p, err)
-			}
-			if err := os.WriteFile(full, bytes, 0o644); err != nil {
-				return nil, fmt.Errorf("write extra output %q: %w", p, err)
+			if b, ok := compileResp.ExtraOutputs[p]; ok {
+				filtered[p] = b
 			}
 		}
+		if len(filtered) > 0 {
+			result.Extras = filtered
+		}
 	}
-
-	return compileResponseToResult(compileResp), nil
+	return result, nil
 }
 
 // casUpload runs the FindMissingBlobs + UploadBlobs handshake for the

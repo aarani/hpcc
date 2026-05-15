@@ -106,6 +106,87 @@ func TestRewriteDepEmissionForCAS_separateMF(t *testing.T) {
 	}
 }
 
+func TestExtractDepEmissionPaths(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{
+			name: "no dep flags",
+			in:   []string{"-c", "-O2", "foo.c", "-o", "foo.o"},
+			want: []string{},
+		},
+		{
+			name: "-Wp,-MMD,X (kernel form)",
+			in:   []string{"-c", "-Wp,-MMD,scripts/mod/.empty.o.d", "foo.c"},
+			want: []string{"scripts/mod/.empty.o.d"},
+		},
+		{
+			name: "-Wp,-MD,X and -Wp,-MF,X",
+			in:   []string{"-Wp,-MD,a.d", "-Wp,-MF,b.d", "foo.c"},
+			want: []string{"a.d", "b.d"},
+		},
+		{
+			name: "separate -MF X",
+			in:   []string{"-c", "-MF", "build/main.d", "-o", "main.o", "main.c"},
+			want: []string{"build/main.d"},
+		},
+		{
+			name: "-MT/-MQ name the target, not an output path",
+			in:   []string{"-MT", "main.o", "-MQ", "$(BAR)", "main.c"},
+			want: []string{},
+		},
+		{
+			name: "preserves argv order across mixed forms",
+			in:   []string{"-Wp,-MMD,z.d", "-MF", "y.d", "-Wp,-MD,x.d"},
+			want: []string{"z.d", "y.d", "x.d"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExtractDepEmissionPaths(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("ExtractDepEmissionPaths(%v):\n got  %v\n want %v", tc.in, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("ExtractDepEmissionPaths(%v):\n got  %v\n want %v", tc.in, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// ExtractDepEmissionPaths and RewriteDepEmissionForCAS must agree on
+// which paths they recognise — they share splitWpDepEmission underneath
+// for exactly this reason. If they ever drift, PREPROCESSED capture and
+// CAS dispatch would disagree on what's a dep-emission flag and the
+// two paths would silently produce different extras maps for the same
+// argv. Pin the symmetry.
+func TestExtractAndRewriteDepEmission_recogniseSamePaths(t *testing.T) {
+	in := []string{
+		"-c",
+		"-Wp,-MMD,scripts/mod/.empty.o.d",
+		"-Wp,-MD,other.d",
+		"-Wp,-MF,joined.d",
+		"-MF", "separate.d",
+		"-MT", "target.o",
+		"-MQ", "$(BAR)",
+		"-I/usr/include",
+	}
+	extracted := ExtractDepEmissionPaths(in)
+	_, rewritten := RewriteDepEmissionForCAS(in, "/out")
+	if len(extracted) != len(rewritten) {
+		t.Fatalf("path-count divergence: Extract=%v Rewrite=%v", extracted, rewritten)
+	}
+	for i := range extracted {
+		if extracted[i] != rewritten[i] {
+			t.Errorf("path %d divergence: Extract=%q Rewrite=%q", i, extracted[i], rewritten[i])
+		}
+	}
+}
+
 func TestRewriteDepEmissionForCAS_leavesUnrelatedFlagsAlone(t *testing.T) {
 	// -MT names the target inside the .d rule, not an output file —
 	// leave its value unchanged. Similarly for non-dep flags.

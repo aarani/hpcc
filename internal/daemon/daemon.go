@@ -420,6 +420,7 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 
 // writeCompileResult writes the result of a compile (or link/preprocess/etc.)
 // back to the client: spills the output blob to disk if one was produced,
+// any side-effect extras (.d files etc.) to their cwd-relative paths,
 // then sends a CompileResponse with stdout/stderr/exit code.
 func (d *DefaultDaemon) writeCompileResult(conn *net.TCPConn, writeMu *sync.Mutex, inv *compiler.Invocation, result *compiler.InvocationResult) {
 	log.Printf("compile: %s exit=%d", inv.Output, result.ExitCode)
@@ -427,6 +428,27 @@ func (d *DefaultDaemon) writeCompileResult(conn *net.TCPConn, writeMu *sync.Mute
 	if inv.Output != "" && result.Output != nil {
 		if err := os.WriteFile(inv.Output, result.Output, 0644); err != nil {
 			log.Println(fmt.Errorf("write_output: %w", err))
+		}
+	}
+
+	// Materialise side-effect outputs (.d files etc.) under inv.Cwd.
+	// Single sink for both dispatch modes: dispatchCAS / dispatchPreprocessed
+	// populate result.Extras and we write here. Critically this also
+	// runs on cache-hit results — the cached extras blob replays the
+	// .d file even though no preprocessor or compile actually ran for
+	// this invocation, which is what keeps `make`'s incremental dep
+	// tracking current across cache hits.
+	for path, bytes := range result.Extras {
+		full := path
+		if !filepath.IsAbs(path) && inv.Cwd != "" {
+			full = filepath.Join(inv.Cwd, path)
+		}
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			log.Println(fmt.Errorf("write_extra: mkdir %q: %w", full, err))
+			continue
+		}
+		if err := os.WriteFile(full, bytes, 0o644); err != nil {
+			log.Println(fmt.Errorf("write_extra %q: %w", full, err))
 		}
 	}
 
