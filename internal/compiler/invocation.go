@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/aarani/hpcc/internal/enum"
@@ -132,7 +134,49 @@ func (inv *Invocation) Cacheable() bool {
 	if inv.isProbeInvocation() {
 		return false
 	}
+	if inv.isAssembly() {
+		return false
+	}
 	return true
+}
+
+// isAssembly reports whether the invocation compiles an assembly
+// source file. The dispatcher's preprocess-on-client / compile-on-
+// worker model assumes the preprocessor produces a self-contained
+// translation unit, which is true for C/C++ (the preprocessor inlines
+// every #include) but NOT for assembly: GAS directives like .incbin
+// reference files that the assembler reads at assemble time, and
+// those files don't exist on the worker side.
+//
+// Concretely, the Linux kernel's usr/initramfs_data.S does
+// `.incbin "usr/initramfs_inc_data"` and arch/x86/realmode/rmpiggy.S
+// does `.incbin "arch/x86/realmode/rm/realmode.bin"`. Both fail with
+// "file not found" when dispatched through the current preprocessed
+// pipeline because only the .S preprocessed text is shipped to the
+// worker.
+//
+// Marking assembly non-cacheable forces it through the local Invoke
+// path (where the assembler can read whatever it needs from the
+// client's working directory) at the cost of cache hits on roughly
+// a few dozen kernel .S files. The C/C++ payload — tens of thousands
+// of TUs in a kernel build — keeps caching.
+//
+// The proper long-term fix is CAS-mode dispatch (plan §4.5): ship
+// content-addressed blobs of the full source tree and let the worker
+// assemble against the same view the client has. Until that lands,
+// the conservative carve-out here keeps the dispatch path sound for
+// the C-majority workloads it was designed for.
+func (inv *Invocation) isAssembly() bool {
+	if inv.Language == "assembler" || inv.Language == "assembler-with-cpp" {
+		return true
+	}
+	for _, in := range inv.Inputs {
+		switch strings.ToLower(filepath.Ext(in)) {
+		case ".s", ".S":
+			return true
+		}
+	}
+	return false
 }
 
 // isProbeInvocation matches the shape of build-system probes — small

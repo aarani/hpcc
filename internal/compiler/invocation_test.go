@@ -97,6 +97,26 @@ func TestCacheable(t *testing.T) {
 			inv:  &Invocation{Mode: enum.CompileMode, Inputs: []string{"foo.c"}, Output: "/dev/null"},
 			want: false,
 		},
+		{
+			name: "uppercase .S assembly is not cacheable (may contain .incbin)",
+			inv:  &Invocation{Mode: enum.CompileMode, Inputs: []string{"foo.S"}, Output: "foo.o"},
+			want: false,
+		},
+		{
+			name: "lowercase .s assembly is not cacheable",
+			inv:  &Invocation{Mode: enum.CompileMode, Inputs: []string{"foo.s"}, Output: "foo.o"},
+			want: false,
+		},
+		{
+			name: "-x assembler input is not cacheable",
+			inv:  &Invocation{Mode: enum.CompileMode, Inputs: []string{"foo.c"}, Output: "foo.o", Language: "assembler"},
+			want: false,
+		},
+		{
+			name: "-x assembler-with-cpp input is not cacheable",
+			inv:  &Invocation{Mode: enum.CompileMode, Inputs: []string{"foo.c"}, Output: "foo.o", Language: "assembler-with-cpp"},
+			want: false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
