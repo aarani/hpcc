@@ -49,7 +49,7 @@ func Run(ctx *compiler.Context, args []string) error {
 	}
 
 	// Cacheable() encodes the rules for which invocations can safely
-	// round-trip through V1Cache: single-input compile mode with a
+	// round-trip through CompileCache: single-input compile mode with a
 	// real source file. Link/preprocess/assemble, multi-input
 	// compiles, and stdin-source compiles all bypass the cache and
 	// hand off straight to the compiler.

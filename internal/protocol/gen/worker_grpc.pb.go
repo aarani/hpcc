@@ -19,7 +19,10 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WorkerService_Compile_FullMethodName = "/protocol.WorkerService/Compile"
+	WorkerService_Compile_FullMethodName           = "/protocol.WorkerService/Compile"
+	WorkerService_ProbeCompileCache_FullMethodName = "/protocol.WorkerService/ProbeCompileCache"
+	WorkerService_FindMissingBlobs_FullMethodName  = "/protocol.WorkerService/FindMissingBlobs"
+	WorkerService_UploadBlobs_FullMethodName       = "/protocol.WorkerService/UploadBlobs"
 )
 
 // WorkerServiceClient is the client API for WorkerService service.
@@ -27,6 +30,32 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type WorkerServiceClient interface {
 	Compile(ctx context.Context, in *CompileRequest, opts ...grpc.CallOption) (*CompileResponse, error)
+	// ProbeCompileCache is the cache short-circuit for CAS mode. Client
+	// sends just the manifest digest + args + image; worker computes
+	// the compile cache key and checks the compile cache (local +
+	// S3-backed). On hit, the client gets the artifact back and skips
+	// FindMissingBlobs / UploadBlobs entirely — typical for incremental
+	// builds where most TUs are cached. On miss, client proceeds with
+	// the upload dance. Mirrors Bazel's ActionCache.GetActionResult.
+	ProbeCompileCache(ctx context.Context, in *CompileProbe, opts ...grpc.CallOption) (*ProbeResponse, error)
+	// FindMissingBlobs is the client's "what do I need to upload?"
+	// probe in CAS mode. Client streams the digests it intends to
+	// ship; worker streams back the subset it isn't already storing
+	// locally. Single-layer lookup (sourceStore.Has) — source blobs
+	// are worker-local-ephemeral, so there's nothing else to probe.
+	// Bidi-streaming so the client can pipeline upload decisions
+	// without waiting for the full probe set.
+	FindMissingBlobs(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[BlobDigest, BlobDigest], error)
+	// UploadBlobs streams missing blobs to the worker. The worker
+	// opens a BLAKE3 hasher per blob, tees incoming bytes to a temp
+	// file in the local source store, and on header-boundary verifies
+	// the recomputed digest matches the client-claimed one. Match →
+	// atomic-rename into the local store keyed by recomputed digest.
+	// Mismatch / quota / bad path → reject and report in
+	// UploadResult.rejected_digests. Source blobs are worker-local-
+	// ephemeral (no S3 write-through); the client is the source of
+	// truth and re-uploads on cache miss.
+	UploadBlobs(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[BlobChunk, UploadResult], error)
 }
 
 type workerServiceClient struct {
@@ -47,11 +76,73 @@ func (c *workerServiceClient) Compile(ctx context.Context, in *CompileRequest, o
 	return out, nil
 }
 
+func (c *workerServiceClient) ProbeCompileCache(ctx context.Context, in *CompileProbe, opts ...grpc.CallOption) (*ProbeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ProbeResponse)
+	err := c.cc.Invoke(ctx, WorkerService_ProbeCompileCache_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workerServiceClient) FindMissingBlobs(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[BlobDigest, BlobDigest], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &WorkerService_ServiceDesc.Streams[0], WorkerService_FindMissingBlobs_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[BlobDigest, BlobDigest]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WorkerService_FindMissingBlobsClient = grpc.BidiStreamingClient[BlobDigest, BlobDigest]
+
+func (c *workerServiceClient) UploadBlobs(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[BlobChunk, UploadResult], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &WorkerService_ServiceDesc.Streams[1], WorkerService_UploadBlobs_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[BlobChunk, UploadResult]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WorkerService_UploadBlobsClient = grpc.ClientStreamingClient[BlobChunk, UploadResult]
+
 // WorkerServiceServer is the server API for WorkerService service.
 // All implementations must embed UnimplementedWorkerServiceServer
 // for forward compatibility.
 type WorkerServiceServer interface {
 	Compile(context.Context, *CompileRequest) (*CompileResponse, error)
+	// ProbeCompileCache is the cache short-circuit for CAS mode. Client
+	// sends just the manifest digest + args + image; worker computes
+	// the compile cache key and checks the compile cache (local +
+	// S3-backed). On hit, the client gets the artifact back and skips
+	// FindMissingBlobs / UploadBlobs entirely — typical for incremental
+	// builds where most TUs are cached. On miss, client proceeds with
+	// the upload dance. Mirrors Bazel's ActionCache.GetActionResult.
+	ProbeCompileCache(context.Context, *CompileProbe) (*ProbeResponse, error)
+	// FindMissingBlobs is the client's "what do I need to upload?"
+	// probe in CAS mode. Client streams the digests it intends to
+	// ship; worker streams back the subset it isn't already storing
+	// locally. Single-layer lookup (sourceStore.Has) — source blobs
+	// are worker-local-ephemeral, so there's nothing else to probe.
+	// Bidi-streaming so the client can pipeline upload decisions
+	// without waiting for the full probe set.
+	FindMissingBlobs(grpc.BidiStreamingServer[BlobDigest, BlobDigest]) error
+	// UploadBlobs streams missing blobs to the worker. The worker
+	// opens a BLAKE3 hasher per blob, tees incoming bytes to a temp
+	// file in the local source store, and on header-boundary verifies
+	// the recomputed digest matches the client-claimed one. Match →
+	// atomic-rename into the local store keyed by recomputed digest.
+	// Mismatch / quota / bad path → reject and report in
+	// UploadResult.rejected_digests. Source blobs are worker-local-
+	// ephemeral (no S3 write-through); the client is the source of
+	// truth and re-uploads on cache miss.
+	UploadBlobs(grpc.ClientStreamingServer[BlobChunk, UploadResult]) error
 	mustEmbedUnimplementedWorkerServiceServer()
 }
 
@@ -64,6 +155,15 @@ type UnimplementedWorkerServiceServer struct{}
 
 func (UnimplementedWorkerServiceServer) Compile(context.Context, *CompileRequest) (*CompileResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Compile not implemented")
+}
+func (UnimplementedWorkerServiceServer) ProbeCompileCache(context.Context, *CompileProbe) (*ProbeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ProbeCompileCache not implemented")
+}
+func (UnimplementedWorkerServiceServer) FindMissingBlobs(grpc.BidiStreamingServer[BlobDigest, BlobDigest]) error {
+	return status.Error(codes.Unimplemented, "method FindMissingBlobs not implemented")
+}
+func (UnimplementedWorkerServiceServer) UploadBlobs(grpc.ClientStreamingServer[BlobChunk, UploadResult]) error {
+	return status.Error(codes.Unimplemented, "method UploadBlobs not implemented")
 }
 func (UnimplementedWorkerServiceServer) mustEmbedUnimplementedWorkerServiceServer() {}
 func (UnimplementedWorkerServiceServer) testEmbeddedByValue()                       {}
@@ -104,6 +204,38 @@ func _WorkerService_Compile_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WorkerService_ProbeCompileCache_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CompileProbe)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServiceServer).ProbeCompileCache(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerService_ProbeCompileCache_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServiceServer).ProbeCompileCache(ctx, req.(*CompileProbe))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkerService_FindMissingBlobs_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(WorkerServiceServer).FindMissingBlobs(&grpc.GenericServerStream[BlobDigest, BlobDigest]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WorkerService_FindMissingBlobsServer = grpc.BidiStreamingServer[BlobDigest, BlobDigest]
+
+func _WorkerService_UploadBlobs_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(WorkerServiceServer).UploadBlobs(&grpc.GenericServerStream[BlobChunk, UploadResult]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WorkerService_UploadBlobsServer = grpc.ClientStreamingServer[BlobChunk, UploadResult]
+
 // WorkerService_ServiceDesc is the grpc.ServiceDesc for WorkerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -115,7 +247,23 @@ var WorkerService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "Compile",
 			Handler:    _WorkerService_Compile_Handler,
 		},
+		{
+			MethodName: "ProbeCompileCache",
+			Handler:    _WorkerService_ProbeCompileCache_Handler,
+		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "FindMissingBlobs",
+			Handler:       _WorkerService_FindMissingBlobs_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "UploadBlobs",
+			Handler:       _WorkerService_UploadBlobs_Handler,
+			ClientStreams: true,
+		},
+	},
 	Metadata: "worker.proto",
 }

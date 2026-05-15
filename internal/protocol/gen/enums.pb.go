@@ -128,17 +128,26 @@ const (
 	// Proto3 requires a zero-valued enumerator; UNSPECIFIED catches
 	// unset/legacy fields so they don't collide with a real mode.
 	SourceMode_SOURCE_MODE_UNSPECIFIED SourceMode = 0
-	SourceMode_PREPROCESSED            SourceMode = 2 // client ships preprocessed bytes
+	// CAS-mode source staging (plan §4.5, docs/cas.md). Client ships a
+	// CasDescriptor referencing content-addressed blobs that the worker
+	// materializes inside the VM. Re-opened from the originally-reserved
+	// tag 1; the prior `reserved 1` annotation is removed now that the
+	// intended semantics match what was reserved (no risk of decoding
+	// old PREPROCESSED bytes as CAS).
+	SourceMode_CAS          SourceMode = 1
+	SourceMode_PREPROCESSED SourceMode = 2 // client ships preprocessed bytes
 )
 
 // Enum value maps for SourceMode.
 var (
 	SourceMode_name = map[int32]string{
 		0: "SOURCE_MODE_UNSPECIFIED",
+		1: "CAS",
 		2: "PREPROCESSED",
 	}
 	SourceMode_value = map[string]int32{
 		"SOURCE_MODE_UNSPECIFIED": 0,
+		"CAS":                     1,
 		"PREPROCESSED":            2,
 	}
 )
@@ -183,11 +192,12 @@ const file_enums_proto_rawDesc = "" +
 	"\aVMState\x12\v\n" +
 	"\aRUNNING\x10\x00\x12\x0f\n" +
 	"\vSNAPSHOTTED\x10\x01\x12\v\n" +
-	"\aBOOTING\x10\x02*F\n" +
+	"\aBOOTING\x10\x02*D\n" +
 	"\n" +
 	"SourceMode\x12\x1b\n" +
-	"\x17SOURCE_MODE_UNSPECIFIED\x10\x00\x12\x10\n" +
-	"\fPREPROCESSED\x10\x02\"\x04\b\x01\x10\x01*\x03CASB\aZ\x05./genb\x06proto3"
+	"\x17SOURCE_MODE_UNSPECIFIED\x10\x00\x12\a\n" +
+	"\x03CAS\x10\x01\x12\x10\n" +
+	"\fPREPROCESSED\x10\x02B\aZ\x05./genb\x06proto3"
 
 var (
 	file_enums_proto_rawDescOnce sync.Once

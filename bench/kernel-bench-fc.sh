@@ -30,6 +30,14 @@
 #                           kernel macros trip; pinning the patch
 #                           keeps the bench buildable across kernel
 #                           tags without disabling -Werror.
+#   HPCC_BENCH_SOURCE_MODE — "preprocessed" (default) or "cas".
+#                           Picks the client-side dispatch path.
+#                           Each mode partitions its own OUT_DIR,
+#                           STACK_DIR, and xdg so back-to-back runs
+#                           (see kernel-bench-fc-both.sh) don't
+#                           collide. For "cas", a .hpcc marker is
+#                           dropped at the kernel root so manifest
+#                           paths normalize project-relative.
 #
 # Run as root (jailer needs CAP_SYS_ADMIN + chroot). The CI workflow
 # invokes via `sudo -E`.
@@ -63,6 +71,13 @@ HPCC_BENCH_VM_VCPUS="${HPCC_BENCH_VM_VCPUS:-2}"
 HPCC_BENCH_POOL_MAX="${HPCC_BENCH_POOL_MAX:-8}"
 HPCC_BENCH_TOOLCHAIN_IMAGE="${HPCC_BENCH_TOOLCHAIN_IMAGE:-docker.io/library/gcc:13.2.0}"
 HPCC_BENCH_KEEP="${HPCC_BENCH_KEEP:-0}"
+HPCC_BENCH_SOURCE_MODE="${HPCC_BENCH_SOURCE_MODE:-preprocessed}"
+case "${HPCC_BENCH_SOURCE_MODE}" in
+    preprocessed|cas) ;;
+    *)
+        bench::die "HPCC_BENCH_SOURCE_MODE must be 'preprocessed' or 'cas'; got '${HPCC_BENCH_SOURCE_MODE}'"
+        ;;
+esac
 # FC builds are much slower per-iteration than local, so default to
 # fewer warm repeats. Override with HPCC_BENCH_WARM_RUNS to trade
 # wall-time budget for less noise.
@@ -80,12 +95,16 @@ if [[ ! -e /dev/kvm ]]; then
     bench::die "/dev/kvm not present; cannot run FC-mode bench"
 fi
 
-# Out + work dirs. Same layout as the local bench so report
-# consumers don't have to special-case modes.
+# Out + work dirs. Source-mode is baked into the path so back-to-back
+# runs (preprocessed then cas) get fully isolated state — separate
+# OUT_DIR, separate STACK_DIR, separate XDG_CONFIG_HOME (which lives
+# inside STACK_DIR). The kernel checkout is shared across modes since
+# `make clean` zeroes the build state between runs.
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
-OUT_DIR="${REPO_ROOT}/bench/results/${TS}-firecracker"
+MODE_TAG="firecracker-${HPCC_BENCH_SOURCE_MODE}"
+OUT_DIR="${REPO_ROOT}/bench/results/${TS}-${MODE_TAG}"
 WORK_DIR="${REPO_ROOT}/bench/work/firecracker"
-STACK_DIR="${WORK_DIR}/stack-${TS}"
+STACK_DIR="${WORK_DIR}/stack-${TS}-${HPCC_BENCH_SOURCE_MODE}"
 KERNEL_DIR="${WORK_DIR}/linux"
 CLIENT_CFG="${OUT_DIR}/hpcc-config.toml"
 FCSTACK_LOG="${OUT_DIR}/fcstack.log"
@@ -147,7 +166,7 @@ bench::info "building fcstack → ${FCSTACK_BIN}"
 READY_FIFO="${STACK_DIR}/ready.fifo"
 mkfifo "${READY_FIFO}"
 
-bench::info "starting fcstack supervisor"
+bench::info "starting fcstack supervisor (source_mode=${HPCC_BENCH_SOURCE_MODE})"
 "${FCSTACK_BIN}" \
     --stack-dir="${STACK_DIR}" \
     --client-config="${CLIENT_CFG}" \
@@ -158,6 +177,7 @@ bench::info "starting fcstack supervisor"
     --vm-memory="${HPCC_BENCH_VM_MEMORY}" \
     --vm-vcpus="${HPCC_BENCH_VM_VCPUS}" \
     --pool-max-active="${HPCC_BENCH_POOL_MAX}" \
+    --source-mode="${HPCC_BENCH_SOURCE_MODE}" \
     >"${READY_FIFO}" 2>"${FCSTACK_LOG}" &
 FCSTACK_PID=$!
 
@@ -209,6 +229,17 @@ bench::info "hpcc daemon ready at ${DAEMON_FILE}"
 # 4. Kernel checkout + configure.
 bench::clone_kernel "${KERNEL_DIR}"
 bench::configure_kernel "${KERNEL_DIR}" "${HPCC_BENCH_CONFIG}"
+
+# CAS mode needs a .hpcc project marker at the kernel root so the
+# client's BuildManifest re-roots blob paths to project-relative
+# form. Without it, every BlobRef.path is an absolute /…/linux/…
+# path and manifest digests would embed the absolute kernel checkout
+# location — which is fine for same-run hits but defeats the
+# cross-developer / cross-checkout property CAS is supposed to
+# unlock. Empty marker is sufficient. PREPROCESSED mode ignores it.
+if [[ "${HPCC_BENCH_SOURCE_MODE}" == "cas" ]]; then
+    : > "${KERNEL_DIR}/.hpcc"
+fi
 
 CC_CMD="${HPCC_BIN} wrap gcc"
 
@@ -264,7 +295,7 @@ bench::info "after warm: ${ENTRIES_WARM} worker-cache entries, $(bench::fmt_byte
 #    zero, and the hit-rate field matches the local-mode bench.
 bench::write_report \
     "${OUT_DIR}" \
-    "firecracker" \
+    "${MODE_TAG}" \
     "${COLD_SECONDS}" \
     "${ENTRIES_COLD}" \
     "${ENTRIES_WARM}" \
@@ -286,4 +317,4 @@ fi
 
 bench::assert_thresholds "${HIT_RATE}" "${WARM_PCT}"
 
-bench::info "kernel-bench (firecracker) passed"
+bench::info "kernel-bench (${MODE_TAG}) passed"

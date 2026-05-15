@@ -78,6 +78,39 @@ func (d *DiskCacheStore) Has(key []byte) (bool, error) {
 // Dir returns the root directory of this cache store.
 func (d *DiskCacheStore) Dir() string { return d.dir }
 
+// Namespace returns a DiskCacheStore rooted at <d.dir>/<prefix>.
+// maxSize is *not* inherited — namespaced stores default to unlimited
+// so the caller decides whether to budget the namespace separately;
+// otherwise three namespaces sharing one root would each evict to the
+// parent's maxSize and overshoot 3x.
+func (d *DiskCacheStore) Namespace(prefix string) Store {
+	if err := validateNamespace(prefix); err != nil {
+		panic(err)
+	}
+	sub := filepath.Join(d.dir, prefix)
+	// Lazy MkdirAll on first Put avoids creating empty namespace
+	// dirs that the caller may never use.
+	return &DiskCacheStore{dir: sub, maxSize: 0}
+}
+
+// validateNamespace rejects prefixes that would escape the parent
+// directory or stray outside a single path component.
+func validateNamespace(prefix string) error {
+	if prefix == "" {
+		return errors.New("namespace prefix must not be empty")
+	}
+	if prefix == "." || prefix == ".." {
+		return fmt.Errorf("invalid namespace prefix %q", prefix)
+	}
+	for i := 0; i < len(prefix); i++ {
+		c := prefix[i]
+		if c == '/' || c == '\\' || c == 0 {
+			return fmt.Errorf("invalid namespace prefix %q", prefix)
+		}
+	}
+	return nil
+}
+
 // Stats returns the number of cache entries and their total size in bytes.
 func (d *DiskCacheStore) Stats() (entries int, totalSize int64, err error) {
 	ents, total, err := d.scanEntries()

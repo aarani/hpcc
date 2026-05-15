@@ -37,10 +37,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-// objectPrefix namespaces all hpcc cache objects so the bucket can
-// be shared with other tools (audit log uploads, lifecycle config,
+// defaultObjectPrefix namespaces all hpcc cache objects so the bucket
+// can be shared with other tools (audit log uploads, lifecycle config,
 // telemetry, etc.) without scanEntries tripping on their objects.
-const objectPrefix = "cache/"
+// S3CacheStore stores its effective prefix as a field; Namespace
+// appends additional path segments so multiple cache facades can
+// share one bucket (e.g. cache/compile/, cache/source/, cache/manifest/).
+const defaultObjectPrefix = "cache/"
 
 // Per-operation timeouts. Disk-store callers don't pass a context,
 // so we synthesise these. Tuned to match the plan's §3.3 budget
@@ -93,6 +96,7 @@ type S3Options struct {
 type S3CacheStore struct {
 	bucket  string
 	client  *s3.Client
+	prefix  string // always ends in "/"; e.g. "cache/" or "cache/compile/"
 	maxSize int64
 
 	getTimeout, putTimeout, hasTimeout, listTimeout time.Duration
@@ -161,6 +165,7 @@ func NewS3CacheStore(opts S3Options) (*S3CacheStore, error) {
 	s := &S3CacheStore{
 		bucket:       opts.Bucket,
 		client:       client,
+		prefix:       defaultObjectPrefix,
 		maxSize:      opts.MaxSize,
 		getTimeout:   defaultS3GetTimeout,
 		putTimeout:   defaultS3PutTimeout,
@@ -178,7 +183,7 @@ func NewS3CacheStore(opts S3Options) (*S3CacheStore, error) {
 	defer cancel()
 	_, err = s.client.ListObjectsV2(initCtx, &s3.ListObjectsV2Input{
 		Bucket:  aws.String(opts.Bucket),
-		Prefix:  aws.String(objectPrefix),
+		Prefix:  aws.String(s.prefix),
 		MaxKeys: aws.Int32(1),
 	})
 	if err != nil {
@@ -337,7 +342,7 @@ func (s *S3CacheStore) Clean(maxSize int64, maxAge time.Duration) error {
 	return nil
 }
 
-// objectKey builds an S3 key under objectPrefix in the shape
+// objectKey builds an S3 key under s.prefix in the shape
 // "<prefix><hh>/<full-hex>/<name>". The two-char shard prefix is
 // historical (S3 used to partition by key prefix); modern S3 doesn't
 // care, but the layout matches the disk store and keeps any external
@@ -345,29 +350,31 @@ func (s *S3CacheStore) Clean(maxSize int64, maxAge time.Duration) error {
 func (s *S3CacheStore) objectKey(key []byte, name string) string {
 	h := hex.EncodeToString(key)
 	if len(h) < 2 {
-		return fmt.Sprintf("%s%s/%s", objectPrefix, h, name)
+		return fmt.Sprintf("%s%s/%s", s.prefix, h, name)
 	}
-	return fmt.Sprintf("%s%s/%s/%s", objectPrefix, h[:2], h, name)
+	return fmt.Sprintf("%s%s/%s/%s", s.prefix, h[:2], h, name)
 }
 
 // entryPrefix returns the listable prefix for all blobs of an entry.
 func (s *S3CacheStore) entryPrefix(key []byte) string {
 	h := hex.EncodeToString(key)
 	if len(h) < 2 {
-		return fmt.Sprintf("%s%s/", objectPrefix, h)
+		return fmt.Sprintf("%s%s/", s.prefix, h)
 	}
-	return fmt.Sprintf("%s%s/%s/", objectPrefix, h[:2], h)
+	return fmt.Sprintf("%s%s/%s/", s.prefix, h[:2], h)
 }
 
 // parseObjectKey decodes a key produced by objectKey back into the
 // cache key bytes. Returns ok=false for any shape mismatch — strays,
 // non-cache objects under another prefix, manually-uploaded files —
-// so scan loops can skip them without erroring.
-func parseObjectKey(s string) (cacheKey []byte, ok bool) {
-	if !strings.HasPrefix(s, objectPrefix) {
+// so scan loops can skip them without erroring. prefix is the store's
+// current effective prefix (e.g. "cache/" or "cache/compile/"); only
+// objects whose keys start with it are decoded.
+func parseObjectKey(s, prefix string) (cacheKey []byte, ok bool) {
+	if !strings.HasPrefix(s, prefix) {
 		return nil, false
 	}
-	rest := strings.TrimPrefix(s, objectPrefix)
+	rest := strings.TrimPrefix(s, prefix)
 	parts := strings.SplitN(rest, "/", 3)
 	// Long form: "<hh>/<full-hex>/<name>"
 	// Short form: "<full-hex>/<name>" (only for keys < 1 byte; not
@@ -443,7 +450,7 @@ func (s *S3CacheStore) scanEntries(ctx context.Context) ([]s3EntryInfo, int64, e
 
 	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.bucket),
-		Prefix: aws.String(objectPrefix),
+		Prefix: aws.String(s.prefix),
 	})
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
@@ -451,7 +458,7 @@ func (s *S3CacheStore) scanEntries(ctx context.Context) ([]s3EntryInfo, int64, e
 			return nil, 0, fmt.Errorf("list S3 objects: %w", err)
 		}
 		for _, obj := range page.Contents {
-			k, ok := parseObjectKey(aws.ToString(obj.Key))
+			k, ok := parseObjectKey(aws.ToString(obj.Key), s.prefix)
 			if !ok {
 				continue
 			}
@@ -552,7 +559,33 @@ func (s *S3CacheStore) shouldEvict() bool {
 	return s.estimateSize > threshold
 }
 
-func (s *S3CacheStore) Dir() string { return fmt.Sprintf("s3://%s", s.bucket) }
+func (s *S3CacheStore) Dir() string {
+	return fmt.Sprintf("s3://%s/%s", s.bucket, s.prefix)
+}
+
+// Namespace returns an S3CacheStore view that operates under
+// "<current prefix><prefix>/" — e.g. starting from "cache/" and
+// namespacing to "compile" yields "cache/compile/". maxSize and the
+// in-memory eviction estimate are NOT inherited; the namespaced store
+// gets its own (defaulted to unlimited) so the caller decides whether
+// to budget the namespace separately. The underlying S3 client and
+// per-op timeouts are shared.
+func (s *S3CacheStore) Namespace(prefix string) Store {
+	if err := validateNamespace(prefix); err != nil {
+		panic(err)
+	}
+	return &S3CacheStore{
+		bucket:       s.bucket,
+		client:       s.client,
+		prefix:       s.prefix + prefix + "/",
+		maxSize:      0,
+		getTimeout:   s.getTimeout,
+		putTimeout:   s.putTimeout,
+		hasTimeout:   s.hasTimeout,
+		listTimeout:  s.listTimeout,
+		maxBlobBytes: s.maxBlobBytes,
+	}
+}
 
 // Compile-time assertion that S3CacheStore satisfies Store. Catches
 // signature drift in either side at build time rather than the

@@ -144,7 +144,7 @@ func TestParseGNU_inferDefaultOutput(t *testing.T) {
 // TestParseGNU_inferOutputOnlyForSingleInputCompile guards the modes
 // and shapes where inference must NOT fire — link mode (a.out is
 // gcc's job, not the cache's), multi-input compiles (one .o per
-// input doesn't fit V1Cache's single-output shape), preprocess and
+// input doesn't fit CompileCache's single-output shape), preprocess and
 // assemble modes (uncached, compiler handles its own defaults), and
 // stdin (no input name to base a default on).
 func TestParseGNU_inferOutputOnlyForSingleInputCompile(t *testing.T) {

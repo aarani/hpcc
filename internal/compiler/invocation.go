@@ -4,9 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -64,6 +62,17 @@ type Invocation struct {
 	// for PREPROCESSED-mode requests where the client shipped
 	// preprocessed bytes inline; nil otherwise.
 	PreprocessedDigest *[32]byte
+
+	// ManifestDigest, if non-nil, is the BLAKE3-256 of a source-closure
+	// manifest (see Manifest.Digest in manifest.go). CacheKey treats it
+	// as a substitute for running the preprocessor or walking the dep
+	// closure locally: skip FindDependencies, skip Preprocess, mix this
+	// digest in directly. Set by the worker for CAS-mode requests where
+	// the client shipped a CasDescriptor; nil otherwise. Takes priority
+	// over PreprocessedDigest when both are set (CAS-mode requests
+	// can't also carry preprocessed bytes, but the precedence keeps
+	// the contract explicit).
+	ManifestDigest *[32]byte
 }
 
 // NewInvocation returns an Invocation with maps initialized.
@@ -113,7 +122,7 @@ func (inv *Invocation) ReadsStdin() bool {
 //     would have no way to detect the mismatch.
 //
 //   - Multi-input compiles. gcc/cl write one object per input; the
-//     V1Cache shape stores one output blob per entry, so caching
+//     CompileCache shape stores one output blob per entry, so caching
 //     here would silently drop all but one .o.
 //
 // All three of these paths fall through to a direct Compiler.Invoke,
@@ -122,6 +131,42 @@ func (inv *Invocation) ReadsStdin() bool {
 // write without hpcc in the picture, and the user sees normal
 // behavior.
 func (inv *Invocation) Cacheable() bool {
+	if !inv.cacheableShape() {
+		return false
+	}
+	if inv.isAssembly() {
+		// Local/preprocessed cache key would be unsound: GAS
+		// .incbin'd files aren't captured by the preprocessor
+		// output. CAS-mode dispatch handles this — see
+		// DispatchableUnderCAS.
+		return false
+	}
+	return true
+}
+
+// DispatchableUnderCAS reports whether this invocation can be
+// remotely dispatched in CAS mode. Same shape rules as Cacheable —
+// single-input compile, no stdin, no /dev/null probe — but accepts
+// assembly inputs because CAS ships the full source closure to the
+// worker, so .incbin'd files are present at assemble time.
+//
+// Callers should reach for this in the daemon's dispatch gate when
+// the configured source mode is CAS. The local-cache check
+// (Cacheable) and the dispatch gate are intentionally separate:
+// the local cache key for a .S input is still unsound (it would
+// hash preprocessed text without the .incbin'd bytes), so the
+// daemon dispatches without local caching when only this check
+// returns true.
+func (inv *Invocation) DispatchableUnderCAS() bool {
+	return inv.cacheableShape()
+}
+
+// cacheableShape factors the shared "is this a single-source
+// compile we can route through the CompileCache / dispatch path?"
+// predicate out of Cacheable and DispatchableUnderCAS. Excludes the
+// assembly carve-out — callers add or omit that check based on
+// whether their downstream path can represent .S inputs soundly.
+func (inv *Invocation) cacheableShape() bool {
 	if inv.Mode != enum.CompileMode {
 		return false
 	}
@@ -134,38 +179,30 @@ func (inv *Invocation) Cacheable() bool {
 	if inv.isProbeInvocation() {
 		return false
 	}
-	if inv.isAssembly() {
-		return false
-	}
 	return true
 }
 
 // isAssembly reports whether the invocation compiles an assembly
-// source file. The dispatcher's preprocess-on-client / compile-on-
-// worker model assumes the preprocessor produces a self-contained
-// translation unit, which is true for C/C++ (the preprocessor inlines
-// every #include) but NOT for assembly: GAS directives like .incbin
-// reference files that the assembler reads at assemble time, and
-// those files don't exist on the worker side.
+// source file. Used to gate Cacheable (and the preprocessed-mode
+// dispatch path) but NOT DispatchableUnderCAS: the preprocess-on-
+// client / compile-on-worker model assumes the preprocessor
+// produces a self-contained translation unit, which is true for
+// C/C++ but NOT for assembly. GAS directives like .incbin reference
+// files that the assembler reads at assemble time, and those files
+// don't exist on the worker side under PREPROCESSED.
 //
 // Concretely, the Linux kernel's usr/initramfs_data.S does
 // `.incbin "usr/initramfs_inc_data"` and arch/x86/realmode/rmpiggy.S
-// does `.incbin "arch/x86/realmode/rm/realmode.bin"`. Both fail with
-// "file not found" when dispatched through the current preprocessed
-// pipeline because only the .S preprocessed text is shipped to the
-// worker.
+// does `.incbin "arch/x86/realmode/rm/realmode.bin"`. CAS-mode
+// dispatch fixes both: the manifest captures every file in the
+// closure, so the worker materializes .incbin'd content alongside
+// the .S itself and the assembler resolves the directive against
+// the staged copy. See docs/cas.md and Step 8.
 //
-// Marking assembly non-cacheable forces it through the local Invoke
-// path (where the assembler can read whatever it needs from the
-// client's working directory) at the cost of cache hits on roughly
-// a few dozen kernel .S files. The C/C++ payload — tens of thousands
-// of TUs in a kernel build — keeps caching.
-//
-// The proper long-term fix is CAS-mode dispatch (plan §4.5): ship
-// content-addressed blobs of the full source tree and let the worker
-// assemble against the same view the client has. Until that lands,
-// the conservative carve-out here keeps the dispatch path sound for
-// the C-majority workloads it was designed for.
+// Local cache (Cacheable) still excludes assembly because its
+// cache key derives from preprocessed bytes (no .incbin coverage).
+// Daemon-mode CAS dispatch bypasses the local cache for .S inputs
+// and relies on the worker's manifest-keyed compile cache instead.
 func (inv *Invocation) isAssembly() bool {
 	if inv.Language == "assembler" || inv.Language == "assembler-with-cpp" {
 		return true
@@ -214,17 +251,25 @@ func (inv *Invocation) isProbeInvocation() bool {
 	return false
 }
 
-// GetBytes computes the cache-key seed for this invocation: a 32-byte
+// CacheKey computes the cache-key seed for this invocation: a 32-byte
 // BLAKE3-256 digest mixing source content, compiler identity, and the
 // cache-key-relevant flags.
 //
-// Two preprocessing strategies, both producing the same shape of output:
+// Source-content input is one of (in priority order):
 //
-//   - PreprocessRemote (manifest mode): hash the contents of all input
-//     and dependency files. Used when the worker will preprocess on its
-//     side and we just need to enumerate inputs locally.
-//   - default (preprocess mode): run the preprocessor locally and hash
-//     the resulting source bytes (via the digest already computed in
+//   - ManifestDigest: a precomputed source-closure manifest digest. The
+//     worker uses this on CAS-mode requests after re-verifying the
+//     client-supplied manifest. Mixed in directly; no preprocessor or
+//     dep walk runs.
+//   - PreprocessedDigest: the BLAKE3 of preprocessed source bytes the
+//     caller already produced. The worker uses this on PREPROCESSED-mode
+//     requests. Mixed in directly.
+//   - PreprocessRemote config mode: run FindDependencies locally, hash
+//     each input/dep into a Manifest (manifest.go), mix the manifest
+//     digest in. Same encoding as the ManifestDigest short-circuit so
+//     client and worker agree on the key.
+//   - default: run the preprocessor locally and hash the resulting
+//     source bytes (via the digest already computed in
 //     PreprocessResult — single pass over the bytes, not two).
 //
 // Each chunk written to the hasher is length-prefixed so concatenation
@@ -254,6 +299,12 @@ func (inv *Invocation) CacheKey(ctx *Context) ([]byte, error) {
 	}
 
 	switch {
+	case inv.ManifestDigest != nil:
+		// Short-circuit: caller already built and (on the worker side)
+		// verified the source-closure manifest. Mix the manifest
+		// digest in directly. CAS-mode worker path.
+		writeChunk(inv.ManifestDigest[:])
+
 	case inv.PreprocessedDigest != nil:
 		// Short-circuit: the source was preprocessed elsewhere and the
 		// caller already handed us the digest of those bytes. Mix it
@@ -262,21 +313,15 @@ func (inv *Invocation) CacheKey(ctx *Context) ([]byte, error) {
 		writeChunk(inv.PreprocessedDigest[:])
 
 	case ctx.Config.PreprocessingMode == enum.PreprocessRemote:
-		deps, err := ctx.Compiler.FindDependencies(inv)
+		// Client-side manifest computation: walk the dep closure, hash
+		// each file, mix the aggregate manifest digest in. Produces
+		// the same key the worker would compute from a CAS-mode
+		// request carrying the same (path, content) pairs.
+		m, err := BuildManifest(inv, ctx)
 		if err != nil {
 			return nil, err
 		}
-		inputs := slices.Clone(inv.Inputs)
-		slices.Sort(inputs)
-		sortedDeps := slices.Clone(deps)
-		slices.Sort(sortedDeps)
-		for _, path := range append(inputs, sortedDeps...) {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return nil, fmt.Errorf("read dependency %q: %w", path, err)
-			}
-			writeChunk(data)
-		}
+		writeChunk(m.Digest[:])
 
 	default:
 		res, err := ctx.Compiler.Preprocess(inv)

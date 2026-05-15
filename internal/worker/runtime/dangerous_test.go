@@ -122,6 +122,12 @@ func TestRewriteRoot_BoundaryAware(t *testing.T) {
 		{"/src", "/src", "/tmp/staged", "/tmp/staged"},
 		{"/src-other/x", "/src", "/tmp/staged", "/src-other/x"},   // sibling, not rewritten
 		{"-DFOO=/src/x", "/src", "/tmp/staged", "-DFOO=/tmp/staged/x"},
+		// CAS-mode path: a project-relative path that contains "src"
+		// as a directory name must NOT be double-rewritten. The
+		// leftmost /src is the mount root; the inner "src" is a
+		// project directory whose literal bytes survive.
+		{"/src/src/main.c", "/src", "/tmp/staged", "/tmp/staged/src/main.c"},
+		{"-I/src/src/include", "/src", "/tmp/staged", "-I/tmp/staged/src/include"},
 	}
 	for _, c := range cases {
 		got := rewriteRoot(c.in, c.root, c.repl)

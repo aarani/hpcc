@@ -79,7 +79,7 @@ func ParseGNU(args []string) (*Invocation, error) {
 // user gets — no inference needed.
 //
 // Multi-input compiles produce one .o per input and aren't cacheable
-// through the single-output V1Cache shape; we leave inv.Output empty
+// through the single-output CompileCache shape; we leave inv.Output empty
 // and the runner's `inv.Output != ""` guards skip the cache path.
 func inferDefaultOutput(inv *Invocation, objExt string) {
 	if inv.Mode != enum.CompileMode || inv.Output != "" || len(inv.Inputs) != 1 {

@@ -53,17 +53,6 @@ jobs:
             build-essential bc bison flex libelf-dev libssl-dev \
             git make gawk
 
-      - name: Cache kernel checkout
-        uses: actions/cache@v4
-        with:
-          # The bench reuses bench/work/local/linux across runs when
-          # it's present, so caching that path turns the
-          # 1.5GB-clone cost from per-run to per-cache-bump.
-          path: bench/work/local/linux
-          # Keyed on the tag we're benchmarking so a config bump
-          # naturally invalidates.
-          key: linux-${{ inputs.kernel_tag || 'v6.6' }}
-
       - name: Run local kernel bench
         env:
           HPCC_BENCH_KERNEL_TAG: ${{ inputs.kernel_tag || 'v6.6' }}
@@ -78,9 +67,22 @@ jobs:
           path: bench/results/
 
   fc-bench:
-    name: Firecracker-mode kernel bench
+    name: FC kernel bench (${{ matrix.source_mode }})
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    # Run preprocessed and cas as separate parallel jobs rather than
+    # back-to-back inside one job. The FC bench was already
+    # 60-ish-minute wall time; doubling it for CAS would push past
+    # the 120-minute timeout and slow down nightly feedback. Matrix
+    # lanes get their own runners and run concurrently.
+    #
+    # fail-fast: false so a failure in one source mode doesn't cancel
+    # the other — when iterating on the dispatch path it's useful to
+    # see both legs' outcomes even when one regresses.
+    strategy:
+      fail-fast: false
+      matrix:
+        source_mode: [preprocessed, cas]
     steps:
       - uses: actions/checkout@v4
 
@@ -130,12 +132,6 @@ jobs:
           curl -fSL "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/${ARCH}/vmlinux-6.1.155" \
             -o /tmp/fcassets/vmlinux
 
-      - name: Cache kernel checkout
-        uses: actions/cache@v4
-        with:
-          path: bench/work/firecracker/linux
-          key: linux-${{ inputs.kernel_tag || 'v6.6' }}-fc
-
       - name: Run FC kernel bench
         env:
           HPCC_FIRECRACKER_BIN: /usr/local/bin/firecracker
@@ -145,11 +141,15 @@ jobs:
           # tinyconfig by default — defconfig under FC dispatch is
           # multi-hour on a 2-vCPU FC runner.
           HPCC_BENCH_CONFIG: ${{ inputs.config || 'tinyconfig' }}
+          HPCC_BENCH_SOURCE_MODE: ${{ matrix.source_mode }}
         run: sudo -E env "PATH=$PATH" ./bench/kernel-bench-fc.sh
 
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-bench-firecracker
+          # Per-mode artifact name so the two matrix lanes don't
+          # collide on upload (actions/upload-artifact@v4 fails on
+          # name collision rather than merging).
+          name: kernel-bench-firecracker-${{ matrix.source_mode }}
           path: bench/results/

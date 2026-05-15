@@ -23,9 +23,12 @@ enum SourceMode {
   // Proto3 requires a zero-valued enumerator; UNSPECIFIED catches
   // unset/legacy fields so they don't collide with a real mode.
   SOURCE_MODE_UNSPECIFIED = 0;
-  // Tag 1 was CAS-mode source staging (§4.5). Deferred; reserved so we
-  // never accidentally recycle the tag if it gets re-added later.
-  reserved 1;
-  reserved "CAS";
+  // CAS-mode source staging (plan §4.5, docs/cas.md). Client ships a
+  // CasDescriptor referencing content-addressed blobs that the worker
+  // materializes inside the VM. Re-opened from the originally-reserved
+  // tag 1; the prior `reserved 1` annotation is removed now that the
+  // intended semantics match what was reserved (no risk of decoding
+  // old PREPROCESSED bytes as CAS).
+  CAS = 1;
   PREPROCESSED = 2;  // client ships preprocessed bytes
 }

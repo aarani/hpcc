@@ -6,13 +6,19 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"os/exec"
+	goruntime "runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/aarani/hpcc/internal/compiler"
+	"github.com/aarani/hpcc/internal/config"
+	"github.com/aarani/hpcc/internal/enum"
 	"github.com/aarani/hpcc/internal/protocol/gen"
 	"github.com/aarani/hpcc/internal/worker/runtime"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/zeebo/blake3"
 )
 
 // These are end-to-end tests against Worker.Compile, going through token
@@ -330,6 +336,254 @@ func TestCompile_PreprocessedNonZeroExitReturnsAsData(t *testing.T) {
 	}
 	if len(resp.Stderr) == 0 {
 		t.Errorf("expected non-empty stderr for compile failure")
+	}
+}
+
+// --- CAS-mode end-to-end ------------------------------------------------
+
+// newCASTestWorker returns a Worker wired with everything needed to
+// run a real CAS Compile RPC end-to-end through the dangerous runtime:
+// dispatcher-shaped token validation, a disk-backed CompileCache, the
+// namespaced sourceStore for blob materialization, and the dangerous
+// runtime so the test process forks a real compiler. The temp dir
+// backing the cache is reused for both compile and source namespaces.
+func newCASTestWorker(t *testing.T) (*Worker, ed25519.PrivateKey) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519 key: %v", err)
+	}
+	cfg := Config{
+		WorkerID: testWorkerID,
+		Runtime:  RuntimeConfig{Handler: runtime.HandlerReallyReallyDangerous},
+		VM:       VMConfig{VCPUs: 1, Memory: "1GB"},
+		Caches: []config.CacheConfig{
+			{Type: enum.CacheDisk, Location: t.TempDir()},
+		},
+	}
+	w, err := NewWorker(cfg)
+	if err != nil {
+		t.Fatalf("NewWorker: %v", err)
+	}
+	w.workerID = testWorkerID
+	w.schedulerPubKey = pub
+	return w, priv
+}
+
+// casDescriptor assembles a CasDescriptor from path → content pairs,
+// hashing each content with BLAKE3 and computing the manifest digest
+// the same way BuildManifest does (sort-by-path aggregation). It also
+// returns the BlobRefs so the caller can pre-seed the source store.
+func casDescriptor(t *testing.T, entryPath string, files map[string][]byte) *gen.CasDescriptor {
+	t.Helper()
+	refs := make([]compiler.BlobRef, 0, len(files))
+	protoRefs := make([]*gen.BlobRef, 0, len(files))
+	for path, content := range files {
+		h := blake3.New()
+		h.Write(content)
+		var d [32]byte
+		copy(d[:], h.Sum(nil))
+		refs = append(refs, compiler.BlobRef{Path: path, Digest: d, Size: int64(len(content))})
+		protoRefs = append(protoRefs, &gen.BlobRef{
+			Path:   path,
+			Digest: append([]byte(nil), d[:]...),
+			Size:   uint64(len(content)),
+		})
+	}
+	// Sort both lists by path; AggregateManifestDigest requires sorted input.
+	sort.Slice(refs, func(i, j int) bool { return refs[i].Path < refs[j].Path })
+	sort.Slice(protoRefs, func(i, j int) bool { return protoRefs[i].Path < protoRefs[j].Path })
+	md := compiler.AggregateManifestDigest(refs)
+	return &gen.CasDescriptor{
+		ManifestDigest: md[:],
+		Blobs:          protoRefs,
+		EntryPath:      entryPath,
+	}
+}
+
+// seedSourceStore puts every (path → content) pair into the worker's
+// sourceStore keyed by BLAKE3(content). The path is informational;
+// the store is content-addressed, so only the digest and bytes matter.
+func seedSourceStore(t *testing.T, w *Worker, files map[string][]byte) {
+	t.Helper()
+	for _, content := range files {
+		h := blake3.New()
+		h.Write(content)
+		if err := w.sourceStore.Put(h.Sum(nil), blobData, content); err != nil {
+			t.Fatalf("sourceStore.Put: %v", err)
+		}
+	}
+}
+
+func TestCompile_CASHappyPath(t *testing.T) {
+	clangPath, err := exec.LookPath("clang")
+	if err != nil {
+		t.Skipf("clang not in PATH: %v", err)
+	}
+	_ = clangPath
+
+	w, priv := newCASTestWorker(t)
+	token := signToken(t, priv, validClaims())
+
+	// One-file source closure: a tiny .c TU under src/.
+	files := map[string][]byte{
+		"src/main.c": []byte("int main(void){return 42;}\n"),
+	}
+	cas := casDescriptor(t, "src/main.c", files)
+	seedSourceStore(t, w, files)
+
+	req := &gen.CompileRequest{
+		// Post-RewriteForCAS argv: project paths under /src, output under /out.
+		Args: []string{"clang", "-c", "/src/src/main.c", "-o", "/out/main.o"},
+		Descriptor_: &gen.RemoteDescriptor{
+			TenantId:       "t1",
+			ImageDigest:    "d1",
+			SchedulerToken: token,
+			SourceMode:     gen.SourceMode_CAS,
+			SourceSettings: &gen.RemoteDescriptor_Cas{Cas: cas},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := w.Compile(ctx, req)
+	if err != nil {
+		t.Fatalf("Compile (cold): %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("ExitCode=%d, stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if !looksLikeObjectFile(resp.OutputArtifact) {
+		head := resp.OutputArtifact
+		if len(head) > 8 {
+			head = head[:8]
+		}
+		t.Errorf("OutputArtifact doesn't look like an object: % x", head)
+	}
+	if resp.CacheKey == nil || *resp.CacheKey == "" {
+		t.Errorf("expected non-empty CacheKey on CAS compile")
+	}
+
+	// Second compile with the same descriptor must hit the worker's
+	// compile cache (Step 6 widened useCache to fire under CAS even
+	// without paranoid mode). Asserting on the cache key match
+	// catches regressions in the manifest→cache-key derivation.
+	firstKey := *resp.CacheKey
+	resp2, err := w.Compile(ctx, req)
+	if err != nil {
+		t.Fatalf("Compile (warm): %v", err)
+	}
+	if resp2.ExitCode != 0 {
+		t.Fatalf("warm ExitCode=%d, stderr=%q", resp2.ExitCode, resp2.Stderr)
+	}
+	if resp2.CacheKey == nil || *resp2.CacheKey != firstKey {
+		t.Errorf("warm cache key %v differs from cold %q", resp2.CacheKey, firstKey)
+	}
+	if !bytes.Equal(resp.OutputArtifact, resp2.OutputArtifact) {
+		t.Errorf("warm artifact differs from cold; cache replay broken")
+	}
+}
+
+func TestCompile_CASAssemblyWithIncbin(t *testing.T) {
+	// Step 8's forcing function: a .S file with .incbin compiles
+	// end-to-end through CAS. PREPROCESSED dispatch can't represent
+	// this — the .incbin'd data isn't in the preprocessor output —
+	// but CAS ships the full closure, so the assembler finds the
+	// .bin alongside the .S inside the source root.
+	//
+	// Linux-only: the .section directive shape below is GNU GAS
+	// syntax. Mach-O assemblers on macOS use a different vocabulary
+	// (.const_data, leading underscores on globals) and would need
+	// a separate fixture. The Step 8 design target is Linux kernel
+	// .S files, so that's the platform we validate on.
+	if goruntime.GOOS != "linux" {
+		t.Skipf("skipping on %s: test fixture uses Linux GAS .section syntax", goruntime.GOOS)
+	}
+	gccPath, err := exec.LookPath("gcc")
+	if err != nil {
+		t.Skipf("gcc not in PATH: %v", err)
+	}
+	_ = gccPath
+
+	w, priv := newCASTestWorker(t)
+	token := signToken(t, priv, validClaims())
+
+	// A tiny GAS source that .incbin's a data file at a sibling path.
+	// The path inside .incbin is relative to the assembler's cwd —
+	// the dangerous runtime sets cwd to the source-staging dir, so
+	// "data.bin" resolves against the materialized source root.
+	asmSrc := []byte(`
+.section .rodata
+.globl payload
+payload:
+.incbin "data.bin"
+`)
+	payload := []byte("hello-from-incbin")
+	files := map[string][]byte{
+		"foo.S":    asmSrc,
+		"data.bin": payload,
+	}
+	cas := casDescriptor(t, "foo.S", files)
+	seedSourceStore(t, w, files)
+
+	req := &gen.CompileRequest{
+		Args: []string{"gcc", "-c", "/src/foo.S", "-o", "/out/foo.o"},
+		Descriptor_: &gen.RemoteDescriptor{
+			TenantId:       "t1",
+			ImageDigest:    "d1",
+			SchedulerToken: token,
+			SourceMode:     gen.SourceMode_CAS,
+			SourceSettings: &gen.RemoteDescriptor_Cas{Cas: cas},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := w.Compile(ctx, req)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("assembly+incbin failed with exit=%d, stderr=%q (the .incbin'd file may not have been materialized at the assembler's cwd)", resp.ExitCode, resp.Stderr)
+	}
+	if !looksLikeObjectFile(resp.OutputArtifact) {
+		t.Errorf("OutputArtifact doesn't look like an object")
+	}
+	// Sanity: the resulting object should contain the payload bytes
+	// since .incbin embeds them verbatim into .rodata.
+	if !bytes.Contains(resp.OutputArtifact, payload) {
+		t.Errorf("compiled .o does not contain .incbin payload %q; .incbin probably didn't find data.bin", payload)
+	}
+}
+
+func TestCompile_CASRejectsBadManifestDigest(t *testing.T) {
+	w, priv := newCASTestWorker(t)
+	token := signToken(t, priv, validClaims())
+	files := map[string][]byte{"src/main.c": []byte("int main(){}\n")}
+	cas := casDescriptor(t, "src/main.c", files)
+	// Tamper with the manifest digest. Worker should refuse before
+	// touching the source store.
+	cas.ManifestDigest = bytes.Repeat([]byte{0xff}, 32)
+
+	req := &gen.CompileRequest{
+		Args: []string{"clang", "-c", "/src/src/main.c", "-o", "/out/main.o"},
+		Descriptor_: &gen.RemoteDescriptor{
+			TenantId:       "t1",
+			ImageDigest:    "d1",
+			SchedulerToken: token,
+			SourceMode:     gen.SourceMode_CAS,
+			SourceSettings: &gen.RemoteDescriptor_Cas{Cas: cas},
+		},
+	}
+
+	_, err := w.Compile(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected manifest verification error; got nil")
+	}
+	if !strings.Contains(err.Error(), "manifest digest") {
+		t.Errorf("expected manifest-digest error; got %v", err)
 	}
 }
 

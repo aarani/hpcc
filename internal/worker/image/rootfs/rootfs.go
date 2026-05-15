@@ -32,7 +32,7 @@
 // streaming-writable from a tar without a staging dir, and the
 // host has no GPL e2fsprogs / squashfs-tools shell-out in the hot
 // path. The kernel mounts the result read-only as /dev/vda inside
-// the guest. See docs/plan.md §4.3 and §4.14.
+// the guest. See docs/plan/phase-4-distributed.md §4.3 and §4.14.
 package rootfs
 
 import (

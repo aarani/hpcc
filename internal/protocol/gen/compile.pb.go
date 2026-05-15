@@ -91,6 +91,7 @@ type RemoteDescriptor struct {
 	// Types that are valid to be assigned to SourceSettings:
 	//
 	//	*RemoteDescriptor_Preprocessed
+	//	*RemoteDescriptor_Cas
 	SourceSettings isRemoteDescriptor_SourceSettings `protobuf_oneof:"source_settings"`
 	// Full OCI image reference, e.g. "ghcr.io/foo/toolchain@sha256:abc..."
 	// or "registry.example.com/team/toolchain:v1.2.3". Used by the worker
@@ -176,6 +177,15 @@ func (x *RemoteDescriptor) GetPreprocessed() *PreprocessedDescriptor {
 	return nil
 }
 
+func (x *RemoteDescriptor) GetCas() *CasDescriptor {
+	if x != nil {
+		if x, ok := x.SourceSettings.(*RemoteDescriptor_Cas); ok {
+			return x.Cas
+		}
+	}
+	return nil
+}
+
 func (x *RemoteDescriptor) GetImageRef() string {
 	if x != nil {
 		return x.ImageRef
@@ -191,7 +201,13 @@ type RemoteDescriptor_Preprocessed struct {
 	Preprocessed *PreprocessedDescriptor `protobuf:"bytes,6,opt,name=preprocessed,proto3,oneof"`
 }
 
+type RemoteDescriptor_Cas struct {
+	Cas *CasDescriptor `protobuf:"bytes,7,opt,name=cas,proto3,oneof"`
+}
+
 func (*RemoteDescriptor_Preprocessed) isRemoteDescriptor_SourceSettings() {}
+
+func (*RemoteDescriptor_Cas) isRemoteDescriptor_SourceSettings() {}
 
 type PreprocessedDescriptor struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
@@ -237,6 +253,535 @@ func (x *PreprocessedDescriptor) GetPreprocessedSource() []byte {
 	return nil
 }
 
+// CasDescriptor names the source-closure for a CAS-mode compile. The
+// worker re-verifies manifest_digest against the (path, blob.digest)
+// pairs in blobs, refuses on mismatch, then materializes each blob
+// inside the VM at its Path before invoking the compiler against
+// entry_path. See docs/cas.md for the trust model (client never
+// writes to S3; worker re-hashes everything on receipt) and the
+// upload protocol (FindMissingBlobs + UploadBlobs on WorkerService).
+type CasDescriptor struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	ManifestDigest []byte                 `protobuf:"bytes,1,opt,name=manifest_digest,json=manifestDigest,proto3" json:"manifest_digest,omitempty"` // BLAKE3-256 of the path-sorted (path, blob.digest) list
+	Blobs          []*BlobRef             `protobuf:"bytes,2,rep,name=blobs,proto3" json:"blobs,omitempty"`
+	EntryPath      string                 `protobuf:"bytes,3,opt,name=entry_path,json=entryPath,proto3" json:"entry_path,omitempty"` // which blob is the translation-unit root
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *CasDescriptor) Reset() {
+	*x = CasDescriptor{}
+	mi := &file_compile_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CasDescriptor) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CasDescriptor) ProtoMessage() {}
+
+func (x *CasDescriptor) ProtoReflect() protoreflect.Message {
+	mi := &file_compile_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CasDescriptor.ProtoReflect.Descriptor instead.
+func (*CasDescriptor) Descriptor() ([]byte, []int) {
+	return file_compile_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *CasDescriptor) GetManifestDigest() []byte {
+	if x != nil {
+		return x.ManifestDigest
+	}
+	return nil
+}
+
+func (x *CasDescriptor) GetBlobs() []*BlobRef {
+	if x != nil {
+		return x.Blobs
+	}
+	return nil
+}
+
+func (x *CasDescriptor) GetEntryPath() string {
+	if x != nil {
+		return x.EntryPath
+	}
+	return ""
+}
+
+type BlobRef struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Digest        []byte                 `protobuf:"bytes,1,opt,name=digest,proto3" json:"digest,omitempty"` // BLAKE3-256 of the file's bytes
+	Path          string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`     // materialization path inside the source root (validated for traversal at apply time)
+	Size          uint64                 `protobuf:"varint,3,opt,name=size,proto3" json:"size,omitempty"`    // size in bytes; advisory, worker re-checks on fetch
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BlobRef) Reset() {
+	*x = BlobRef{}
+	mi := &file_compile_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BlobRef) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BlobRef) ProtoMessage() {}
+
+func (x *BlobRef) ProtoReflect() protoreflect.Message {
+	mi := &file_compile_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BlobRef.ProtoReflect.Descriptor instead.
+func (*BlobRef) Descriptor() ([]byte, []int) {
+	return file_compile_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *BlobRef) GetDigest() []byte {
+	if x != nil {
+		return x.Digest
+	}
+	return nil
+}
+
+func (x *BlobRef) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *BlobRef) GetSize() uint64 {
+	if x != nil {
+		return x.Size
+	}
+	return 0
+}
+
+type CompileProbe struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	ManifestDigest []byte                 `protobuf:"bytes,1,opt,name=manifest_digest,json=manifestDigest,proto3" json:"manifest_digest,omitempty"`
+	Args           []string               `protobuf:"bytes,2,rep,name=args,proto3" json:"args,omitempty"` // worker derives flag-key from these
+	TenantId       string                 `protobuf:"bytes,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	ImageDigest    string                 `protobuf:"bytes,4,opt,name=image_digest,json=imageDigest,proto3" json:"image_digest,omitempty"`
+	SchedulerToken string                 `protobuf:"bytes,5,opt,name=scheduler_token,json=schedulerToken,proto3" json:"scheduler_token,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *CompileProbe) Reset() {
+	*x = CompileProbe{}
+	mi := &file_compile_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CompileProbe) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CompileProbe) ProtoMessage() {}
+
+func (x *CompileProbe) ProtoReflect() protoreflect.Message {
+	mi := &file_compile_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CompileProbe.ProtoReflect.Descriptor instead.
+func (*CompileProbe) Descriptor() ([]byte, []int) {
+	return file_compile_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *CompileProbe) GetManifestDigest() []byte {
+	if x != nil {
+		return x.ManifestDigest
+	}
+	return nil
+}
+
+func (x *CompileProbe) GetArgs() []string {
+	if x != nil {
+		return x.Args
+	}
+	return nil
+}
+
+func (x *CompileProbe) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *CompileProbe) GetImageDigest() string {
+	if x != nil {
+		return x.ImageDigest
+	}
+	return ""
+}
+
+func (x *CompileProbe) GetSchedulerToken() string {
+	if x != nil {
+		return x.SchedulerToken
+	}
+	return ""
+}
+
+type ProbeResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Result:
+	//
+	//	*ProbeResponse_Hit
+	//	*ProbeResponse_Miss
+	Result        isProbeResponse_Result `protobuf_oneof:"result"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProbeResponse) Reset() {
+	*x = ProbeResponse{}
+	mi := &file_compile_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProbeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProbeResponse) ProtoMessage() {}
+
+func (x *ProbeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_compile_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProbeResponse.ProtoReflect.Descriptor instead.
+func (*ProbeResponse) Descriptor() ([]byte, []int) {
+	return file_compile_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ProbeResponse) GetResult() isProbeResponse_Result {
+	if x != nil {
+		return x.Result
+	}
+	return nil
+}
+
+func (x *ProbeResponse) GetHit() *CompileResponse {
+	if x != nil {
+		if x, ok := x.Result.(*ProbeResponse_Hit); ok {
+			return x.Hit
+		}
+	}
+	return nil
+}
+
+func (x *ProbeResponse) GetMiss() *ProbeMiss {
+	if x != nil {
+		if x, ok := x.Result.(*ProbeResponse_Miss); ok {
+			return x.Miss
+		}
+	}
+	return nil
+}
+
+type isProbeResponse_Result interface {
+	isProbeResponse_Result()
+}
+
+type ProbeResponse_Hit struct {
+	Hit *CompileResponse `protobuf:"bytes,1,opt,name=hit,proto3,oneof"` // cache hit: full result, client is done
+}
+
+type ProbeResponse_Miss struct {
+	Miss *ProbeMiss `protobuf:"bytes,2,opt,name=miss,proto3,oneof"` // cache miss: client proceeds to upload dance
+}
+
+func (*ProbeResponse_Hit) isProbeResponse_Result() {}
+
+func (*ProbeResponse_Miss) isProbeResponse_Result() {}
+
+// ProbeMiss carries no payload today; defined as a typed empty
+// message so future fields (e.g. "missing blobs hint" if we ever
+// fold FindMissingBlobs into the probe) don't break wire
+// compatibility.
+type ProbeMiss struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProbeMiss) Reset() {
+	*x = ProbeMiss{}
+	mi := &file_compile_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProbeMiss) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProbeMiss) ProtoMessage() {}
+
+func (x *ProbeMiss) ProtoReflect() protoreflect.Message {
+	mi := &file_compile_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProbeMiss.ProtoReflect.Descriptor instead.
+func (*ProbeMiss) Descriptor() ([]byte, []int) {
+	return file_compile_proto_rawDescGZIP(), []int{7}
+}
+
+type BlobDigest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Digest        []byte                 `protobuf:"bytes,1,opt,name=digest,proto3" json:"digest,omitempty"`
+	Size          uint64                 `protobuf:"varint,2,opt,name=size,proto3" json:"size,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BlobDigest) Reset() {
+	*x = BlobDigest{}
+	mi := &file_compile_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BlobDigest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BlobDigest) ProtoMessage() {}
+
+func (x *BlobDigest) ProtoReflect() protoreflect.Message {
+	mi := &file_compile_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BlobDigest.ProtoReflect.Descriptor instead.
+func (*BlobDigest) Descriptor() ([]byte, []int) {
+	return file_compile_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *BlobDigest) GetDigest() []byte {
+	if x != nil {
+		return x.Digest
+	}
+	return nil
+}
+
+func (x *BlobDigest) GetSize() uint64 {
+	if x != nil {
+		return x.Size
+	}
+	return 0
+}
+
+type BlobChunk struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// First message in a per-blob run carries the header; subsequent
+	// messages carry data only. The worker tracks the active blob via
+	// stream state, opens a BLAKE3 hasher on header, and finalises on
+	// the next header (or stream close).
+	//
+	// Types that are valid to be assigned to Body:
+	//
+	//	*BlobChunk_Header
+	//	*BlobChunk_Data
+	Body          isBlobChunk_Body `protobuf_oneof:"body"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BlobChunk) Reset() {
+	*x = BlobChunk{}
+	mi := &file_compile_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BlobChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BlobChunk) ProtoMessage() {}
+
+func (x *BlobChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_compile_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BlobChunk.ProtoReflect.Descriptor instead.
+func (*BlobChunk) Descriptor() ([]byte, []int) {
+	return file_compile_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *BlobChunk) GetBody() isBlobChunk_Body {
+	if x != nil {
+		return x.Body
+	}
+	return nil
+}
+
+func (x *BlobChunk) GetHeader() *BlobDigest {
+	if x != nil {
+		if x, ok := x.Body.(*BlobChunk_Header); ok {
+			return x.Header
+		}
+	}
+	return nil
+}
+
+func (x *BlobChunk) GetData() []byte {
+	if x != nil {
+		if x, ok := x.Body.(*BlobChunk_Data); ok {
+			return x.Data
+		}
+	}
+	return nil
+}
+
+type isBlobChunk_Body interface {
+	isBlobChunk_Body()
+}
+
+type BlobChunk_Header struct {
+	Header *BlobDigest `protobuf:"bytes,1,opt,name=header,proto3,oneof"` // digest the client claims; worker recomputes and verifies
+}
+
+type BlobChunk_Data struct {
+	Data []byte `protobuf:"bytes,2,opt,name=data,proto3,oneof"`
+}
+
+func (*BlobChunk_Header) isBlobChunk_Body() {}
+
+func (*BlobChunk_Data) isBlobChunk_Body() {}
+
+type UploadResult struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	BlobsReceived uint64                 `protobuf:"varint,1,opt,name=blobs_received,json=blobsReceived,proto3" json:"blobs_received,omitempty"`
+	BytesReceived uint64                 `protobuf:"varint,2,opt,name=bytes_received,json=bytesReceived,proto3" json:"bytes_received,omitempty"`
+	// Digests the worker refused to commit — hash mismatch, quota
+	// overrun, etc. The client treats these as the upload-failed set
+	// and either retries or falls back to local compile. Reasons are
+	// intentionally not carried on the wire; logs on the worker
+	// capture them.
+	RejectedDigests [][]byte `protobuf:"bytes,3,rep,name=rejected_digests,json=rejectedDigests,proto3" json:"rejected_digests,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *UploadResult) Reset() {
+	*x = UploadResult{}
+	mi := &file_compile_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UploadResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UploadResult) ProtoMessage() {}
+
+func (x *UploadResult) ProtoReflect() protoreflect.Message {
+	mi := &file_compile_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UploadResult.ProtoReflect.Descriptor instead.
+func (*UploadResult) Descriptor() ([]byte, []int) {
+	return file_compile_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *UploadResult) GetBlobsReceived() uint64 {
+	if x != nil {
+		return x.BlobsReceived
+	}
+	return 0
+}
+
+func (x *UploadResult) GetBytesReceived() uint64 {
+	if x != nil {
+		return x.BytesReceived
+	}
+	return 0
+}
+
+func (x *UploadResult) GetRejectedDigests() [][]byte {
+	if x != nil {
+		return x.RejectedDigests
+	}
+	return nil
+}
+
 type CompileResponse struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	ExitCode int32                  `protobuf:"varint,1,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
@@ -252,7 +797,7 @@ type CompileResponse struct {
 
 func (x *CompileResponse) Reset() {
 	*x = CompileResponse{}
-	mi := &file_compile_proto_msgTypes[3]
+	mi := &file_compile_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -264,7 +809,7 @@ func (x *CompileResponse) String() string {
 func (*CompileResponse) ProtoMessage() {}
 
 func (x *CompileResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compile_proto_msgTypes[3]
+	mi := &file_compile_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -277,7 +822,7 @@ func (x *CompileResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompileResponse.ProtoReflect.Descriptor instead.
 func (*CompileResponse) Descriptor() ([]byte, []int) {
-	return file_compile_proto_rawDescGZIP(), []int{3}
+	return file_compile_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CompileResponse) GetExitCode() int32 {
@@ -342,7 +887,7 @@ type AuditRecord struct {
 
 func (x *AuditRecord) Reset() {
 	*x = AuditRecord{}
-	mi := &file_compile_proto_msgTypes[4]
+	mi := &file_compile_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -354,7 +899,7 @@ func (x *AuditRecord) String() string {
 func (*AuditRecord) ProtoMessage() {}
 
 func (x *AuditRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_compile_proto_msgTypes[4]
+	mi := &file_compile_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -367,7 +912,7 @@ func (x *AuditRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuditRecord.ProtoReflect.Descriptor instead.
 func (*AuditRecord) Descriptor() ([]byte, []int) {
-	return file_compile_proto_rawDescGZIP(), []int{4}
+	return file_compile_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *AuditRecord) GetTenantId() string {
@@ -465,18 +1010,51 @@ const file_compile_proto_rawDesc = "" +
 	"\n" +
 	"descriptor\x18\x03 \x01(\v2\x1a.protocol.RemoteDescriptorH\x00R\n" +
 	"descriptor\x88\x01\x01B\r\n" +
-	"\v_descriptor\"\xc8\x02\n" +
+	"\v_descriptor\"\xea\x02\n" +
 	"\x10RemoteDescriptor\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12!\n" +
 	"\fimage_digest\x18\x02 \x01(\tR\vimageDigest\x12'\n" +
 	"\x0fscheduler_token\x18\x03 \x01(\tR\x0eschedulerToken\x125\n" +
 	"\vsource_mode\x18\x04 \x01(\x0e2\x14.protocol.SourceModeR\n" +
 	"sourceMode\x12F\n" +
-	"\fpreprocessed\x18\x06 \x01(\v2 .protocol.PreprocessedDescriptorH\x00R\fpreprocessed\x12\x1b\n" +
+	"\fpreprocessed\x18\x06 \x01(\v2 .protocol.PreprocessedDescriptorH\x00R\fpreprocessed\x12+\n" +
+	"\x03cas\x18\a \x01(\v2\x17.protocol.CasDescriptorH\x00R\x03cas\x12\x1b\n" +
 	"\timage_ref\x18\b \x01(\tR\bimageRefB\x11\n" +
-	"\x0fsource_settingsJ\x04\b\x05\x10\x06J\x04\b\a\x10\bR\vshared_rootR\x03cas\"I\n" +
+	"\x0fsource_settingsJ\x04\b\x05\x10\x06R\vshared_root\"I\n" +
 	"\x16PreprocessedDescriptor\x12/\n" +
-	"\x13preprocessed_source\x18\x01 \x01(\fR\x12preprocessedSource\"\x8c\x02\n" +
+	"\x13preprocessed_source\x18\x01 \x01(\fR\x12preprocessedSource\"\x80\x01\n" +
+	"\rCasDescriptor\x12'\n" +
+	"\x0fmanifest_digest\x18\x01 \x01(\fR\x0emanifestDigest\x12'\n" +
+	"\x05blobs\x18\x02 \x03(\v2\x11.protocol.BlobRefR\x05blobs\x12\x1d\n" +
+	"\n" +
+	"entry_path\x18\x03 \x01(\tR\tentryPath\"I\n" +
+	"\aBlobRef\x12\x16\n" +
+	"\x06digest\x18\x01 \x01(\fR\x06digest\x12\x12\n" +
+	"\x04path\x18\x02 \x01(\tR\x04path\x12\x12\n" +
+	"\x04size\x18\x03 \x01(\x04R\x04size\"\xb4\x01\n" +
+	"\fCompileProbe\x12'\n" +
+	"\x0fmanifest_digest\x18\x01 \x01(\fR\x0emanifestDigest\x12\x12\n" +
+	"\x04args\x18\x02 \x03(\tR\x04args\x12\x1b\n" +
+	"\ttenant_id\x18\x03 \x01(\tR\btenantId\x12!\n" +
+	"\fimage_digest\x18\x04 \x01(\tR\vimageDigest\x12'\n" +
+	"\x0fscheduler_token\x18\x05 \x01(\tR\x0eschedulerToken\"s\n" +
+	"\rProbeResponse\x12-\n" +
+	"\x03hit\x18\x01 \x01(\v2\x19.protocol.CompileResponseH\x00R\x03hit\x12)\n" +
+	"\x04miss\x18\x02 \x01(\v2\x13.protocol.ProbeMissH\x00R\x04missB\b\n" +
+	"\x06result\"\v\n" +
+	"\tProbeMiss\"8\n" +
+	"\n" +
+	"BlobDigest\x12\x16\n" +
+	"\x06digest\x18\x01 \x01(\fR\x06digest\x12\x12\n" +
+	"\x04size\x18\x02 \x01(\x04R\x04size\"Y\n" +
+	"\tBlobChunk\x12.\n" +
+	"\x06header\x18\x01 \x01(\v2\x14.protocol.BlobDigestH\x00R\x06header\x12\x14\n" +
+	"\x04data\x18\x02 \x01(\fH\x00R\x04dataB\x06\n" +
+	"\x04body\"\x87\x01\n" +
+	"\fUploadResult\x12%\n" +
+	"\x0eblobs_received\x18\x01 \x01(\x04R\rblobsReceived\x12%\n" +
+	"\x0ebytes_received\x18\x02 \x01(\x04R\rbytesReceived\x12)\n" +
+	"\x10rejected_digests\x18\x03 \x03(\fR\x0frejectedDigests\"\x8c\x02\n" +
 	"\x0fCompileResponse\x12\x1b\n" +
 	"\texit_code\x18\x01 \x01(\x05R\bexitCode\x12\x16\n" +
 	"\x06stdout\x18\x02 \x01(\fR\x06stdout\x12\x16\n" +
@@ -516,25 +1094,38 @@ func file_compile_proto_rawDescGZIP() []byte {
 	return file_compile_proto_rawDescData
 }
 
-var file_compile_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_compile_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_compile_proto_goTypes = []any{
 	(*CompileRequest)(nil),         // 0: protocol.CompileRequest
 	(*RemoteDescriptor)(nil),       // 1: protocol.RemoteDescriptor
 	(*PreprocessedDescriptor)(nil), // 2: protocol.PreprocessedDescriptor
-	(*CompileResponse)(nil),        // 3: protocol.CompileResponse
-	(*AuditRecord)(nil),            // 4: protocol.AuditRecord
-	(SourceMode)(0),                // 5: protocol.SourceMode
+	(*CasDescriptor)(nil),          // 3: protocol.CasDescriptor
+	(*BlobRef)(nil),                // 4: protocol.BlobRef
+	(*CompileProbe)(nil),           // 5: protocol.CompileProbe
+	(*ProbeResponse)(nil),          // 6: protocol.ProbeResponse
+	(*ProbeMiss)(nil),              // 7: protocol.ProbeMiss
+	(*BlobDigest)(nil),             // 8: protocol.BlobDigest
+	(*BlobChunk)(nil),              // 9: protocol.BlobChunk
+	(*UploadResult)(nil),           // 10: protocol.UploadResult
+	(*CompileResponse)(nil),        // 11: protocol.CompileResponse
+	(*AuditRecord)(nil),            // 12: protocol.AuditRecord
+	(SourceMode)(0),                // 13: protocol.SourceMode
 }
 var file_compile_proto_depIdxs = []int32{
-	1, // 0: protocol.CompileRequest.descriptor:type_name -> protocol.RemoteDescriptor
-	5, // 1: protocol.RemoteDescriptor.source_mode:type_name -> protocol.SourceMode
-	2, // 2: protocol.RemoteDescriptor.preprocessed:type_name -> protocol.PreprocessedDescriptor
-	4, // 3: protocol.CompileResponse.audit:type_name -> protocol.AuditRecord
-	4, // [4:4] is the sub-list for method output_type
-	4, // [4:4] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	1,  // 0: protocol.CompileRequest.descriptor:type_name -> protocol.RemoteDescriptor
+	13, // 1: protocol.RemoteDescriptor.source_mode:type_name -> protocol.SourceMode
+	2,  // 2: protocol.RemoteDescriptor.preprocessed:type_name -> protocol.PreprocessedDescriptor
+	3,  // 3: protocol.RemoteDescriptor.cas:type_name -> protocol.CasDescriptor
+	4,  // 4: protocol.CasDescriptor.blobs:type_name -> protocol.BlobRef
+	11, // 5: protocol.ProbeResponse.hit:type_name -> protocol.CompileResponse
+	7,  // 6: protocol.ProbeResponse.miss:type_name -> protocol.ProbeMiss
+	8,  // 7: protocol.BlobChunk.header:type_name -> protocol.BlobDigest
+	12, // 8: protocol.CompileResponse.audit:type_name -> protocol.AuditRecord
+	9,  // [9:9] is the sub-list for method output_type
+	9,  // [9:9] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_compile_proto_init() }
@@ -546,15 +1137,24 @@ func file_compile_proto_init() {
 	file_compile_proto_msgTypes[0].OneofWrappers = []any{}
 	file_compile_proto_msgTypes[1].OneofWrappers = []any{
 		(*RemoteDescriptor_Preprocessed)(nil),
+		(*RemoteDescriptor_Cas)(nil),
 	}
-	file_compile_proto_msgTypes[3].OneofWrappers = []any{}
+	file_compile_proto_msgTypes[6].OneofWrappers = []any{
+		(*ProbeResponse_Hit)(nil),
+		(*ProbeResponse_Miss)(nil),
+	}
+	file_compile_proto_msgTypes[9].OneofWrappers = []any{
+		(*BlobChunk_Header)(nil),
+		(*BlobChunk_Data)(nil),
+	}
+	file_compile_proto_msgTypes[11].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_compile_proto_rawDesc), len(file_compile_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

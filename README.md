@@ -81,9 +81,16 @@ multi-tenant, and on the audit trail.**
 - **The container image digest *is* the toolchain identity.** No "hash the
   gcc binary" dance. 50 developers sharing one image produce one cache
   bucket; CI and laptops cannot silently diverge.
-- **Server-side preprocessing in CAS mode** (Bazel/RBE-style): client sends
-  digests, worker materializes the include closure from a shared blob store.
-  Cross-developer hit rates that client-preprocessing tools can't reach.
+- **CAS-mode dispatch** (Bazel/RBE-style, opt-in via
+  `source_mode = "cas"`): client builds a content-addressed manifest,
+  probes the worker's compile cache by manifest digest (1 RPC, ~32
+  bytes), and only streams missing source blobs on miss. Probe-hit is
+  the common path on incremental builds — including cross-developer
+  hits via a `.hpcc` project marker that normalizes paths so two
+  checkouts at different absolute paths produce identical manifest
+  digests. The worker re-hashes every uploaded blob with BLAKE3 and
+  stores under the recomputed digest (a malicious client cannot
+  poison cache content). See [docs/cas.md](docs/cas.md).
 - **Auto-injected reproducibility flags** (`-Werror=date-time`,
   `-ffile-prefix-map`, `-frandom-seed`) plus pinned locale/timezone/hostname
   inside the VM. Byte-identical outputs by default, not by ceremony.
@@ -116,11 +123,11 @@ Full plan in [docs/plan.md](docs/plan.md).
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| [Phase 1](docs/plan.md#phase-1-core-compiler-wrapping) | Core Compiler Wrapping | Done |
-| [Phase 2](docs/plan.md#phase-2-daemon-architecture) | Daemon Architecture | Done |
-| [Phase 3](docs/plan.md#phase-3-remote-cache) | Remote Cache (S3) | Done |
-| [Phase 4](docs/plan.md#phase-4-distributed-compilation-in-per-tenant-vms) | Distributed Compilation in Per-Tenant Firecracker VMs | In progress |
-| [Phase 5](docs/plan.md#phase-5-observability--polish) | Observability & Polish | Not started |
+| [Phase 1](docs/plan/phase-1-compiler-wrapping.md) | Core Compiler Wrapping | Done |
+| [Phase 2](docs/plan/phase-2-daemon.md) | Daemon Architecture | Done |
+| [Phase 3](docs/plan/phase-3-remote-cache.md) | Remote Cache (S3) | Done |
+| [Phase 4](docs/plan/phase-4-distributed.md) | Distributed Compilation in Per-Tenant Firecracker VMs | In progress |
+| [Phase 5](docs/plan/phase-5-observability.md) | Observability & Polish | Not started |
 
 ### Phase 1 — Core Compiler Wrapping ✅
 Two-grammar (GNU + MSVC) spec-table parser, compiler detection from
@@ -161,7 +168,7 @@ small image→rootfs pipeline and a one-method gRPC agent we own.
 Route-only scheduler (signs JWTs, never touches payloads); client
 dials the worker directly with per-call zstd, scheduler-signed
 auth, and cancellation. Per-job audit log. See
-[docs/plan.md §4](docs/plan.md#phase-4-distributed-compilation-in-per-tenant-vms)
+[docs/plan/phase-4-distributed.md](docs/plan/phase-4-distributed.md)
 for the full design and the **Limitations** section below for
 what's still in flight.
 
@@ -172,7 +179,10 @@ image→squashfs build (clean-room Go writer; no tar/mkfs shell-outs,
 on-wire format validated in CI via `unsquashfs` round-trip), raw
 Firecracker driver under jailer, in-VM `hpcc-agent` as PID 1 over
 vsock, and an integration suite that boots a real toolchain rootfs
-and compiles end-to-end on a GitHub Actions runner. See
+and compiles end-to-end on a GitHub Actions runner. **Both source
+modes are wired:** PREPROCESSED (the default, ships preprocessed
+bytes inline) and CAS (content-addressed manifests with
+probe-then-upload — design in [docs/cas.md](docs/cas.md)). See
 **Limitations** below for what's still in-flight.
 
 ### Phase 5 — Observability & Polish
@@ -189,25 +199,23 @@ Known gaps and "won't currently do" — most are scheduled fixes, not
 design dead-ends. Tagged with the plan section that owns the
 follow-up.
 
-- **Remote dispatch demotes `-Werror[=*]`.** hpcc's preprocessed-
-  mode dispatch is a two-step compile (client `gcc -E`, worker
-  `gcc -x cpp-output -c`), and gcc's "suppress this warning inside
-  a macro expansion" heuristic depends on the in-memory macro table
-  the preprocessor builds — gone across the seam. Stripping
+- **PREPROCESSED dispatch demotes `-Werror[=*]`.** A two-step
+  compile (client `gcc -E`, worker `gcc -x cpp-output -c`) loses
+  gcc's macro-expansion warning-suppression heuristic. Stripping
   `-Werror` at the rewrite makes the worker compile match what
   local-mode gcc one-step would have produced; warnings still emit.
-  One-shot yellow notice in the build log when this fires. CAS-mode
-  (§4.5) is the long-term fix.
-- **Assembly (`.S` / `.s`) compiles are not cacheable.** GAS
-  `.incbin` reads files at assemble time that preprocessed-mode
-  dispatch can't ship to the worker. Falls back to local. CAS-mode
-  removes the carve-out.
+  One-shot yellow notice in the build log when this fires. **CAS
+  mode (§4.5) is the workaround**: a CAS dispatch is a one-step
+  compile on the worker, so `-Werror` survives intact.
+- **Assembly (`.S` / `.s`) needs CAS mode for remote dispatch.**
+  PREPROCESSED can't ship `.incbin`'d data; in PREPROCESSED-mode
+  the assembly carve-out falls these back to local invoke. Under
+  `source_mode = "cas"` the manifest captures the full closure
+  and the worker assembles against it normally.
 - **Stdin (`gcc -c -`) and multi-input compiles are not cacheable.**
   Stdin would need to be consumed twice (hash + compile); multi-
-  input produces one `.o` per source that V1Cache's single-output
-  shape can't represent.
-- **No CAS-mode dispatch yet.** PREPROCESSED only — wins on
-  bandwidth and cross-developer hit rate would come from §4.5.
+  input produces one `.o` per source that the single-output cache
+  entry shape can't represent.
 - **No Windows backend yet.** Linux/Firecracker only; the hcsshim
   Hyper-V container runtime is planned (§4.1.1).
 - **No VM snapshot/restore yet.** The pool keeps warm VMs in RAM;

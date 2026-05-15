@@ -20,15 +20,12 @@ message RemoteDescriptor {
   SourceMode source_mode = 4;
   oneof source_settings {
     PreprocessedDescriptor preprocessed = 6;
+    CasDescriptor          cas          = 7;
   }
   // Tag 5 was SharedRootDescriptor; reserved so we never accidentally
   // recycle it for a different message type and decode old bytes wrong.
   reserved 5;
   reserved "shared_root";
-  // Tag 7 was CasDescriptor (§4.5 CAS-mode source staging); deferred.
-  // Reserved so the wire encoding stays stable if CAS is re-added.
-  reserved 7;
-  reserved "cas";
   // Full OCI image reference, e.g. "ghcr.io/foo/toolchain@sha256:abc..."
   // or "registry.example.com/team/toolchain:v1.2.3". Used by the worker
   // to pull the image if it's not already in the local snapshotter.
@@ -41,9 +38,87 @@ message PreprocessedDescriptor {
   bytes preprocessed_source = 1;
 }
 
-// CasDescriptor and BlobRef messages were removed when §4.5 CAS-mode
-// source staging was deferred. See docs/plan.md §4.5. If re-adding,
-// allocate fresh tag numbers — tag 7 is reserved on RemoteDescriptor.
+// CasDescriptor names the source-closure for a CAS-mode compile. The
+// worker re-verifies manifest_digest against the (path, blob.digest)
+// pairs in blobs, refuses on mismatch, then materializes each blob
+// inside the VM at its Path before invoking the compiler against
+// entry_path. See docs/cas.md for the trust model (client never
+// writes to S3; worker re-hashes everything on receipt) and the
+// upload protocol (FindMissingBlobs + UploadBlobs on WorkerService).
+message CasDescriptor {
+  bytes manifest_digest = 1;   // BLAKE3-256 of the path-sorted (path, blob.digest) list
+  repeated BlobRef blobs = 2;
+  string entry_path = 3;       // which blob is the translation-unit root
+}
+
+message BlobRef {
+  bytes digest = 1;   // BLAKE3-256 of the file's bytes
+  string path = 2;    // materialization path inside the source root (validated for traversal at apply time)
+  uint64 size = 3;    // size in bytes; advisory, worker re-checks on fetch
+}
+
+// --- CAS upload protocol (docs/cas.md Step 2) ---
+//
+// Client computes a Manifest locally, asks the worker which blobs it
+// doesn't already have (FindMissingBlobs), and streams the missing
+// ones (UploadBlobs). The worker re-hashes incoming bytes with
+// BLAKE3 and is the only thing that writes to the shared store.
+//
+// Before all of that, the client may call ProbeCompileCache with just
+// the manifest_digest + args + image_digest to ask "is the *compile
+// result* for this TU already cached?". Hit returns the artifact and
+// the entire upload dance is skipped. This is what makes CAS mode
+// land cross-worker and cross-developer compile-result sharing
+// (assuming consistent path normalization — see Step 5a in cas.md).
+// Mirrors Bazel's ActionCache.GetActionResult.
+
+message CompileProbe {
+  bytes manifest_digest = 1;
+  repeated string args = 2;       // worker derives flag-key from these
+  string tenant_id = 3;
+  string image_digest = 4;
+  string scheduler_token = 5;
+}
+
+message ProbeResponse {
+  oneof result {
+    CompileResponse hit  = 1;     // cache hit: full result, client is done
+    ProbeMiss       miss = 2;     // cache miss: client proceeds to upload dance
+  }
+}
+
+// ProbeMiss carries no payload today; defined as a typed empty
+// message so future fields (e.g. "missing blobs hint" if we ever
+// fold FindMissingBlobs into the probe) don't break wire
+// compatibility.
+message ProbeMiss {}
+
+message BlobDigest {
+  bytes digest = 1;
+  uint64 size = 2;
+}
+
+message BlobChunk {
+  // First message in a per-blob run carries the header; subsequent
+  // messages carry data only. The worker tracks the active blob via
+  // stream state, opens a BLAKE3 hasher on header, and finalises on
+  // the next header (or stream close).
+  oneof body {
+    BlobDigest header = 1;   // digest the client claims; worker recomputes and verifies
+    bytes      data   = 2;
+  }
+}
+
+message UploadResult {
+  uint64 blobs_received = 1;
+  uint64 bytes_received = 2;
+  // Digests the worker refused to commit — hash mismatch, quota
+  // overrun, etc. The client treats these as the upload-failed set
+  // and either retries or falls back to local compile. Reasons are
+  // intentionally not carried on the wire; logs on the worker
+  // capture them.
+  repeated bytes rejected_digests = 3;
+}
 
 message CompileResponse {
   int32 exit_code = 1;

@@ -22,6 +22,7 @@ import (
 	"github.com/aarani/hpcc/internal/config"
 	"github.com/aarani/hpcc/internal/daemon/client"
 	"github.com/aarani/hpcc/internal/daemon/dispatch"
+	"github.com/aarani/hpcc/internal/enum"
 	"github.com/aarani/hpcc/internal/runner"
 	"google.golang.org/protobuf/proto"
 
@@ -285,13 +286,26 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 
 	log.Printf("compile: %s -> %s", cmd, inv.Output)
 
-	// Non-cacheable invocations (link, preprocess-only, dep-only,
-	// assemble, stdin source, multi-input compile) bypass the cache
-	// and remote dispatch entirely: their inputs and outputs aren't
-	// safe to cache by source-hash, and remote workers don't have
-	// the local library/object state they'd need. See Cacheable() for
-	// the full ruleset.
-	if !inv.Cacheable() {
+	// Two gates:
+	//   - locallyCacheable: can the local CompileCache safely key on
+	//     this invocation's preprocessed-bytes hash? False for
+	//     assembly (the .incbin'd bytes aren't captured).
+	//   - casDispatchable: can a CAS-mode worker handle this
+	//     invocation end-to-end? True for assembly because the
+	//     manifest captures the full closure.
+	//
+	// If both false → invocation is fundamentally unrepresentable
+	// (link, multi-input, stdin, …); bypass cache and dispatch.
+	// If only CAS-dispatchable → skip local cache, try dispatch,
+	// fall back to local invoke without caching.
+	// If both true → standard flow: local cache → dispatch → local
+	// invoke fallback, with caching of remote/local results.
+	locallyCacheable := inv.Cacheable()
+	casDispatchable := d.dispatcher != nil &&
+		d.dispatcher.SourceMode() == enum.SourceModeCAS &&
+		inv.DispatchableUnderCAS()
+
+	if !locallyCacheable && !casDispatchable {
 		result, invokeErr := context.Compiler.Invoke(inv)
 		if invokeErr != nil {
 			log.Println(fmt.Errorf("compile: %w", invokeErr))
@@ -302,22 +316,35 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 		return
 	}
 
-	hash, hashErr := inv.ComputeHash(context)
+	var hash string
+	var hashErr error
+	if locallyCacheable {
+		hash, hashErr = inv.ComputeHash(context)
+	}
 
 	compile := func() (any, error) {
-		result, lookupErr := context.Cache.Lookup(inv)
-		if lookupErr == nil && result != nil {
-			log.Printf("compile: %s cache hit", inv.Output)
-			return result, nil
+		if locallyCacheable {
+			result, lookupErr := context.Cache.Lookup(inv)
+			if lookupErr == nil && result != nil {
+				log.Printf("compile: %s cache hit", inv.Output)
+				return result, nil
+			}
+			log.Printf("compile: %s cache miss, invoking compiler", inv.Output)
+		} else {
+			// CAS-only path (e.g. .S inputs). Local cache is
+			// unsound; the worker's manifest-keyed cache handles
+			// hit detection on the remote side.
+			log.Printf("compile: %s dispatching via CAS (local cache skipped)", inv.Output)
 		}
-		log.Printf("compile: %s cache miss, invoking compiler", inv.Output)
 
 		var fallbackWarning []byte
 		if d.dispatcher != nil {
 			remoteResult, remoteErr := d.dispatcher.Dispatch(context_pkgContext(), context.Compiler, inv)
 			if remoteErr == nil {
 				log.Printf("compile: %s served remotely (exit=%d)", inv.Output, remoteResult.ExitCode)
-				_ = context.Cache.Store(inv, remoteResult)
+				if locallyCacheable {
+					_ = context.Cache.Store(inv, remoteResult)
+				}
 				return remoteResult, nil
 			}
 			log.Printf("compile: %s remote dispatch failed: %v (falling back to local)", inv.Output, remoteErr)
@@ -331,7 +358,9 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 		if len(fallbackWarning) > 0 {
 			result.Stderr = append(append([]byte{}, fallbackWarning...), result.Stderr...)
 		}
-		_ = context.Cache.Store(inv, result)
+		if locallyCacheable {
+			_ = context.Cache.Store(inv, result)
+		}
 		return result, nil
 	}
 

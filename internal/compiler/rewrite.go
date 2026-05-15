@@ -107,6 +107,56 @@ func RewritePathPrefix(inv *Invocation, hostPrefix, vmPrefix string) *Invocation
 	return &cp
 }
 
+// RewriteForCAS prepares an Invocation for CAS-mode dispatch. It rewrites:
+//
+//   - All paths matching projectRoot to live under srcRoot ("/src" inside
+//     the container). System paths (e.g. /usr/include/...) stay absolute.
+//   - The output to outRoot + "/" + basename(output) ("/out/<base>"), so
+//     the worker can collect the artifact from a known location. The -o
+//     flag in RawArgs is patched in-place to match.
+//
+// Unlike RewriteForPreprocessed, this does NOT drop -I/-D — CAS-mode
+// compiles still run the preprocessor on the worker side, so include
+// paths and macro defines have to ride along. The path rewrite handles
+// the in-container locations.
+//
+// projectRoot must be absolute and stripped of any trailing slash; pass
+// it as returned by FindProjectRoot. srcRoot and outRoot are the
+// in-container mount points (typically "/src" and "/out").
+func RewriteForCAS(inv *Invocation, projectRoot, srcRoot, outRoot string) *Invocation {
+	cp := RewritePathPrefix(inv, projectRoot, srcRoot)
+	if inv.Output == "" {
+		return cp
+	}
+	newOut := outRoot + "/" + filepath.Base(inv.Output)
+	cp.Output = newOut
+	cp.RawArgs = rewriteOutputFlagGNU(cp.RawArgs, newOut)
+	return cp
+}
+
+// rewriteOutputFlagGNU walks args looking for `-o <value>` or `-o<value>`
+// and replaces the value. Returns a new slice; does not mutate the input.
+// Handles both the separate form (-o foo.o, two argv slots) and the
+// joined form (-ofoo.o, one slot). MSVC's /Fo: equivalent is a follow-up
+// when we add MSVC support to the CAS path.
+func rewriteOutputFlagGNU(args []string, newOut string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "-o" && i+1 < len(args) {
+			out = append(out, "-o", newOut)
+			i++
+			continue
+		}
+		if strings.HasPrefix(a, "-o") && a != "-o" {
+			out = append(out, "-o"+newOut)
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
 // rewritePrefix replaces every occurrence of host in s with vm, but only
 // where host sits on a path boundary — i.e. followed by "/" or the end
 // of the string. This is what stops "/home/alice/proj-other" from being

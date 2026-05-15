@@ -12,7 +12,7 @@ import (
 	"github.com/aarani/hpcc/internal/compiler"
 )
 
-// Blob names used by V1Cache. They match the conventional names documented
+// Blob names used by CompileCache. They match the conventional names documented
 // on store.Store so a single key directory is interpretable across cache
 // implementations and out-of-band tools.
 const (
@@ -23,21 +23,42 @@ const (
 	blobMetadata = "metadata"
 )
 
-// V1Cache is the first-generation compiler cache facade. It wraps an
-// ordered list of Stores and treats them as an L1/L2/... chain: Lookup
-// queries each in order and returns the first hit; Store writes to all
-// of them. Missing or corrupted entries in any one store are skipped,
-// not surfaced as errors — a partial layer should not block other layers.
-type V1Cache struct {
+// CompileCache is the compile-output cache facade. It wraps an ordered
+// list of Stores and treats them as an L1/L2/... chain: Lookup queries
+// each in order and returns the first hit; Store writes to all of them.
+// Missing or corrupted entries in any one store are skipped, not
+// surfaced as errors — a partial layer should not block other layers.
+//
+// CompileCache owns the "compile" namespace within each underlying
+// store. Pass raw stores from store.FromConfig; the constructor calls
+// .Namespace("compile") on each so on-disk layout becomes
+// <root>/compile/<hh>/<full-hex>/<blob> (and the S3 equivalent under
+// cache/compile/...). Source blobs and manifests live under sibling
+// namespaces owned by other facades.
+type CompileCache struct {
 	ctx    *compiler.Context
 	stores []store.Store
 }
 
-var _ Cache = (*V1Cache)(nil)
+// CompileCacheBackend is the contract CompileCache satisfies. Kept as
+// a same-package assertion target rather than an externally-used
+// interface — callers reach CompileCache through compiler.CacheBackend
+// (the mirror in the consumer package, which exists to break the
+// import cycle that prevents the cache package from being imported
+// here). Naming it CompileCache-specific avoids implying that future
+// sibling facades (SourceStore, ManifestStore) will share this shape
+// — they won't, since they key on raw content digests rather than
+// parsed invocations.
+type CompileCacheBackend interface {
+	Lookup(inv *compiler.Invocation) (*compiler.InvocationResult, error)
+	Store(inv *compiler.Invocation, res *compiler.InvocationResult) error
+}
+
+var _ CompileCacheBackend = (*CompileCache)(nil)
 
 // metadata is the JSON shape written under the "metadata" blob. It is
 // purely informational — none of these fields participate in the cache
-// key, so they can change between V1Cache writes without invalidating
+// key, so they can change between CompileCache writes without invalidating
 // older entries.
 type metadata struct {
 	Timestamp  time.Time `json:"timestamp"`
@@ -48,12 +69,17 @@ type metadata struct {
 	DurationNS int64     `json:"duration_ns"`
 }
 
-// NewV1Cache returns a V1Cache wrapping the given stores. The caller
-// retains ownership of ctx; V1Cache holds it so it can derive cache
-// keys (which require the compiler's identity and the config's
-// preprocessing mode).
-func NewV1Cache(ctx *compiler.Context, stores []store.Store) *V1Cache {
-	return &V1Cache{ctx: ctx, stores: stores}
+// NewCompileCache returns a CompileCache wrapping the given stores,
+// each namespaced under "compile". The caller retains ownership of
+// ctx; CompileCache holds it so it can derive cache keys (which
+// require the compiler's identity and the config's preprocessing
+// mode).
+func NewCompileCache(ctx *compiler.Context, stores []store.Store) *CompileCache {
+	namespaced := make([]store.Store, len(stores))
+	for i, s := range stores {
+		namespaced[i] = s.Namespace("compile")
+	}
+	return &CompileCache{ctx: ctx, stores: namespaced}
 }
 
 // Lookup returns a hit (non-nil result, nil error) if any wrapped store
@@ -62,7 +88,7 @@ func NewV1Cache(ctx *compiler.Context, stores []store.Store) *V1Cache {
 // inv.Output before the result is returned, so the caller's contract
 // with the user — that the output file exists at the requested path —
 // holds whether the compile ran or was replayed.
-func (c *V1Cache) Lookup(inv *compiler.Invocation) (*compiler.InvocationResult, error) {
+func (c *CompileCache) Lookup(inv *compiler.Invocation) (*compiler.InvocationResult, error) {
 	if len(c.stores) == 0 {
 		return nil, nil
 	}
@@ -108,7 +134,7 @@ func (c *V1Cache) Lookup(inv *compiler.Invocation) (*compiler.InvocationResult, 
 // fixes that without needing to teach Store about the runtime
 // path translation. A missing output is still tolerated (modes
 // that don't produce a single output file simply skip the blob).
-func (c *V1Cache) Store(inv *compiler.Invocation, res *compiler.InvocationResult) error {
+func (c *CompileCache) Store(inv *compiler.Invocation, res *compiler.InvocationResult) error {
 	if len(c.stores) == 0 || res == nil {
 		return nil
 	}

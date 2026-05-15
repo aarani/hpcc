@@ -13,6 +13,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,8 +30,10 @@ import (
 
 	"github.com/aarani/hpcc/internal/compiler"
 	"github.com/aarani/hpcc/internal/config"
+	"github.com/aarani/hpcc/internal/enum"
 	"github.com/aarani/hpcc/internal/protocol/gen"
 )
+
 
 // Dispatcher is the daemon-side handle to the scheduler+worker mesh.
 // One per daemon process; goroutine-safe. Dial happens once at New;
@@ -114,6 +117,12 @@ func New(cfg config.RemoteConfig) (*Dispatcher, error) {
 	}, nil
 }
 
+// SourceMode reports the dispatcher's configured source-staging
+// strategy (preprocessed or CAS). The daemon reads this to widen
+// the dispatch gate for invocations that PREPROCESSED can't safely
+// handle (e.g. GAS .S with .incbin — see Cacheable's comments).
+func (d *Dispatcher) SourceMode() enum.SourceMode { return d.cfg.SourceMode }
+
 // Close shuts down all gRPC connections (scheduler + worker pool).
 func (d *Dispatcher) Close() error {
 	d.workersMu.Lock()
@@ -137,6 +146,16 @@ func (d *Dispatcher) Close() error {
 // is cleared (next call re-authenticates) and the error is returned —
 // the caller is responsible for falling back to local execution.
 func (d *Dispatcher) Dispatch(ctx context.Context, c compiler.Compiler, inv *compiler.Invocation) (*compiler.InvocationResult, error) {
+	if d.cfg.SourceMode == enum.SourceModeCAS {
+		return d.dispatchCAS(ctx, c, inv)
+	}
+	return d.dispatchPreprocessed(ctx, c, inv)
+}
+
+// dispatchPreprocessed is the v1 default path: preprocess locally,
+// ship preprocessed bytes inline in CompileRequest. Pre-existing code
+// preserved verbatim; the CAS branch is additive.
+func (d *Dispatcher) dispatchPreprocessed(ctx context.Context, c compiler.Compiler, inv *compiler.Invocation) (*compiler.InvocationResult, error) {
 	pp, err := c.Preprocess(inv)
 	if err != nil {
 		return nil, fmt.Errorf("preprocess: %w", err)
@@ -226,6 +245,263 @@ func (d *Dispatcher) Dispatch(ctx context.Context, c compiler.Compiler, inv *com
 	}
 
 	return result, nil
+}
+
+// dispatchCAS is the CAS-mode path (docs/cas.md). Builds a content-
+// addressed manifest of the source closure and asks the worker if the
+// resulting compile cache key is already a hit (1-RPC short-circuit,
+// the headline incremental-build + cross-developer win). On miss,
+// streams missing blobs and runs the full CAS compile.
+func (d *Dispatcher) dispatchCAS(ctx context.Context, c compiler.Compiler, inv *compiler.Invocation) (*compiler.InvocationResult, error) {
+	cctx := &compiler.Context{Compiler: c}
+	manifest, err := compiler.BuildManifest(inv, cctx)
+	if err != nil {
+		return nil, fmt.Errorf("build manifest: %w", err)
+	}
+
+	if err := d.ensureSession(ctx); err != nil {
+		return nil, fmt.Errorf("authenticate: %w", err)
+	}
+
+	route, err := d.route(ctx)
+	if err != nil {
+		d.dropSession()
+		return nil, fmt.Errorf("route: %w", err)
+	}
+
+	workerClient, err := d.workerClient(route.WorkerAddress, route.CertFingerprint)
+	if err != nil {
+		return nil, fmt.Errorf("dial worker %s: %w", route.WorkerAddress, err)
+	}
+
+	// Probe first. Cache hit → return immediately; no source upload.
+	probe := &gen.CompileProbe{
+		ManifestDigest: manifest.Digest[:],
+		Args:           append([]string{c.Name()}, inv.RawArgs...),
+		TenantId:       d.cfg.TenantID,
+		ImageDigest:    d.cfg.ImageDigest,
+		SchedulerToken: route.Token,
+	}
+	resp, err := workerClient.ProbeCompileCache(ctx, probe)
+	if err != nil {
+		return nil, fmt.Errorf("worker ProbeCompileCache RPC: %w", err)
+	}
+	if hit := resp.GetHit(); hit != nil {
+		return compileResponseToResult(hit), nil
+	}
+
+	// Probe miss: run the upload dance, then Compile.
+	if err := d.casUpload(ctx, workerClient, manifest, inv); err != nil {
+		return nil, fmt.Errorf("cas upload: %w", err)
+	}
+
+	projectRoot := ""
+	if inv.Cwd != "" {
+		projectRoot = compiler.FindProjectRoot(inv.Cwd)
+	}
+	if projectRoot == "" {
+		// No .hpcc marker means BuildManifest produced absolute
+		// paths, and the worker has no project root to materialize
+		// against. Refuse rather than ship a broken Compile.
+		return nil, fmt.Errorf("CAS dispatch requires a .hpcc project marker; none found above %q", inv.Cwd)
+	}
+
+	rewritten := compiler.RewriteForCAS(inv, projectRoot, "/src", "/out")
+	entryPath, err := projectRelative(projectRoot, inv.Inputs[0])
+	if err != nil {
+		return nil, fmt.Errorf("compute entry_path: %w", err)
+	}
+
+	req := &gen.CompileRequest{
+		Args: append([]string{c.Name()}, rewritten.RawArgs...),
+		Descriptor_: &gen.RemoteDescriptor{
+			TenantId:       d.cfg.TenantID,
+			ImageDigest:    d.cfg.ImageDigest,
+			ImageRef:       d.cfg.ImageRef,
+			SchedulerToken: route.Token,
+			SourceMode:     gen.SourceMode_CAS,
+			SourceSettings: &gen.RemoteDescriptor_Cas{
+				Cas: &gen.CasDescriptor{
+					ManifestDigest: manifest.Digest[:],
+					Blobs:          manifestBlobsToProto(manifest.Blobs),
+					EntryPath:      entryPath,
+				},
+			},
+		},
+	}
+
+	compileResp, err := workerClient.Compile(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("worker Compile RPC: %w", err)
+	}
+	return compileResponseToResult(compileResp), nil
+}
+
+// casUpload runs the FindMissingBlobs + UploadBlobs handshake for the
+// project-relative slice of the manifest's blob list. System (absolute)
+// paths are skipped — those files live in the toolchain image, not in
+// the source closure the worker materialises.
+func (d *Dispatcher) casUpload(ctx context.Context, workerClient gen.WorkerServiceClient, manifest *compiler.Manifest, inv *compiler.Invocation) error {
+	projectBlobs := projectBlobs(manifest.Blobs)
+	if len(projectBlobs) == 0 {
+		return nil
+	}
+
+	// FindMissingBlobs: stream the digests we'd like to ship; collect
+	// the subset the worker doesn't already have.
+	probeStream, err := workerClient.FindMissingBlobs(ctx)
+	if err != nil {
+		return fmt.Errorf("open FindMissingBlobs: %w", err)
+	}
+	sendDone := make(chan error, 1)
+	go func() {
+		for _, b := range projectBlobs {
+			if err := probeStream.Send(&gen.BlobDigest{Digest: b.Digest[:], Size: uint64(b.Size)}); err != nil {
+				sendDone <- fmt.Errorf("send probe: %w", err)
+				return
+			}
+		}
+		sendDone <- probeStream.CloseSend()
+	}()
+	missing := map[[32]byte]struct{}{}
+	for {
+		m, err := probeStream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("recv probe: %w", err)
+		}
+		var d [32]byte
+		copy(d[:], m.Digest)
+		missing[d] = struct{}{}
+	}
+	if err := <-sendDone; err != nil {
+		return err
+	}
+
+	if len(missing) == 0 {
+		return nil
+	}
+
+	// UploadBlobs: stream header+data for each missing blob. Path-by-
+	// disk content; we re-resolve from the BlobRef's path against the
+	// project root.
+	upStream, err := workerClient.UploadBlobs(ctx)
+	if err != nil {
+		return fmt.Errorf("open UploadBlobs: %w", err)
+	}
+	projectRoot := compiler.FindProjectRoot(inv.Cwd)
+	for _, b := range projectBlobs {
+		if _, want := missing[b.Digest]; !want {
+			continue
+		}
+		full := filepath.Join(projectRoot, filepath.FromSlash(b.Path))
+		if err := streamUpload(upStream, b, full); err != nil {
+			return err
+		}
+	}
+	result, err := upStream.CloseAndRecv()
+	if err != nil {
+		return fmt.Errorf("close UploadBlobs: %w", err)
+	}
+	if len(result.RejectedDigests) > 0 {
+		return fmt.Errorf("worker rejected %d uploaded blob(s)", len(result.RejectedDigests))
+	}
+	return nil
+}
+
+// streamUpload sends one blob over the UploadBlobs stream: a header
+// carrying the claimed digest, then chunks of file content sized to
+// fit comfortably inside one gRPC frame.
+func streamUpload(stream gen.WorkerService_UploadBlobsClient, ref compiler.BlobRef, path string) error {
+	if err := stream.Send(&gen.BlobChunk{
+		Body: &gen.BlobChunk_Header{Header: &gen.BlobDigest{Digest: ref.Digest[:], Size: uint64(ref.Size)}},
+	}); err != nil {
+		return fmt.Errorf("send header for %q: %w", ref.Path, err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open %q: %w", path, err)
+	}
+	defer f.Close()
+	buf := make([]byte, 64*1024) // 64 KiB chunks; HTTP/2 framing handles flow control
+	for {
+		n, rerr := f.Read(buf)
+		if n > 0 {
+			if err := stream.Send(&gen.BlobChunk{Body: &gen.BlobChunk_Data{Data: buf[:n]}}); err != nil {
+				return fmt.Errorf("send data for %q: %w", ref.Path, err)
+			}
+		}
+		if errors.Is(rerr, io.EOF) {
+			break
+		}
+		if rerr != nil {
+			return fmt.Errorf("read %q: %w", path, rerr)
+		}
+	}
+	return nil
+}
+
+// projectBlobs returns the subset of the manifest's blobs that need
+// uploading: anything whose path is project-relative (not absolute).
+// Absolute paths are system paths — the file is in the toolchain
+// image, not in the source closure.
+func projectBlobs(blobs []compiler.BlobRef) []compiler.BlobRef {
+	out := make([]compiler.BlobRef, 0, len(blobs))
+	for _, b := range blobs {
+		if !filepath.IsAbs(b.Path) {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// manifestBlobsToProto converts compiler.BlobRef → gen.BlobRef. The
+// shapes are identical except for the digest representation ([32]byte
+// vs []byte).
+func manifestBlobsToProto(blobs []compiler.BlobRef) []*gen.BlobRef {
+	out := make([]*gen.BlobRef, len(blobs))
+	for i, b := range blobs {
+		out[i] = &gen.BlobRef{
+			Digest: append([]byte(nil), b.Digest[:]...),
+			Path:   b.Path,
+			Size:   uint64(b.Size),
+		}
+	}
+	return out
+}
+
+// projectRelative returns p re-expressed relative to projectRoot.
+// Used to compute the CasDescriptor.entry_path that names the TU root
+// within the source closure.
+func projectRelative(projectRoot, p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(projectRoot, abs)
+	if err != nil {
+		return "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("entry path %q escapes project root %q", p, projectRoot)
+	}
+	return filepath.ToSlash(rel), nil
+}
+
+// compileResponseToResult unwraps a worker CompileResponse into the
+// runner-shaped InvocationResult the daemon caller expects.
+func compileResponseToResult(resp *gen.CompileResponse) *compiler.InvocationResult {
+	r := &compiler.InvocationResult{
+		Stdout:   resp.Stdout,
+		Stderr:   resp.Stderr,
+		ExitCode: int(resp.ExitCode),
+	}
+	if len(resp.OutputArtifact) > 0 {
+		r.Output = resp.OutputArtifact
+	}
+	return r
 }
 
 // hadWerror reports whether argv contained a -Werror or -Werror=<class>
