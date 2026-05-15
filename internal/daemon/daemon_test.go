@@ -41,7 +41,7 @@ func setupTestContext(t *testing.T) *compiler.Context {
 	}
 	ctx := &compiler.Context{
 		Compiler: c,
-		Config:   &config.Config{PreprocessingMode: enum.PreprocessLocal},
+		Config:   &config.Config{SourceMode: enum.SourceModeCAS},
 	}
 	ctx.Cache = cache.NewCompileCache(ctx, []store.Store{ds})
 	return ctx
@@ -505,7 +505,7 @@ func setupCountingContext(t *testing.T, delay time.Duration) (*compiler.Context,
 	cc := &countingCompiler{Compiler: real, invokeDelay: delay}
 	ctx := &compiler.Context{
 		Compiler: cc,
-		Config:   &config.Config{PreprocessingMode: enum.PreprocessLocal},
+		Config:   &config.Config{SourceMode: enum.SourceModeCAS},
 	}
 	ctx.Cache = cache.NewCompileCache(ctx, []store.Store{ds})
 	return ctx, cc

@@ -314,13 +314,16 @@ func (inv *Invocation) isProbeInvocation() bool {
 //   - PreprocessedDigest: the BLAKE3 of preprocessed source bytes the
 //     caller already produced. The worker uses this on PREPROCESSED-mode
 //     requests. Mixed in directly.
-//   - PreprocessRemote config mode: run FindDependencies locally, hash
-//     each input/dep into a Manifest (manifest.go), mix the manifest
-//     digest in. Same encoding as the ManifestDigest short-circuit so
-//     client and worker agree on the key.
-//   - default: run the preprocessor locally and hash the resulting
-//     source bytes (via the digest already computed in
-//     PreprocessResult — single pass over the bytes, not two).
+//   - Config.SourceMode = SourceModeCAS (default): run
+//     FindDependencies locally, hash each input/dep into a Manifest
+//     (manifest.go), mix the manifest digest in. Same encoding as
+//     the ManifestDigest short-circuit, so a CAS-mode worker and a
+//     local-mode daemon compute identical keys for the same TU.
+//   - Config.SourceMode = SourceModePreprocessed: run the
+//     preprocessor locally and hash the resulting source bytes (via
+//     the digest already computed in PreprocessResult — single pass
+//     over the bytes, not two). Pairs with PREPROCESSED dispatch on
+//     the wire.
 //
 // Each chunk written to the hasher is length-prefixed so concatenation
 // can't collide ("ab"+"c" hashes differently from "a"+"bc").
@@ -362,18 +365,7 @@ func (inv *Invocation) CacheKey(ctx *Context) ([]byte, error) {
 		// This is the worker path for PREPROCESSED source mode.
 		writeChunk(inv.PreprocessedDigest[:])
 
-	case ctx.Config.PreprocessingMode == enum.PreprocessRemote:
-		// Client-side manifest computation: walk the dep closure, hash
-		// each file, mix the aggregate manifest digest in. Produces
-		// the same key the worker would compute from a CAS-mode
-		// request carrying the same (path, content) pairs.
-		m, err := BuildManifest(inv, ctx)
-		if err != nil {
-			return nil, err
-		}
-		writeChunk(m.Digest[:])
-
-	default:
+	case ctx.Config.SourceMode == enum.SourceModePreprocessed:
 		res, err := ctx.Compiler.Preprocess(inv)
 		if err != nil {
 			return nil, err
@@ -384,6 +376,19 @@ func (inv *Invocation) CacheKey(ctx *Context) ([]byte, error) {
 		// Source bytes are already digested into res.Digest; reuse it
 		// instead of re-hashing the whole preprocessed source.
 		writeChunk(res.Digest[:])
+
+	default:
+		// CAS (and SourceModeUnspecified, i.e. zero-valued config —
+		// treat as the default so an empty Config still works in
+		// tests and in users who never set the field). Walk the dep
+		// closure, hash each file, mix the aggregate manifest digest
+		// in. Produces the same key a CAS-mode worker would compute
+		// from a request carrying the same (path, content) pairs.
+		m, err := BuildManifest(inv, ctx)
+		if err != nil {
+			return nil, err
+		}
+		writeChunk(m.Digest[:])
 	}
 
 	writeChunk(compilerIdentity)

@@ -5,13 +5,24 @@
 # All keys are optional; missing keys take the defaults shown here.
 # Companion configs in this directory: worker.toml, scheduler.toml.
 
-# How preprocessing happens before cache-key computation:
-#   "local"  — client runs the preprocessor, ships preprocessed bytes.
-#              Slow but works in any environment.
-#   "remote" — client only enumerates the dep closure (`-M` / /showIncludes)
-#              and the worker preprocesses. Faster, requires the worker
-#              to have a matching toolchain.
-preprocessing_mode = "local"
+# source_mode picks both the local cache-key algorithm and (when
+# [remote] is enabled below) how the client ships source bytes to
+# the worker. The two have to track the same value so that client
+# and worker derive matching cache keys.
+#
+#   "cas"          — cache key hashes the dep closure (gcc -M /
+#                    cl /showIncludes). Cheap: no macro expansion,
+#                    no preprocessed-text output. Dispatch (when
+#                    remote) builds a content-addressed manifest
+#                    and ships only the blobs the worker is
+#                    missing. Required for workloads where
+#                    preprocessed output isn't self-contained
+#                    (e.g. GAS .S with .incbin). See docs/cas.md.
+#   "preprocessed" — cache key runs the full preprocessor (gcc -E
+#                    / cl /E) and hashes the bytes. Slower per
+#                    lookup. Dispatch ships the preprocessed bytes
+#                    inline. Useful as a benchmark oracle.
+source_mode = "cas"
 
 # Cache backends. Multiple [[cache]] blocks may be specified; they are
 # checked in order. Each block requires a `type` key; the remaining keys

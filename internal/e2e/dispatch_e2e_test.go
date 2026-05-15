@@ -40,6 +40,7 @@ import (
 	"github.com/aarani/hpcc/internal/compiler"
 	"github.com/aarani/hpcc/internal/config"
 	"github.com/aarani/hpcc/internal/daemon/dispatch"
+	"github.com/aarani/hpcc/internal/enum"
 	"github.com/aarani/hpcc/internal/protocol/gen"
 	"github.com/aarani/hpcc/internal/scheduler"
 	"github.com/aarani/hpcc/internal/worker"
@@ -206,7 +207,7 @@ func TestE2E_DispatchClientToSchedulerToWorker(t *testing.T) {
 			Scope:        "hpcc",
 		},
 	}
-	disp, err := dispatch.New(dispCfg)
+	disp, err := dispatch.New(dispCfg, enum.SourceModePreprocessed)
 	if err != nil {
 		t.Fatalf("dispatch.New: %v", err)
 	}

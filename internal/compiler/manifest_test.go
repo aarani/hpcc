@@ -90,9 +90,9 @@ func TestBuildManifest_contentChangeChangesDigest(t *testing.T) {
 
 func TestBuildManifest_pathSwapChangesDigest(t *testing.T) {
 	// Two files with swapped contents must produce a different digest
-	// than the unswapped version. Today's PreprocessRemote path (raw
-	// concatenated bytes) would NOT catch this; the manifest design
-	// must, since path is mixed in alongside content.
+	// than the unswapped version. A naive concatenated-bytes scheme
+	// would NOT catch this; the manifest design must, since path is
+	// mixed in alongside content.
 	dir := t.TempDir()
 	src := writeFile(t, dir, "main.c", "int main(void){return 0;}\n")
 	a1 := writeFile(t, dir, "a.h", "AAA\n")
@@ -157,12 +157,13 @@ func TestBuildManifest_dedupesInputAlsoInDeps(t *testing.T) {
 	}
 }
 
-func TestCacheKey_manifestDigestShortCircuitMatchesPreprocessRemote(t *testing.T) {
+func TestCacheKey_manifestDigestShortCircuitMatchesCASSourceMode(t *testing.T) {
 	// The contract: a worker holding a ManifestDigest must produce
-	// the same cache key as a client running PreprocessRemote against
-	// the same files. This is what makes CAS-mode dispatch poison-
-	// resistant — the key is reproducible from the manifest digest
-	// alone, no source bytes required.
+	// the same cache key as a client running in SourceMode=CAS
+	// against the same files. This is what makes CAS-mode dispatch
+	// poison-resistant — the key is reproducible from the manifest
+	// digest alone, no source bytes required — and what lets a
+	// single cache serve both local and CAS code paths.
 	dir := t.TempDir()
 	src := writeFile(t, dir, "main.c", "int main(void){return 0;}\n")
 	hdr := writeFile(t, dir, "h.h", "#define X 1\n")
@@ -170,10 +171,10 @@ func TestCacheKey_manifestDigestShortCircuitMatchesPreprocessRemote(t *testing.T
 	inv := &Invocation{Inputs: []string{src}, Mode: enum.CompileMode}
 	identity := []byte("fake-compiler-v1")
 
-	// Client-side: PreprocessRemote runs BuildManifest under the hood.
+	// Client-side: SourceModeCAS runs BuildManifest under the hood.
 	clientCtx := &Context{
 		Compiler: &fakeCompiler{identity: identity, deps: []string{hdr}},
-		Config:   &config.Config{PreprocessingMode: enum.PreprocessRemote},
+		Config:   &config.Config{SourceMode: enum.SourceModeCAS},
 	}
 	clientKey, err := inv.CacheKey(clientCtx)
 	if err != nil {
@@ -182,6 +183,9 @@ func TestCacheKey_manifestDigestShortCircuitMatchesPreprocessRemote(t *testing.T
 
 	// Worker-side: re-verify the manifest, then short-circuit via
 	// ManifestDigest. Same digest in must produce same key out.
+	// The worker config's SourceMode is irrelevant here — the
+	// short-circuit fires before the switch consults it — but pin
+	// the opposite mode to prove that.
 	m, err := BuildManifest(inv, clientCtx)
 	if err != nil {
 		t.Fatalf("BuildManifest: %v", err)
@@ -190,7 +194,7 @@ func TestCacheKey_manifestDigestShortCircuitMatchesPreprocessRemote(t *testing.T
 	workerInv.ManifestDigest = &m.Digest
 	workerCtx := &Context{
 		Compiler: &fakeCompiler{identity: identity},
-		Config:   &config.Config{PreprocessingMode: enum.PreprocessLocal},
+		Config:   &config.Config{SourceMode: enum.SourceModePreprocessed},
 	}
 	workerKey, err := workerInv.CacheKey(workerCtx)
 	if err != nil {
@@ -198,7 +202,7 @@ func TestCacheKey_manifestDigestShortCircuitMatchesPreprocessRemote(t *testing.T
 	}
 
 	if !bytes.Equal(clientKey, workerKey) {
-		t.Errorf("client (PreprocessRemote) and worker (ManifestDigest short-circuit) must produce equal keys\n  client: %x\n  worker: %x", clientKey, workerKey)
+		t.Errorf("client (SourceModeCAS) and worker (ManifestDigest short-circuit) must produce equal keys\n  client: %x\n  worker: %x", clientKey, workerKey)
 	}
 }
 
