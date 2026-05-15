@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,7 +46,29 @@ type Dispatcher struct {
 
 	workersMu sync.Mutex
 	workers   map[string]*workerHandle
+
+	// werrorNoticeOnce fires once per dispatcher lifetime, on the
+	// first successful remote dispatch that had `-Werror[=*]` in its
+	// argv. We prepend a one-time yellow notice to that compile's
+	// stderr so the user — reading their build log — sees why a
+	// previously-fatal warning now comes back as a warning. Without
+	// this, the demotion is silent and confusing.
+	werrorNoticeOnce sync.Once
 }
+
+// werrorDemotionNotice is the one-time message the dispatcher emits
+// on the first remote compile whose argv contained -Werror[=*]. It
+// gets prepended to that compile's stderr (which surfaces in the
+// user's build log) so the strip is auditable rather than silent.
+// Wrapped in yellow ANSI for visibility — the daemon already uses
+// the same shape for its fallback-to-local warning.
+const werrorDemotionNotice = "\033[33mhpcc: " +
+	"-Werror[=…] flags are demoted to plain warnings in remote " +
+	"(preprocessed-mode) compiles. gcc's macro-expansion warning " +
+	"suppression only works in one-step compiles, so honoring -Werror " +
+	"across the preprocess/compile split would fail builds on code that " +
+	"local-mode gcc accepts. Warnings still emit; this notice appears " +
+	"once per daemon lifetime.\033[0m\n"
 
 type workerHandle struct {
 	conn   *grpc.ClientConn
@@ -190,7 +213,31 @@ func (d *Dispatcher) Dispatch(ctx context.Context, c compiler.Compiler, inv *com
 	if len(resp.OutputArtifact) > 0 {
 		result.Output = resp.OutputArtifact
 	}
+
+	// One-shot user-visible notice: if the user's argv carried
+	// -Werror[=…] and we just stripped it across the rewrite seam,
+	// prepend an explanation to this compile's stderr so it lands
+	// in the build log. Subsequent compiles in the same daemon
+	// lifetime don't repeat it.
+	if hadWerror(inv.RawArgs) {
+		d.werrorNoticeOnce.Do(func() {
+			result.Stderr = append([]byte(werrorDemotionNotice), result.Stderr...)
+		})
+	}
+
 	return result, nil
+}
+
+// hadWerror reports whether argv contained a -Werror or -Werror=<class>
+// flag — i.e., whether the rewrite seam stripped something user-visible.
+// Used to decide whether to fire the one-shot demotion notice.
+func hadWerror(args []string) bool {
+	for _, a := range args {
+		if a == "-Werror" || strings.HasPrefix(a, "-Werror=") {
+			return true
+		}
+	}
+	return false
 }
 
 // ensureSession returns nil when d.sessionToken is set. On a cold

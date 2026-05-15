@@ -3,6 +3,7 @@ package compiler
 import (
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -335,6 +336,75 @@ func TestRewriteForPreprocessed_InfersDefaultOutput(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected -o foo.o in rewritten argv, got %v", got.RawArgs)
+	}
+}
+
+// TestRewriteForPreprocessed_StripsWerror pins the policy that
+// `-Werror` and `-Werror=<class>` are dropped at the rewrite seam.
+// hpcc's preprocessed-mode dispatch is a two-step compile by
+// construction; gcc's "suppress inside macro expansion" heuristic
+// for many warning classes depends on the preprocessor's in-memory
+// macro table, which is lost across that seam. Honoring -Werror
+// across the seam would silently fail builds on macro-heavy code
+// (the Linux kernel being the obvious example) where local-mode
+// gcc one-step would have produced clean objects from the same
+// source. The warnings still emit — visible in build logs — they
+// just don't fail the build. See gnuKeepForPreprocessed doc.
+func TestRewriteForPreprocessed_StripsWerror(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"bare -Werror", []string{"-c", "-Werror", "/src/foo.c"}},
+		{"-Werror=tautological-compare", []string{"-c", "-Werror=tautological-compare", "/src/foo.c"}},
+		{"-Werror=address", []string{"-c", "-Werror=address", "/src/foo.c"}},
+		{"-Werror=date-time (kernel reproducibility flag)", []string{"-c", "-Werror=date-time", "/src/foo.c"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &clangCompiler{name: "gcc"}
+			inv, err := ParseGNU(tc.args)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			got, err := c.RewriteForPreprocessed(inv, "/staged/foo.i")
+			if err != nil {
+				t.Fatalf("rewrite: %v", err)
+			}
+			for _, a := range got.RawArgs {
+				if a == "-Werror" || strings.HasPrefix(a, "-Werror=") {
+					t.Errorf("expected %q to be stripped, still present in %v", a, got.RawArgs)
+				}
+			}
+		})
+	}
+}
+
+// TestRewriteForPreprocessed_KeepsNonWerrorWarnings pins that the
+// Werror strip doesn't accidentally eat regular -W flags.
+func TestRewriteForPreprocessed_KeepsNonWerrorWarnings(t *testing.T) {
+	c := &clangCompiler{name: "gcc"}
+	inv, err := ParseGNU([]string{
+		"-c", "-Wall", "-Wextra", "-Wno-unused", "-Werror", "/src/foo.c",
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	got, err := c.RewriteForPreprocessed(inv, "/staged/foo.i")
+	if err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	for _, want := range []string{"-Wall", "-Wextra", "-Wno-unused"} {
+		found := false
+		for _, a := range got.RawArgs {
+			if a == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected %q kept in rewritten argv: %v", want, got.RawArgs)
+		}
 	}
 }
 

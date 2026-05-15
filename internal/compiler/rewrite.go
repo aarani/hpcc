@@ -171,6 +171,32 @@ func rewriteGNUForPreprocessed(inv *Invocation, srcPath, lang string) *Invocatio
 // theory that we don't know what they do, so don't drop them). Mode,
 // output, includes, defines, language, libraries, and passthrough are
 // all dropped — caller re-emits its own mode/output/language.
+//
+// One special exception: `-Werror` and `-Werror=<class>` are dropped.
+// hpcc's preprocessed-mode dispatch is a two-step compile by
+// construction (client `gcc -E`, worker `gcc -x cpp-output -c`), and
+// gcc's "suppress this diagnostic when the token sits inside a macro
+// expansion" heuristic — which protects many warning classes
+// (`-Wtautological-compare`, `-Waddress`, `-Wstring-compare`,
+// `-Wsizeof-pointer-div`, …) — depends on the in-memory macro-
+// expansion table the preprocessor builds. Once -E writes the
+// expanded text to disk and a separate cc1 reads it back, the table
+// is gone, the suppression rule can't fire, and warnings surface on
+// what would have been clean code in one-step mode. Keeping the
+// user's `-Werror` promotions across that seam would turn every such
+// warning into a build failure on macro-heavy codebases (the Linux
+// kernel is the obvious example: BUILD_BUG_ON_ZERO / __same_type
+// expansions trigger -Wtautological-compare at column-1100+
+// positions, deep in the expanded line).
+//
+// The compile still emits the warnings — they're visible in build
+// logs — they just don't fail the build. Codegen is unchanged. This
+// makes the FC compile match what local-mode gcc one-step would have
+// produced. The dispatcher prints a one-time explanation to the user
+// on the first remote compile so the demotion is auditable, not
+// silent. Long-term, CAS-mode dispatch (plan §4.5) ships the source
+// tree itself and lets the worker do a real one-step compile,
+// sidestepping the issue entirely.
 func gnuKeepForPreprocessed(args []string) []string {
 	out := make([]string, 0, len(args))
 	i := 0
@@ -194,11 +220,23 @@ func gnuKeepForPreprocessed(args []string) []string {
 		}
 		switch spec.Category {
 		case CatStandard, CatOptim, CatDebug, CatWarning, CatFeature, CatMachine:
+			if spec.Category == CatWarning && isWerrorFlag(a) {
+				// Drop — see long comment above.
+				break
+			}
 			out = append(out, args[i:i+consumed]...)
 		}
 		i += consumed
 	}
 	return out
+}
+
+// isWerrorFlag reports whether arg is a GNU `-Werror` or
+// `-Werror=<class>` flag. These get stripped at the rewrite seam
+// (see gnuKeepForPreprocessed) because hpcc's preprocessed-mode
+// dispatch can't reliably honor them — see the long comment there.
+func isWerrorFlag(arg string) bool {
+	return arg == "-Werror" || strings.HasPrefix(arg, "-Werror=")
 }
 
 // gnuPreprocessedLanguage picks the -x value for the post-preprocess
