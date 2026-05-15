@@ -151,11 +151,25 @@ func BuildManifest(inv *Invocation, ctx *Context) (*Manifest, error) {
 
 	blobs := make([]BlobRef, 0, len(paths))
 	for _, p := range paths {
-		ref, err := hashFileBlob(p)
+		// FindDependencies (gcc -M) returns paths AS-WRITTEN: kernel-
+		// style builds produce relative paths like
+		// "include/generated/autoconf.h" because the kernel invokes
+		// gcc with relative -I and -include flags. We need to open
+		// these relative to inv.Cwd (the *client's* cwd where make
+		// is running), not the daemon's process cwd (which is
+		// wherever the user started `hpcc start`, often unrelated
+		// to the build). Without this, every kernel TU's
+		// BuildManifest errors with ENOENT and the build silently
+		// falls back to local compile on every cacheable TU.
+		full := p
+		if !filepath.IsAbs(p) && inv.Cwd != "" {
+			full = filepath.Join(inv.Cwd, p)
+		}
+		ref, err := hashFileBlob(full)
 		if err != nil {
 			return nil, err
 		}
-		ref.Path = normalizeManifestPath(p, projectRoot)
+		ref.Path = normalizeManifestPath(full, projectRoot)
 		blobs = append(blobs, ref)
 	}
 

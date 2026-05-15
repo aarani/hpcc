@@ -1,10 +1,13 @@
 package cache
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"sort"
 	"strconv"
 	"time"
 
@@ -21,6 +24,14 @@ const (
 	blobStderr   = "stderr"
 	blobExitCode = "exit_code"
 	blobMetadata = "metadata"
+	// blobExtras holds the encodeExtras-serialised side-effect
+	// outputs (InvocationResult.Extras). Only present when the
+	// compile produced any — typically .d files from -Wp,-MMD,X in
+	// CAS mode. Cache hits replay this so the client gets a fresh .d
+	// file even without re-running gcc. Format is the tiny
+	// length-prefixed binary defined in encodeExtras (no base64
+	// overhead vs JSON for the binary payload).
+	blobExtras = "extras"
 )
 
 // CompileCache is the compile-output cache facade. It wraps an ordered
@@ -169,6 +180,11 @@ func (c *CompileCache) Store(inv *compiler.Invocation, res *compiler.InvocationR
 
 	exitCode := []byte(strconv.Itoa(res.ExitCode))
 
+	var extrasBlob []byte
+	if len(res.Extras) > 0 {
+		extrasBlob = encodeExtras(res.Extras)
+	}
+
 	for _, s := range c.stores {
 		if output != nil {
 			if err := s.Put(key, blobOutput, output); err != nil {
@@ -186,6 +202,11 @@ func (c *CompileCache) Store(inv *compiler.Invocation, res *compiler.InvocationR
 		}
 		if err := s.Put(key, blobMetadata, meta); err != nil {
 			return err
+		}
+		if extrasBlob != nil {
+			if err := s.Put(key, blobExtras, extrasBlob); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -253,5 +274,91 @@ func loadEntry(s store.Store, key []byte, outputPath string) (*compiler.Invocati
 		res.Output = output
 	}
 
+	// Side-effect outputs (.d files, etc.) — optional. An entry
+	// stored before the extras blob was introduced, or one whose
+	// compile didn't produce any, has no extras blob and that's fine.
+	// Decode failures are treated as a miss rather than an error so
+	// a future format bump (different blob name, different encoding)
+	// doesn't poison the lookup path — the caller will recompile and
+	// store a fresh entry under the same key.
+	if extrasRaw, err := s.Get(key, blobExtras); err == nil && extrasRaw != nil {
+		if extras, err := decodeExtras(extrasRaw); err == nil {
+			res.Extras = extras
+		}
+	}
+
 	return res, true, nil
+}
+
+// encodeExtras serializes a map[path][]byte to a flat
+// length-prefixed binary blob. JSON would base64 every []byte (~33%
+// overhead, and for kernel-tag .d files that's wire weight we don't
+// want). Format per entry:
+//
+//	[path_len: uint32-BE][path bytes][value_len: uint64-BE][value bytes]
+//
+// Plus a leading [count: uint32-BE]. Entries are emitted in
+// path-sorted order so the encoding is deterministic — two compiles
+// that produced the same extras hash to the same bytes, which keeps
+// the cache layer from churning under map-iteration noise. Decoder
+// is symmetric and validates lengths.
+func encodeExtras(extras map[string][]byte) []byte {
+	paths := make([]string, 0, len(extras))
+	for p := range extras {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+
+	// Reasonable up-front size to avoid most growth reallocs.
+	approx := 4
+	for _, p := range paths {
+		approx += 4 + len(p) + 8 + len(extras[p])
+	}
+	buf := make([]byte, 0, approx)
+	var hdr [8]byte
+	binary.BigEndian.PutUint32(hdr[:4], uint32(len(paths)))
+	buf = append(buf, hdr[:4]...)
+	for _, p := range paths {
+		v := extras[p]
+		binary.BigEndian.PutUint32(hdr[:4], uint32(len(p)))
+		buf = append(buf, hdr[:4]...)
+		buf = append(buf, p...)
+		binary.BigEndian.PutUint64(hdr[:8], uint64(len(v)))
+		buf = append(buf, hdr[:8]...)
+		buf = append(buf, v...)
+	}
+	return buf
+}
+
+// decodeExtras parses the encodeExtras format. Returns an error on
+// truncated input or impossible lengths; callers treat any error as
+// "no extras" rather than poisoning the cache lookup.
+func decodeExtras(data []byte) (map[string][]byte, error) {
+	if len(data) < 4 {
+		return nil, io.ErrUnexpectedEOF
+	}
+	count := binary.BigEndian.Uint32(data[:4])
+	off := 4
+	out := make(map[string][]byte, count)
+	for range count {
+		if len(data)-off < 4 {
+			return nil, io.ErrUnexpectedEOF
+		}
+		pl := binary.BigEndian.Uint32(data[off : off+4])
+		off += 4
+		if uint64(len(data)-off) < uint64(pl)+8 {
+			return nil, io.ErrUnexpectedEOF
+		}
+		path := string(data[off : off+int(pl)])
+		off += int(pl)
+		vl := binary.BigEndian.Uint64(data[off : off+8])
+		off += 8
+		if uint64(len(data)-off) < vl {
+			return nil, io.ErrUnexpectedEOF
+		}
+		val := append([]byte(nil), data[off:off+int(vl)]...)
+		off += int(vl)
+		out[path] = val
+	}
+	return out, nil
 }

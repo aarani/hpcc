@@ -66,6 +66,65 @@ func TestStripGNUModeAndOutput(t *testing.T) {
 	}
 }
 
+// Regression: the kernel build passes `-Wp,-MMD,<file>` (and bare
+// `-MD` / `-MMD` / `-MF <file>` etc.) on every gcc invocation. Those
+// flags are dep-emission mode flags; if they survive into our `-M`
+// invocation in FindDependencies they conflict with `-M` and the
+// resulting dep list silently drops `-include`'d headers reached
+// through `-isystem` paths (the kernel's
+// `include/linux/compiler-version.h` is the canonical case). The
+// downstream symptom is a CAS-mode worker compile failing on a
+// missing `-include` because the manifest was incomplete.
+//
+// The stricter variant — used by FindDependencies — must drop the
+// dep-emission family. The non-strict variant —
+// stripGNUModeAndOutput — must KEEP them, since PREPROCESSED dispatch
+// relies on the user's `-Wp,-MMD,foo.d` running as a side-effect of
+// the client-side `gcc -E` to keep `make`'s .d files current.
+func TestStripGNUModeOutputAndDepEmission_dropsDepEmissionFlags(t *testing.T) {
+	in := []string{
+		"-c",
+		"-Wp,-MMD,scripts/mod/.empty.o.d",
+		"-MD", "-MF", "deps.d", "-MT", "target.o", "-MQ", "target.o",
+		"-MMD",
+		"-Iinclude", "-DDEBUG=1",
+		"-Wp,-MD,other.d",
+		"-Wp,-MF,kept-because-MF-only",
+		"-O2", "foo.c",
+	}
+	want := []string{
+		"-Iinclude", "-DDEBUG=1",
+		"-O2", "foo.c",
+	}
+	got := stripGNUModeOutputAndDepEmission(in)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v\nwant %v", got, want)
+	}
+}
+
+// PREPROCESSED dispatch's client-side `gcc -E` depends on
+// `-Wp,-MMD,foo.d` (and the rest of the dep-emission family) running
+// as a side-effect to keep `make`'s incremental dep tracking up to
+// date. stripGNUModeAndOutput must NOT drop them — only the stricter
+// stripGNUModeOutputAndDepEmission (used by FindDependencies for the
+// internal -M call) does.
+func TestStripGNUModeAndOutput_keepsDepEmissionFlags(t *testing.T) {
+	in := []string{
+		"-c", "-Wp,-MMD,scripts/mod/.empty.o.d",
+		"-MD", "-MF", "deps.d",
+		"-Iinclude", "-O2", "foo.c",
+	}
+	want := []string{
+		"-Wp,-MMD,scripts/mod/.empty.o.d",
+		"-MD", "-MF", "deps.d",
+		"-Iinclude", "-O2", "foo.c",
+	}
+	got := stripGNUModeAndOutput(in)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v\nwant %v", got, want)
+	}
+}
+
 func TestParseMakeDeps(t *testing.T) {
 	in := []byte("foo.o: foo.c bar.h \\\n" +
 		"  /usr/include/stdio.h \\\n" +

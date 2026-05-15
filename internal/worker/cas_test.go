@@ -381,6 +381,61 @@ func TestUploadBlobs_noSourceStoreIsFailedPrecondition(t *testing.T) {
 	}
 }
 
+func TestMkdirOutputParents_createsForEveryOutPathInArgv(t *testing.T) {
+	root := t.TempDir()
+	args := []string{
+		"clang",
+		"-c", "/src/main.c",
+		"-o", "/out/build/main.o",                     // separate -o
+		"-Wp,-MMD,/out/scripts/mod/.empty.o.d",        // -Wp,-M*, embedded
+		"-MF", "/out/deep/nested/path/foo.d",          // separate -MF
+		"-I/usr/include",                              // no /out/, ignored
+	}
+	if err := mkdirOutputParents(args, root); err != nil {
+		t.Fatalf("mkdirOutputParents: %v", err)
+	}
+
+	wantDirs := []string{
+		filepath.Join(root, "build"),
+		filepath.Join(root, "scripts", "mod"),
+		filepath.Join(root, "deep", "nested", "path"),
+	}
+	for _, d := range wantDirs {
+		info, err := os.Stat(d)
+		if err != nil {
+			t.Errorf("expected dir %q to exist: %v", d, err)
+			continue
+		}
+		if !info.IsDir() {
+			t.Errorf("%q exists but isn't a dir", d)
+		}
+	}
+}
+
+func TestMkdirOutputParents_idempotent(t *testing.T) {
+	root := t.TempDir()
+	args := []string{"-Wp,-MMD,/out/build/foo.d"}
+	for i := 0; i < 3; i++ {
+		if err := mkdirOutputParents(args, root); err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "build")); err != nil {
+		t.Errorf("build/ should exist: %v", err)
+	}
+}
+
+func TestMkdirOutputParents_skipsTopLevelOnlyPath(t *testing.T) {
+	// /out/foo.o has no nested parent — outHostPath itself already
+	// exists, so we shouldn't try to MkdirAll the empty-string or "."
+	// parent (would error or no-op depending on platform).
+	root := t.TempDir()
+	args := []string{"-o", "/out/foo.o"}
+	if err := mkdirOutputParents(args, root); err != nil {
+		t.Fatalf("mkdirOutputParents: %v", err)
+	}
+}
+
 // --- ProbeCompileCache tests ---------------------------------------
 
 // newProbeTestWorker builds a Worker with a disk-backed compile cache

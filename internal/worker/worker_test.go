@@ -558,6 +558,98 @@ payload:
 	}
 }
 
+func TestCompile_CASReturnsDepFileAsExtraOutput(t *testing.T) {
+	// End-to-end: a CAS compile that asks for a Makefile-style .d
+	// file via -Wp,-MMD,<path> must come back with that file in
+	// CompileResponse.extra_outputs. Mirrors the kernel build's
+	// incremental-build dependency tracking. Without this, the
+	// kernel's `make` runs without dep info and falls back to
+	// "rebuild every TU" on the next iteration.
+	clangPath, err := exec.LookPath("clang")
+	if err != nil {
+		t.Skipf("clang not in PATH: %v", err)
+	}
+	_ = clangPath
+
+	w, priv := newCASTestWorker(t)
+	token := signToken(t, priv, validClaims())
+
+	files := map[string][]byte{
+		"src/main.c": []byte("int main(void){return 7;}\n"),
+	}
+	cas := casDescriptor(t, "src/main.c", files)
+	seedSourceStore(t, w, files)
+
+	// The dispatcher would have rewritten -Wp,-MMD,build/main.d to
+	// /out/build/main.d; we send the post-rewrite form directly
+	// (worker-side test, no client) so gcc writes its .d into the
+	// output staging dir where collectExtraOutputs will pick it up.
+	req := &gen.CompileRequest{
+		Args: []string{
+			"clang",
+			"-Wp,-MMD,/out/build/main.d",
+			"-c", "/src/src/main.c",
+			"-o", "/out/main.o",
+		},
+		Descriptor_: &gen.RemoteDescriptor{
+			TenantId:       "t1",
+			ImageDigest:    "d1",
+			SchedulerToken: token,
+			SourceMode:     gen.SourceMode_CAS,
+			SourceSettings: &gen.RemoteDescriptor_Cas{Cas: cas},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := w.Compile(ctx, req)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("ExitCode=%d, stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+
+	depBytes, ok := resp.ExtraOutputs["build/main.d"]
+	if !ok {
+		t.Fatalf("expected build/main.d in ExtraOutputs; got keys: %v", extraOutputKeys(resp.ExtraOutputs))
+	}
+	// Sanity: a Make-style dep file should mention the source file
+	// after the colon target.
+	if !strings.Contains(string(depBytes), "main.c") {
+		t.Errorf(".d file doesn't reference main.c; got %q", depBytes)
+	}
+
+	// Warm-cache hit must replay the same .d bytes. The cache
+	// stores Extras alongside the primary artifact; without that,
+	// deleting a .d on disk would leave `make` re-firing the rule
+	// forever on subsequent cache-hit responses.
+	resp2, err := w.Compile(ctx, req)
+	if err != nil {
+		t.Fatalf("Compile (warm): %v", err)
+	}
+	if resp2.ExitCode != 0 {
+		t.Fatalf("warm ExitCode=%d, stderr=%q", resp2.ExitCode, resp2.Stderr)
+	}
+	depBytes2, ok := resp2.ExtraOutputs["build/main.d"]
+	if !ok {
+		t.Fatalf("warm response missing build/main.d in ExtraOutputs; got %v", extraOutputKeys(resp2.ExtraOutputs))
+	}
+	if !bytes.Equal(depBytes, depBytes2) {
+		t.Errorf("warm .d bytes differ from cold:\n cold %q\n warm %q", depBytes, depBytes2)
+	}
+}
+
+func extraOutputKeys(m map[string][]byte) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func TestCompile_CASRejectsBadManifestDigest(t *testing.T) {
 	w, priv := newCASTestWorker(t)
 	token := signToken(t, priv, validClaims())

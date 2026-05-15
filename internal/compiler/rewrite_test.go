@@ -66,6 +66,59 @@ func TestRewriteForCAS_handlesJoinedOutputFlag(t *testing.T) {
 	}
 }
 
+func TestRewriteDepEmissionForCAS_kernelStyle(t *testing.T) {
+	// Kernel build invocation. -Wp,-MMD,X is the form the kernel uses
+	// on every TU; we rewrite the X to live under /out so the worker's
+	// gcc writes the .d file where the agent already auto-streams from.
+	in := []string{
+		"-c",
+		"-Wp,-MMD,scripts/mod/.empty.o.d",
+		"-include", "include/linux/compiler-version.h",
+		"-o", "/out/scripts/mod/empty.o",
+		"/src/scripts/mod/empty.c",
+	}
+	gotArgs, gotPaths := RewriteDepEmissionForCAS(in, "/out")
+	wantArgs := []string{
+		"-c",
+		"-Wp,-MMD,/out/scripts/mod/.empty.o.d",
+		"-include", "include/linux/compiler-version.h",
+		"-o", "/out/scripts/mod/empty.o",
+		"/src/scripts/mod/empty.c",
+	}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Errorf("args:\n got  %v\n want %v", gotArgs, wantArgs)
+	}
+	wantPaths := []string{"scripts/mod/.empty.o.d"}
+	if !reflect.DeepEqual(gotPaths, wantPaths) {
+		t.Errorf("paths: got %v, want %v", gotPaths, wantPaths)
+	}
+}
+
+func TestRewriteDepEmissionForCAS_separateMF(t *testing.T) {
+	in := []string{"-c", "-MD", "-MF", "build/foo.d", "-o", "/out/foo.o", "/src/foo.c"}
+	gotArgs, gotPaths := RewriteDepEmissionForCAS(in, "/out")
+	wantArgs := []string{"-c", "-MD", "-MF", "/out/build/foo.d", "-o", "/out/foo.o", "/src/foo.c"}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Errorf("args:\n got  %v\n want %v", gotArgs, wantArgs)
+	}
+	if !reflect.DeepEqual(gotPaths, []string{"build/foo.d"}) {
+		t.Errorf("paths: got %v, want [build/foo.d]", gotPaths)
+	}
+}
+
+func TestRewriteDepEmissionForCAS_leavesUnrelatedFlagsAlone(t *testing.T) {
+	// -MT names the target inside the .d rule, not an output file —
+	// leave its value unchanged. Similarly for non-dep flags.
+	in := []string{"-c", "-MT", "foo.o", "-MQ", "$(BAR)", "-I/usr/include", "/src/foo.c"}
+	gotArgs, gotPaths := RewriteDepEmissionForCAS(in, "/out")
+	if !reflect.DeepEqual(gotArgs, in) {
+		t.Errorf("args mutated unexpectedly:\n got  %v\n want %v", gotArgs, in)
+	}
+	if len(gotPaths) != 0 {
+		t.Errorf("paths should be empty; got %v", gotPaths)
+	}
+}
+
 func TestRewritePathPrefix_JoinedAndSeparate(t *testing.T) {
 	inv, err := ParseGNU([]string{
 		"-c",

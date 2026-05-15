@@ -10,3 +10,6 @@ bench/work/
 /agent/agent
 # `go build ./pause/...` from the repo root drops binaries here.
 /pause/pause
+
+# macOS metadata files
+.DS_Store

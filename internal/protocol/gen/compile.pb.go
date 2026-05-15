@@ -791,8 +791,23 @@ type CompileResponse struct {
 	OutputArtifact []byte       `protobuf:"bytes,4,opt,name=output_artifact,json=outputArtifact,proto3,oneof" json:"output_artifact,omitempty"`
 	CacheKey       *string      `protobuf:"bytes,5,opt,name=cache_key,json=cacheKey,proto3,oneof" json:"cache_key,omitempty"`
 	Audit          *AuditRecord `protobuf:"bytes,6,opt,name=audit,proto3,oneof" json:"audit,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Side-effect output files the compile produced besides the primary
+	// `-o` artifact — typically `.d` files written by `-Wp,-MMD,<path>`
+	// / `-MF <path>` for the Make-style dep tracking the kernel build
+	// depends on for incremental builds. Keys are paths relative to
+	// the per-RPC output staging dir (`/out` in-container); the client
+	// writes each back to the corresponding path under its `inv.Cwd`.
+	//
+	// Populated for CAS-mode dispatches whether the response was a
+	// fresh compile or a cache hit — the CompileCache stores extras
+	// alongside the primary artifact (as a single `extras` blob,
+	// JSON-encoded) so warm hits replay the same .d files cold
+	// compiles produced. Without that, deleting a .d on disk would
+	// leave `make` re-firing the compile rule forever on cache-hit
+	// responses that returned the .o but no .d.
+	ExtraOutputs  map[string][]byte `protobuf:"bytes,7,rep,name=extra_outputs,json=extraOutputs,proto3" json:"extra_outputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CompileResponse) Reset() {
@@ -863,6 +878,13 @@ func (x *CompileResponse) GetCacheKey() string {
 func (x *CompileResponse) GetAudit() *AuditRecord {
 	if x != nil {
 		return x.Audit
+	}
+	return nil
+}
+
+func (x *CompileResponse) GetExtraOutputs() map[string][]byte {
+	if x != nil {
+		return x.ExtraOutputs
 	}
 	return nil
 }
@@ -1054,14 +1076,18 @@ const file_compile_proto_rawDesc = "" +
 	"\fUploadResult\x12%\n" +
 	"\x0eblobs_received\x18\x01 \x01(\x04R\rblobsReceived\x12%\n" +
 	"\x0ebytes_received\x18\x02 \x01(\x04R\rbytesReceived\x12)\n" +
-	"\x10rejected_digests\x18\x03 \x03(\fR\x0frejectedDigests\"\x8c\x02\n" +
+	"\x10rejected_digests\x18\x03 \x03(\fR\x0frejectedDigests\"\x9f\x03\n" +
 	"\x0fCompileResponse\x12\x1b\n" +
 	"\texit_code\x18\x01 \x01(\x05R\bexitCode\x12\x16\n" +
 	"\x06stdout\x18\x02 \x01(\fR\x06stdout\x12\x16\n" +
 	"\x06stderr\x18\x03 \x01(\fR\x06stderr\x12,\n" +
 	"\x0foutput_artifact\x18\x04 \x01(\fH\x00R\x0eoutputArtifact\x88\x01\x01\x12 \n" +
 	"\tcache_key\x18\x05 \x01(\tH\x01R\bcacheKey\x88\x01\x01\x120\n" +
-	"\x05audit\x18\x06 \x01(\v2\x15.protocol.AuditRecordH\x02R\x05audit\x88\x01\x01B\x12\n" +
+	"\x05audit\x18\x06 \x01(\v2\x15.protocol.AuditRecordH\x02R\x05audit\x88\x01\x01\x12P\n" +
+	"\rextra_outputs\x18\a \x03(\v2+.protocol.CompileResponse.ExtraOutputsEntryR\fextraOutputs\x1a?\n" +
+	"\x11ExtraOutputsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01B\x12\n" +
 	"\x10_output_artifactB\f\n" +
 	"\n" +
 	"_cache_keyB\b\n" +
@@ -1094,7 +1120,7 @@ func file_compile_proto_rawDescGZIP() []byte {
 	return file_compile_proto_rawDescData
 }
 
-var file_compile_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_compile_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_compile_proto_goTypes = []any{
 	(*CompileRequest)(nil),         // 0: protocol.CompileRequest
 	(*RemoteDescriptor)(nil),       // 1: protocol.RemoteDescriptor
@@ -1109,11 +1135,12 @@ var file_compile_proto_goTypes = []any{
 	(*UploadResult)(nil),           // 10: protocol.UploadResult
 	(*CompileResponse)(nil),        // 11: protocol.CompileResponse
 	(*AuditRecord)(nil),            // 12: protocol.AuditRecord
-	(SourceMode)(0),                // 13: protocol.SourceMode
+	nil,                            // 13: protocol.CompileResponse.ExtraOutputsEntry
+	(SourceMode)(0),                // 14: protocol.SourceMode
 }
 var file_compile_proto_depIdxs = []int32{
 	1,  // 0: protocol.CompileRequest.descriptor:type_name -> protocol.RemoteDescriptor
-	13, // 1: protocol.RemoteDescriptor.source_mode:type_name -> protocol.SourceMode
+	14, // 1: protocol.RemoteDescriptor.source_mode:type_name -> protocol.SourceMode
 	2,  // 2: protocol.RemoteDescriptor.preprocessed:type_name -> protocol.PreprocessedDescriptor
 	3,  // 3: protocol.RemoteDescriptor.cas:type_name -> protocol.CasDescriptor
 	4,  // 4: protocol.CasDescriptor.blobs:type_name -> protocol.BlobRef
@@ -1121,11 +1148,12 @@ var file_compile_proto_depIdxs = []int32{
 	7,  // 6: protocol.ProbeResponse.miss:type_name -> protocol.ProbeMiss
 	8,  // 7: protocol.BlobChunk.header:type_name -> protocol.BlobDigest
 	12, // 8: protocol.CompileResponse.audit:type_name -> protocol.AuditRecord
-	9,  // [9:9] is the sub-list for method output_type
-	9,  // [9:9] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	13, // 9: protocol.CompileResponse.extra_outputs:type_name -> protocol.CompileResponse.ExtraOutputsEntry
+	10, // [10:10] is the sub-list for method output_type
+	10, // [10:10] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_compile_proto_init() }
@@ -1154,7 +1182,7 @@ func file_compile_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_compile_proto_rawDesc), len(file_compile_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   13,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
