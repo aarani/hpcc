@@ -38,18 +38,26 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# FC mode defaults differ from local mode: every cached compile still
+# pays a client → daemon → worker → cache-lookup → gRPC-response
+# round-trip, so the achievable warm/cold ratio floors above local
+# mode's. These have to be set BEFORE sourcing lib.sh because lib.sh
+# applies its own local-mode defaults via `${VAR:-…}` (which would
+# otherwise win — `:=` only sets when unset, and lib.sh runs first).
+# Use `:=` so an explicit env override from the workflow still takes
+# precedence.
+: "${HPCC_BENCH_CONFIG:=tinyconfig}"
+: "${HPCC_BENCH_MAX_WARM_PCT:=75}"
+: "${HPCC_BENCH_MIN_HIT_RATE:=90}"
+
 # shellcheck source=bench/lib.sh
 source "${SCRIPT_DIR}/lib.sh"
 
 bench::require_linux
 bench::require_cmd git make gcc awk go
 
-# FC mode defaults differ from local mode: tinyconfig + relaxed
-# thresholds, because per-TU dispatch overhead means warm builds
-# never reach the same speedup multiplier as on-host caching.
-HPCC_BENCH_CONFIG="${HPCC_BENCH_CONFIG:-tinyconfig}"
-HPCC_BENCH_MAX_WARM_PCT="${HPCC_BENCH_MAX_WARM_PCT:-75}"
-HPCC_BENCH_MIN_HIT_RATE="${HPCC_BENCH_MIN_HIT_RATE:-90}"
+# FC-specific knobs (not set by lib.sh, safe to default here).
 HPCC_BENCH_VM_MEMORY="${HPCC_BENCH_VM_MEMORY:-2GB}"
 HPCC_BENCH_VM_VCPUS="${HPCC_BENCH_VM_VCPUS:-2}"
 HPCC_BENCH_POOL_MAX="${HPCC_BENCH_POOL_MAX:-8}"
