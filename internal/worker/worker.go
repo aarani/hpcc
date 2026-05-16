@@ -170,12 +170,13 @@ func NewWorker(cfg Config) (*Worker, error) {
 			BootArgs:       cfg.Runtime.Firecracker.BootArgs,
 		},
 		Hcsshim: runtime.HcsshimOptions{
-			Address:     cfg.Runtime.Hcsshim.Address,
-			Namespace:   cfg.Runtime.Hcsshim.Namespace,
-			RunDir:      cfg.Runtime.Hcsshim.RunDir,
-			Runtime:     cfg.Runtime.Hcsshim.Runtime,
-			Snapshotter: cfg.Runtime.Hcsshim.Snapshotter,
-			Isolation:   cfg.Runtime.Hcsshim.Isolation,
+			Address:       cfg.Runtime.Hcsshim.Address,
+			Namespace:     cfg.Runtime.Hcsshim.Namespace,
+			RunDir:        cfg.Runtime.Hcsshim.RunDir,
+			Runtime:       cfg.Runtime.Hcsshim.Runtime,
+			Snapshotter:   cfg.Runtime.Hcsshim.Snapshotter,
+			Isolation:     cfg.Runtime.Hcsshim.Isolation,
+			PauseHostPath: cfg.Image.PauseWindowsAmd64,
 		},
 	})
 	if err != nil {

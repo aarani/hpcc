@@ -40,6 +40,18 @@ func TestNewHcsshim_RequiresAddressAndRunDir(t *testing.T) {
 			t.Errorf("error %q should mention the bad knob", err)
 		}
 	})
+	t.Run("pause path missing", func(t *testing.T) {
+		_, err := NewHcsshim(HcsshimOptions{
+			Address: `\\.\pipe\x`,
+			RunDir:  t.TempDir(),
+		})
+		if err == nil {
+			t.Fatal("expected error when pause_host_path is empty")
+		}
+		if !strings.Contains(err.Error(), "pause_host_path") {
+			t.Errorf("error %q should mention pause_host_path", err)
+		}
+	})
 }
 
 func TestTranslateArgs_RewritesSrcAndOutRoots(t *testing.T) {

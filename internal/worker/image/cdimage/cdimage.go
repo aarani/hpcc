@@ -99,10 +99,18 @@ func (s *Store) PullImage(ctx context.Context, imagePath string, expectedDigest 
 	return s.injectPause(ctx, pull, want)
 }
 
-// injectPause reads the base manifest+config from the content store,
-// builds a tar.gz layer containing /.hpcc/pause, writes the layer + a
-// modified config + a new manifest as fresh blobs, and registers a new
-// image record pointing at the new manifest.
+// injectPause prepares an image for the worker to use as a container
+// base. On Linux it builds a new top layer containing the pause binary
+// (the long-running PID 1 the worker dispatches Exec calls against)
+// and registers a manifest that stacks that layer on top of the user's
+// image. On Windows we can't do that: hcsshim's ImportLayer requires
+// PAX-tagged tar entries with security descriptors and the legacy
+// Hives/UtilityVM scaffolding that's expensive to synthesize from
+// scratch, and we don't need to — the pause binary on Windows is
+// bind-mounted into the container at create time by the hcsshim
+// runtime. The Windows path here just re-tags the base image under
+// the prepared-image name with the userDigest label so the worker's
+// catalogue still sees one row per pulled user digest.
 func (s *Store) injectPause(ctx context.Context, base containerd.Image, userDigest digest.Digest) error {
 	// A lease keeps the blobs we're about to write reachable across the
 	// window before the image record (and the manifest's gc.ref labels)
@@ -132,7 +140,8 @@ func (s *Store) injectPause(ctx context.Context, base containerd.Image, userDige
 		return fmt.Errorf("decode manifest: %w", err)
 	}
 
-	// 2. Read the base image config so we can copy/extend it.
+	// 2. Read the base image config so we can copy/extend it (or, on
+	// Windows, just inspect imgCfg.OS to dispatch to the alias path).
 	configData, err := content.ReadBlob(ctx, cs, manifest.Config)
 	if err != nil {
 		return fmt.Errorf("read image config: %w", err)
@@ -140,6 +149,15 @@ func (s *Store) injectPause(ctx context.Context, base containerd.Image, userDige
 	var imgCfg ocispec.Image
 	if err := json.Unmarshal(configData, &imgCfg); err != nil {
 		return fmt.Errorf("decode image config: %w", err)
+	}
+
+	if imgCfg.OS == "windows" {
+		// Re-tag the base image under the prepared name. The runtime
+		// will bind-mount the pause binary into the container at
+		// create time (see internal/worker/runtime/hcsshim.go) and
+		// override the entrypoint via OCI spec — no layer mutation
+		// needed, which means no fighting with hcsshim's tar format.
+		return s.registerWindowsAlias(ctx, base, userDigest)
 	}
 
 	// 3. Build the pause layer for the image's platform. Two digests:
@@ -271,6 +289,32 @@ func (s *Store) injectPause(ctx context.Context, base containerd.Image, userDige
 	if err := prepared.Unpack(ctx, s.Snapshotter); err != nil {
 		return fmt.Errorf("unpack prepared image into snapshotter %q: %w", s.Snapshotter, err)
 	}
+	return nil
+}
+
+// registerWindowsAlias is the Windows path for "prepare this image."
+// No layer is injected and no manifest is rewritten — the prepared
+// image is just an alias record pointing at the base manifest, marked
+// with the user-digest label so GetExistingImages can list it like
+// any other prepared image. The runtime adds the pause binary to the
+// container at create time via a host bind mount + spec.Process.Args
+// override, which sidesteps the legacy Windows OCI layer format
+// (PAX security descriptors, Hives/UtilityVM scaffolding) entirely.
+func (s *Store) registerWindowsAlias(ctx context.Context, base containerd.Image, userDigest digest.Digest) error {
+	is := s.Client.ImageService()
+	rec := images.Image{
+		Name:   preparedImageName(userDigest),
+		Target: base.Target(),
+		Labels: map[string]string{userDigestLabel: userDigest.String()},
+	}
+	if _, err := is.Create(ctx, rec); err != nil {
+		if _, uerr := is.Update(ctx, rec); uerr != nil {
+			return fmt.Errorf("register prepared alias (create=%v, update=%v)", err, uerr)
+		}
+	}
+	// Base image was already unpacked at pull time with the same
+	// snapshotter the runtime asks for, and the prepared alias points
+	// at the same manifest, so no extra Unpack call here.
 	return nil
 }
 
