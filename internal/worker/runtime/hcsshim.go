@@ -231,13 +231,23 @@ func (h *Hcsshim) Start(ctx context.Context, spec ContainerSpec) (Container, err
 	specOpts := []oci.SpecOpts{
 		oci.WithImageConfig(img),
 		oci.WithMounts([]specs.Mount{
-			// Bind mount of the runtime-owned pause dir; its
-			// pause.exe is the container's PID 1. cdimage on Windows
-			// doesn't inject a layer, so this mount is the only way
-			// pause.exe gets into the container. No "ro" option —
-			// some Windows mount paths interpret it as noexec, which
-			// blocks the entrypoint with ERROR_ACCESS_DENIED.
-			{Source: h.pauseMountDir, Destination: guestPauseDir},
+			// Read-only bind mount of the runtime-owned pause dir.
+			// pause.exe is shared by every container the runtime
+			// starts and lives across container lifetimes (staged
+			// once in NewHcsshim, mounted into every container);
+			// letting a tenant compile write to it would let one
+			// tenant poison the entrypoint future tenants run as
+			// PID 1. Defence in depth: the file ACL already grants
+			// Everyone RX only (no write), but the "ro" mount option
+			// also blocks writes if a future runhcs version honours
+			// it.
+			//
+			// "ro" was suspected of triggering CreateProcess Access
+			// Denied earlier, but the real cause was the ACL on the
+			// staged file having no entry for ContainerUser. With
+			// grantContainerReadExecute in place that's resolved, so
+			// "ro" can come back.
+			{Source: h.pauseMountDir, Destination: guestPauseDir, Options: []string{"ro"}},
 			{Source: hostSrcDir, Destination: guestSrcRoot},
 			{Source: hostOutDir, Destination: guestOutRoot},
 		}),
