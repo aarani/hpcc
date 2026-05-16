@@ -47,10 +47,10 @@ authoritative chronology.
 Related sub-plans:
 
 - [CAS-mode source dispatch](plan/cas.md) — the §4.5 content-addressed
-  source-staging path. Shipped in v1 as an opt-in `source_mode = "cas"`
-  alongside the default PREPROCESSED. Probe-then-upload, `.hpcc`
-  project marker for cross-developer hits, paranoid-mode-friendly
-  trust boundary, `.S`/`.incbin` support.
+  source-staging path. Shipped as the default `source_mode = "cas"`;
+  PREPROCESSED stays selectable as a fallback. Probe-then-upload,
+  `.hpcc` project marker for cross-developer hits, paranoid-mode-
+  friendly trust boundary, `.S`/`.incbin` support.
 - [Multi-tenant isolation](plan/multi-tenant.md) — promoting `tenant_id`
   from a JWT label to a namespace boundary: per-tenant IdP at the
   scheduler, per-tenant storage prefixes on every store, per-tenant
