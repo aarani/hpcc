@@ -126,20 +126,71 @@ func resolveWindowsAmd64Digest(t *testing.T, ctx context.Context, cli *container
 	return ""
 }
 
-// TestHcsshim_EndToEnd_Integration is the only integration test for
-// the runtime today: image pull → cdimage pause injection → container
-// create with process isolation → Task.Exec → output capture. It's
-// gated on `integration && windows`, requires a reachable containerd
-// daemon with the runhcs shim available, and skips cleanly when the
-// pause binary path isn't supplied (HPCC_HCSSHIM_PAUSE).
+// TestHcsshim_EndToEnd_Integration covers the process-isolation
+// path: image pull → cdimage pause-mount alias → container create →
+// Task.Exec under pause + copyTree-based file staging → output
+// capture. Runs on GitHub-hosted windows-2022 runners (which can't
+// nest virtualization). Gated on `integration && windows`; skips
+// cleanly when HPCC_HCSSHIM_PAUSE isn't set.
 func TestHcsshim_EndToEnd_Integration(t *testing.T) {
-	pausePath := os.Getenv("HPCC_HCSSHIM_PAUSE")
-	if pausePath == "" {
-		t.Skip("HPCC_HCSSHIM_PAUSE not set; build pause.exe and point this at it")
+	pausePath := requireBinaryEnv(t, "HPCC_HCSSHIM_PAUSE", "build pause.exe and point this at it")
+	runHcsshimE2E(t, hcsshimE2EOpts{
+		Isolation:     IsolationProcess,
+		PauseHostPath: pausePath,
+	})
+}
+
+// TestHcsshim_HyperV_EndToEnd_Integration covers the Hyper-V
+// isolation path: same image-pull / cdimage alias / container
+// create flow, but the entrypoint is hpcc-agent.exe and per-Exec
+// compiles dispatch through the agent's HvSocket gRPC stream rather
+// than Task.Exec + copyTree. Needs a host with nested
+// virtualization enabled (Hyper-V utility VMs can't boot otherwise),
+// so it's gated on HPCC_HCSSHIM_RUN_HYPERV — the self-hosted
+// "nested" runner sets that env var; everywhere else this test
+// skips. Requires HPCC_HCSSHIM_AGENT (hpcc-agent.exe path) on top of
+// the process-mode prerequisites.
+func TestHcsshim_HyperV_EndToEnd_Integration(t *testing.T) {
+	if os.Getenv("HPCC_HCSSHIM_RUN_HYPERV") == "" {
+		t.Skip("HPCC_HCSSHIM_RUN_HYPERV not set; needs a host with nested virtualization")
 	}
-	if _, err := os.Stat(pausePath); err != nil {
-		t.Fatalf("HPCC_HCSSHIM_PAUSE = %q: %v", pausePath, err)
+	pausePath := requireBinaryEnv(t, "HPCC_HCSSHIM_PAUSE", "build pause.exe and point this at it")
+	agentPath := requireBinaryEnv(t, "HPCC_HCSSHIM_AGENT", "build hpcc-agent.exe and point this at it")
+	runHcsshimE2E(t, hcsshimE2EOpts{
+		Isolation:     IsolationHyperV,
+		PauseHostPath: pausePath,
+		AgentHostPath: agentPath,
+	})
+}
+
+// hcsshimE2EOpts is the isolation-dependent slice of inputs the
+// shared E2E driver takes. Keeps the call sites for both tests above
+// readable — each lists exactly the knobs that vary across modes.
+type hcsshimE2EOpts struct {
+	Isolation     string
+	PauseHostPath string
+	AgentHostPath string // required iff Isolation == hyperv
+}
+
+func requireBinaryEnv(t *testing.T, key, hint string) string {
+	t.Helper()
+	path := os.Getenv(key)
+	if path == "" {
+		t.Skipf("%s not set; %s", key, hint)
 	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("%s = %q: %v", key, path, err)
+	}
+	return path
+}
+
+// runHcsshimE2E drives the full pull → prepare → start → exec →
+// capture flow with whichever isolation mode the caller asked for.
+// Both tests above share this: identical assertion shape with only
+// the isolation knobs differing keeps the wire-level coverage
+// symmetric between the process and Hyper-V paths.
+func runHcsshimE2E(t *testing.T, opts hcsshimE2EOpts) {
+	t.Helper()
 
 	cli := sharedHcsshim(t)
 	ns := fmt.Sprintf("hpcc-rt-test-%d", time.Now().UnixNano())
@@ -166,7 +217,7 @@ func TestHcsshim_EndToEnd_Integration(t *testing.T) {
 
 	store := &cdimage.Store{
 		Client: cli,
-		Pause:  cdimage.PauseBinaries{WindowsAmd64: pausePath},
+		Pause:  cdimage.PauseBinaries{WindowsAmd64: opts.PauseHostPath},
 		// Must match the snapshotter the runtime below will create
 		// its container snapshot under; otherwise the runhcs shim
 		// can't find the parent chain. defaultHcsshimSnapshotter is
@@ -182,16 +233,12 @@ func TestHcsshim_EndToEnd_Integration(t *testing.T) {
 		addr = `\\.\pipe\containerd-containerd`
 	}
 	rt, err := NewHcsshim(HcsshimOptions{
-		Address:   addr,
-		Namespace: ns,
-		RunDir:    t.TempDir(),
-		// Process isolation: GitHub Actions hosted runners don't
-		// expose nested virtualization, so Hyper-V isolation can't
-		// boot. The §4.1 security boundary is *not* what this test
-		// asserts — it asserts the wire (image → runhcs → Exec →
-		// copy-out) works end to end on Windows.
-		Isolation:     IsolationProcess,
-		PauseHostPath: pausePath,
+		Address:       addr,
+		Namespace:     ns,
+		RunDir:        t.TempDir(),
+		Isolation:     opts.Isolation,
+		PauseHostPath: opts.PauseHostPath,
+		AgentHostPath: opts.AgentHostPath,
 	})
 	if err != nil {
 		t.Fatalf("NewHcsshim: %v", err)
