@@ -232,5 +232,17 @@ follow-up.
   parity check.
 - **Rootfs extraction caps not yet enforced.** Tar-bomb size/entry
   limits in §4.14 are unwired; treat user images as trusted for now.
+- **No per-tenant CAS upload quota.** §4.5 / [docs/cas.md](docs/cas.md)
+  Step 4 calls for a token bucket on bytes/sec + bytes/window keyed
+  by `tenant_id`, with hard-reject + client-side local fallback. Not
+  wired yet; single-tenant CI use is unbounded. Multi-tenant
+  deployments should hold off until this lands.
+- **CAS probe is cross-tenant disclosive.** §4.5 / [docs/cas.md](docs/cas.md)
+  Step 2a: a tenant that knows another tenant's source closure can
+  fetch that tenant's compile output via `ProbeCompileCache` — same
+  property Bazel has. The fix (mix `tenant_id` into the cache key
+  via a paranoid-extra knob) is designed but unimplemented; off by
+  default because it kills cross-developer sharing. Enable only if
+  the threat model needs it.
 - **No `hpcc explain <file>`.** Structured cache-miss reasons are
   Phase 5.
