@@ -217,7 +217,12 @@ jobs:
           go-version: '1.26.3'
 
       - name: Ensure containerd + runhcs shim installed
-        shell: pwsh
+        # Windows PowerShell 5.1 (built into every Windows) rather
+        # than pwsh — self-hosted runners typically don't ship
+        # PowerShell 7, and the install steps below don't use any
+        # PS7-only syntax. The GitHub-hosted windows-runtime job
+        # above still uses pwsh because hosted images come with it.
+        shell: powershell
         # Idempotent install: self-hosted runners persist state across
         # jobs, so we skip the download if a previous run already
         # extracted containerd here. Same install layout as the
@@ -237,12 +242,16 @@ jobs:
             Invoke-WebRequest -Uri $url -OutFile $tar -UseBasicParsing
             tar.exe -xzf $tar -C $install
           }
-          "$bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          # ASCII encoding avoids the BOM Windows PowerShell's
+          # `-Encoding utf8` would prepend. GITHUB_PATH and
+          # GITHUB_ENV are read line-by-line and a leading BOM
+          # breaks the first entry's parsing.
+          "$bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding ascii -Append
           & "$bin\containerd.exe" --version
           & "$bin\containerd-shim-runhcs-v1.exe" --version
 
       - name: Ensure containerd service running
-        shell: pwsh
+        shell: powershell
         # Same idempotence story as the install: only register the
         # service if it isn't already there, only start it if it
         # isn't running. Wait for the pipe regardless so the test
@@ -271,7 +280,7 @@ jobs:
           & "$bin\ctr.exe" version
 
       - name: Build hpcc-pause.exe and hpcc-agent.exe
-        shell: pwsh
+        shell: powershell
         # The Hyper-V path needs BOTH binaries staged: pause.exe goes
         # into cdimage's prepared-image alias (worker config still
         # carries it for the process-isolation fallback) and the
@@ -288,8 +297,8 @@ jobs:
           Push-Location agent
           go build -o $agent .
           Pop-Location
-          "HPCC_HCSSHIM_PAUSE=$pause" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "HPCC_HCSSHIM_AGENT=$agent" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "HPCC_HCSSHIM_PAUSE=$pause" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+          "HPCC_HCSSHIM_AGENT=$agent" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
 
       - name: Run Hyper-V isolation integration test
         # HPCC_HCSSHIM_RUN_HYPERV unblocks TestHcsshim_HyperV_EndToEnd_Integration;
