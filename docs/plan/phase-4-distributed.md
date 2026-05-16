@@ -33,11 +33,10 @@
   - §4.11 VM-crash reaping with scheduler reroute — partial today
     (the runtime surfaces process exit, but the worker doesn't yet
     notify the scheduler to drop the dead VM from routing).
-  - §4.14 residual extraction-pipeline caps — the structural §4.14
-    hardening (replacing the tar shell-out + on-host staging dir +
-    e2fsprogs trust surface) is done by virtue of the §4.3
-    streaming squashfs rewrite; remaining work is tar-bomb size/
-    entry-count caps in the streaming reader. See §4.14.
+  - §4.14 structural hardening is done — the streaming squashfs
+    rewrite collapsed the tar shell-out, on-host staging dir, and
+    e2fsprogs trust surface, and the residual tar-bomb size/entry
+    caps now fire in the streaming reader.
 
 Farm out compilation to remote workers, isolated in **raw Firecracker
 microVMs driven directly by hpcc**, to parallelize beyond local CPU count
@@ -710,21 +709,16 @@ The streaming squashfs rewrite (`squashfs/` +
   malformed but locally-self-consistent rootfs that only fails when
   the kernel tries to mount it.
 
-#### Residual gaps
+#### Tar-bomb caps
 
-One concern from the original threat list is not yet addressed by
-the rewrite, because it exists independent of *how* the rootfs is
-materialized:
-
-- **Tar-bomb size cap.** A hostile image can describe an
-  arbitrarily large logical filesystem in its layer tar — both in
-  total byte count and in entry count. The streaming writer
-  doesn't cap either today, so a tar describing millions of
-  zero-byte files would balloon worker memory holding inode
-  metadata before `Close()` writes anything. Mitigation: enforce
-  `(max_total_bytes, max_entry_count)` ceilings inside
-  `streamTarToSquashfs` and abort with a clean error past either.
-  ~15 lines. Tracked in the Phase 4 milestone list (item §31).
+The streaming writer enforces `(maxTarTotalBytes, maxTarEntryCount)`
+ceilings inside `streamTarToSquashfs` — header-declared size that
+already overshoots the cap is rejected before the body reads, and a
+header that lies about Size is caught by an `io.LimitReader` around
+the body copy. Either condition returns `ErrTarTotalBytesExceeded`
+or `ErrTarEntryCountExceeded` wrapping a descriptive message. v1
+caps are deliberately loose (16 GiB / ~1M entries) — the point is
+unbounded growth, not policing image size.
 
 A future optimization — *not* hardening — is swapping the
 production compressor from gzip to zstd for smaller cache

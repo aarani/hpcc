@@ -71,6 +71,31 @@ const agentInstallDir = "/.hpcc"
 // needing to mkdir on a read-only rootfs.
 var standardMountpoints = []string{"/proc", "/sys", "/dev", "/tmp", "/run"}
 
+// Tar-bomb caps. The OCI layer tar is attacker-controlled (see §4.14);
+// a hostile image can describe an arbitrarily large logical filesystem
+// in either total bytes or entry count, and the squashfs writer holds
+// inode metadata in memory until Close. The caps below cut both off
+// before the worker process gets to that point. A chainguard gcc-glibc
+// rootfs sits well under either; fat ML toolchain images at ~10GB /
+// ~200k entries still fit. Values are deliberately loose — the point
+// is to prevent unbounded growth, not to police image size.
+//
+// var rather than const so tests can scale them down without
+// generating gigabyte fixtures; production code never writes to them.
+var (
+	maxTarTotalBytes int64 = 16 << 30 // 16 GiB of logical file content
+	maxTarEntryCount int64 = 1 << 20  // ~1M entries
+)
+
+// ErrTarTotalBytesExceeded is returned when streamTarToSquashfs sees
+// more logical file content than maxTarTotalBytes — either a single
+// header declares a size past the cap, or cumulative copies cross it.
+var ErrTarTotalBytesExceeded = errors.New("rootfs: tar total bytes exceeded cap")
+
+// ErrTarEntryCountExceeded is returned when streamTarToSquashfs sees
+// more tar entries than maxTarEntryCount.
+var ErrTarEntryCountExceeded = errors.New("rootfs: tar entry count exceeded cap")
+
 // AgentBinaries lists the host filesystem paths of the per-arch
 // hpcc-agent binaries the worker has built (or shipped). The Store
 // reads from these when laying down the agent inside the rootfs at
@@ -302,6 +327,10 @@ func buildSquashfs(tarStream io.Reader, agentBin []byte, outPath string) error {
 // pipeline, and injectAgentBinary writes it fresh after the stream
 // completes.
 func streamTarToSquashfs(w *squashfs.Writer, tr *tar.Reader, created map[string]bool) error {
+	var (
+		entryCount int64
+		totalBytes int64
+	)
 	for {
 		h, err := tr.Next()
 		if err == io.EOF {
@@ -309,6 +338,21 @@ func streamTarToSquashfs(w *squashfs.Writer, tr *tar.Reader, created map[string]
 		}
 		if err != nil {
 			return fmt.Errorf("read tar header: %w", err)
+		}
+
+		entryCount++
+		if entryCount > maxTarEntryCount {
+			return fmt.Errorf("%w: %d entries past cap %d",
+				ErrTarEntryCountExceeded, entryCount, maxTarEntryCount)
+		}
+		// Reject up front on a header-declared size that's already
+		// past the cap, before we start copying — covers a single
+		// fat entry without needing to read it.
+		if h.Size > 0 {
+			if h.Size > maxTarTotalBytes-totalBytes {
+				return fmt.Errorf("%w: header declares %d bytes, %d already used, cap %d",
+					ErrTarTotalBytesExceeded, h.Size, totalBytes, maxTarTotalBytes)
+			}
 		}
 
 		p, ok := normalizeTarPath(h.Name)
@@ -346,9 +390,20 @@ func streamTarToSquashfs(w *squashfs.Writer, tr *tar.Reader, created map[string]
 			if err != nil {
 				return fmt.Errorf("create file %q: %w", p, err)
 			}
-			if _, err := io.Copy(fw, tr); err != nil {
+			// Cap how many bytes we'll copy from this entry even if
+			// the header lied about Size. LimitReader stops one
+			// past the remaining budget so we can distinguish "ran
+			// out" from "fit cleanly".
+			remaining := maxTarTotalBytes - totalBytes
+			n, err := io.Copy(fw, io.LimitReader(tr, remaining+1))
+			if err != nil {
 				return fmt.Errorf("write file %q: %w", p, err)
 			}
+			if n > remaining {
+				return fmt.Errorf("%w: entry %q exceeded remaining budget %d",
+					ErrTarTotalBytesExceeded, p, remaining)
+			}
+			totalBytes += n
 		case tar.TypeDir:
 			if err := w.CreateDir(attrs); err != nil {
 				return fmt.Errorf("create dir %q: %w", p, err)

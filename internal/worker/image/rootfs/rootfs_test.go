@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -283,6 +284,89 @@ func makeFixtureTar(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+// TestStreamTar_capsEntryCount asserts the entry-count cap fires
+// before the writer accumulates unbounded inode metadata.
+func TestStreamTar_capsEntryCount(t *testing.T) {
+	withCaps(t, 1<<30, 4) // cap activates on the 5th entry
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for i := 0; i < 5; i++ {
+		mustTarFile(t, tw, "f"+strconv.Itoa(i), []byte("x"))
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	err := buildSquashfs(bytes.NewReader(buf.Bytes()), []byte("agent"),
+		filepath.Join(t.TempDir(), "out.sqsh"))
+	if !errors.Is(err, ErrTarEntryCountExceeded) {
+		t.Fatalf("got %v, want ErrTarEntryCountExceeded", err)
+	}
+}
+
+// TestStreamTar_capsTotalBytesByHeader rejects a single fat entry
+// whose declared size already overshoots the cap, without reading
+// its body.
+func TestStreamTar_capsTotalBytesByHeader(t *testing.T) {
+	withCaps(t, 64, 1<<20)
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	mustWriteTarHeader(t, tw, &tar.Header{
+		Typeflag: tar.TypeReg,
+		Name:     "big",
+		Size:     1024,
+		Mode:     0o644,
+	})
+	if _, err := tw.Write(bytes.Repeat([]byte{0}, 1024)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	err := buildSquashfs(bytes.NewReader(buf.Bytes()), []byte("agent"),
+		filepath.Join(t.TempDir(), "out.sqsh"))
+	if !errors.Is(err, ErrTarTotalBytesExceeded) {
+		t.Fatalf("got %v, want ErrTarTotalBytesExceeded", err)
+	}
+}
+
+// TestStreamTar_capsTotalBytesByBody catches the cumulative case —
+// two entries that each fit under the cap individually but cross it
+// together.
+func TestStreamTar_capsTotalBytesByBody(t *testing.T) {
+	withCaps(t, 32, 1<<20)
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	mustTarFile(t, tw, "a", bytes.Repeat([]byte("a"), 20))
+	mustTarFile(t, tw, "b", bytes.Repeat([]byte("b"), 20))
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	err := buildSquashfs(bytes.NewReader(buf.Bytes()), []byte("agent"),
+		filepath.Join(t.TempDir(), "out.sqsh"))
+	if !errors.Is(err, ErrTarTotalBytesExceeded) {
+		t.Fatalf("got %v, want ErrTarTotalBytesExceeded", err)
+	}
+}
+
+// withCaps temporarily swaps the package-level cap vars so a test
+// can drive the cap path with byte-sized fixtures.
+func withCaps(t *testing.T, totalBytes, entryCount int64) {
+	t.Helper()
+	prevBytes, prevEntries := maxTarTotalBytes, maxTarEntryCount
+	maxTarTotalBytes = totalBytes
+	maxTarEntryCount = entryCount
+	t.Cleanup(func() {
+		maxTarTotalBytes = prevBytes
+		maxTarEntryCount = prevEntries
+	})
 }
 
 func mustTarFile(t *testing.T, tw *tar.Writer, name string, body []byte) {

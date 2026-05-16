@@ -242,8 +242,6 @@ follow-up.
   defeating cross-developer hit rates. Pin the image patch version
   (e.g. `gcc:13.2.0`) to match the host until §4 ships an automatic
   parity check.
-- **Rootfs extraction caps not yet enforced.** Tar-bomb size/entry
-  limits in §4.14 are unwired; treat user images as trusted for now.
 - **No per-tenant CAS upload quota.** §4.5 / [docs/cas.md](docs/cas.md)
   Step 4 calls for a token bucket on bytes/sec + bytes/window keyed
   by `tenant_id`, with hard-reject + client-side local fallback. Not
