@@ -101,6 +101,16 @@ multi-tenant, and on the audit trail.**
 - **Per-job audit row** — `(image_digest, source_digest, flags, output_digest,
   tenant, worker, vm, duration, exit)` — reproducible from a single line.
   This is the table format regulated audit teams want to see.
+- **OAuth2 password-grant against any IdP.** The client exchanges
+  user credentials at the configured `token_url`, the scheduler
+  validates the resulting JWT and signs a short-lived
+  worker-routing token, and the client dials the worker with that
+  token over pinned TLS. Plug into corporate SSO (Okta, Keycloak,
+  Auth0, anything OAuth2-compliant) — no hpcc-specific identity
+  layer to provision, no shared secret on developer laptops. The
+  `tenant_id` carried in the JWT is the same identity that scopes
+  the worker, the per-job audit row, and (when wired) the
+  per-tenant upload quota.
 - **Structured miss explanations.** `hpcc explain <file>` names *which
   header* or *which flag* changed. Not a debug log you have to grep.
 - **Per-call zstd on the wire.** Preprocessed C++ compresses 5–10×; this is
@@ -170,8 +180,10 @@ VM stays alive across compiles even on distroless/scratch images.
 This replaces firecracker-containerd (stagnated upstream) with a
 small image→rootfs pipeline and a one-method gRPC agent we own.
 Route-only scheduler (signs JWTs, never touches payloads); client
-dials the worker directly with per-call zstd, scheduler-signed
-auth, and cancellation. Per-job audit log. See
+authenticates to the scheduler via OAuth2 password grant against
+any IdP (Okta / Keycloak / Auth0 / etc.), receives a short-lived
+routing token, and dials the worker directly with per-call zstd,
+that scheduler-signed token, and cancellation. Per-job audit log. See
 [docs/plan/phase-4-distributed.md](docs/plan/phase-4-distributed.md)
 for the full design and the **Limitations** section below for
 what's still in flight.
