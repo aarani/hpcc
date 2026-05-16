@@ -2,21 +2,22 @@
 
 **Progress so far:**
 
-- **Done:** §4.1.1 Runtime abstraction (`internal/worker/runtime`,
-  with `DangerouslyExecOnHost` as the dev backend and a real
-  `Firecracker` driver in production); §4.3 image→rootfs pipeline
-  (streaming OCI tar → in-tree clean-room Go squashfs writer, no
-  host staging dir, no `tar`/`mkfs.*` shell-outs, on-wire format
-  validated in CI via `unsquashfs` round-trip; agent injection +
-  standard mountpoints handled inline); §4.4 VM layout under jailer
-  (vsock device, no NIC, kernel + rootfs staged into the chroot);
-  §4.4.1 in-VM `hpcc-agent` (separate Go module, PID-1 init that
-  mounts `/proc` `/sys` `/dev` `/tmp` `/run` + zombie reaping +
-  bidi-streaming gRPC `AgentService.Exec` over AF_VSOCK port 17727);
-  shared `proto/agent` module so the runner and agent compile against
-  one wire schema; §4.8 route-only scheduler; §4.9 worker (Compile
-  RPC, image catalogue + idle eviction, per-tenant container pool
-  with idle/session TTLs, Ed25519 task-JWT verification); §4.10
+- **Done — Linux/Firecracker side:** §4.1.1 Runtime abstraction
+  (`internal/worker/runtime`, with `DangerouslyExecOnHost` as the
+  dev backend and a real `Firecracker` driver in production); §4.3
+  image→rootfs pipeline (streaming OCI tar → in-tree clean-room Go
+  squashfs writer, no host staging dir, no `tar`/`mkfs.*`
+  shell-outs, on-wire format validated in CI via `unsquashfs`
+  round-trip; agent injection + standard mountpoints handled
+  inline); §4.4 VM layout under jailer (vsock device, no NIC, kernel
+  + rootfs staged into the chroot); §4.4.1 in-VM `hpcc-agent`
+  (separate Go module, PID-1 init that mounts `/proc` `/sys` `/dev`
+  `/tmp` `/run` + zombie reaping + bidi-streaming gRPC
+  `AgentService.Exec` over AF_VSOCK port 17727); shared
+  `proto/agent` module so the runner and agent compile against one
+  wire schema; §4.8 route-only scheduler; §4.9 worker (Compile RPC,
+  image catalogue + idle eviction, per-tenant container pool with
+  idle/session TTLs, Ed25519 task-JWT verification); §4.10
   client→worker gRPC compile path with per-call zstd; §4.12 per-job
   audit records; §4.13 paranoid-mode plumbing on the worker. An
   integration suite (`firecracker_e2e_test.go`, runs in CI under
@@ -24,33 +25,50 @@
   a real chainguard `gcc-glibc` rootfs, and compiles a one-line C
   source end-to-end through the full vsock + agent pipeline.
 
+- **Done — Windows/hcsshim side:** §4.1.1 `runhcs-wcow-hypervisor`
+  handler boots through `runtime.Hcsshim` against a real containerd
+  daemon, with two isolation modes selectable via
+  `runtime.hcsshim.isolation = "hyperv" | "process"`. cdimage
+  re-tags the base image under a prepared name (no OCI layer
+  injection — see "Why we don't inject pause as a Windows OCI
+  layer" below); pause.exe and agent.exe are staged into per-runtime
+  mount dirs and bind-mounted at `C:\.hpcc` with the OCI spec
+  entrypoint pivoted to whichever the isolation mode picks. Under
+  Hyper-V the runtime resolves the utility VM's GUID via
+  `hcsshim.GetContainers({IDs: ["<container-id>@vm"]})` after
+  `Task.Start`, dials `hpcc-agent.exe` over HvSocket, and
+  `Container.Exec` dispatches the bidi-streaming `AgentService.Exec`
+  RPC — same wire schema the Linux side runs over vsock, no VSMB
+  across the partition boundary ("Why not VSMB" below). Under
+  process isolation `Task.Exec` + copyTree carries on for hosts
+  without nested virt. Path normalization for cache keys handles
+  `\\?\` extended-length prefixes, rejects UNC up front (would
+  silently mishash against the mapped-drive form), case-folds path
+  bytes in the digest for cross-platform hits, and auto-injects
+  family-aware reproducibility flags (GCC's `-ffile-prefix-map=/src=.`
+  + `-Werror=date-time`, MSVC's `/d1trimfile:/src` +
+  `/PDBSourcePath:/src`) so `.o`/`.obj`/`.pdb` outputs are
+  byte-deterministic across per-Exec staging dirs. CI: GitHub-hosted
+  `windows-runtime` exercises the process-isolation path on every
+  push; self-hosted `windows-runtime-hyperv` on a
+  `[self-hosted, nested]` runner exercises the Hyper-V path
+  end-to-end against a real utility VM.
+
+- **Done — §4.14 rootfs hardening:** the streaming squashfs rewrite
+  collapsed the tar shell-out, on-host staging dir, and e2fsprogs
+  trust surface, and the residual tar-bomb size/entry caps now fire
+  in the streaming reader.
+
 - **Open:**
-  - §4.1.1 Windows hcsshim path — in flight. The
-    `runhcs-wcow-hypervisor` handler now boots through
-    `runtime.Hcsshim` against a real containerd daemon: per-tenant
-    container creation with optional Hyper-V isolation (selectable
-    via `runtime.hcsshim.isolation = "hyperv" | "process"`,
-    process-mode for CI without nested virtualization), pause-binary
-    PID 1 via a runtime-managed bind mount at `C:\.hpcc` (no OCI
-    layer injection, see "Why we don't inject pause as a Windows
-    OCI layer" below), `Task.Exec`-based compile dispatch, and
-    per-Exec copy-in/copy-out staging at `C:\src` / `C:\out`.
-    Cross-compiles green on darwin and windows/amd64; unit tests
-    cover option validation, argv path rewrites and the copyTree
-    helper. **Still open**: an actual containerd-on-windows
-    integration job (the unit-test job in `windows-build` only
-    proves compile + path logic), an hpcc-agent over HvSocket so
-    we can drop the per-Exec copy without falling back to VSMB
-    (see "Why not VSMB" below), and validating the
-    path-canonicalization gotchas the §4.1.1 caveats list
-    (MAX_PATH, UNC vs mapped drive, directory junctions).
   - §4.11 VM-crash reaping with scheduler reroute — partial today
     (the runtime surfaces process exit, but the worker doesn't yet
     notify the scheduler to drop the dead VM from routing).
-  - §4.14 structural hardening is done — the streaming squashfs
-    rewrite collapsed the tar shell-out, on-host staging dir, and
-    e2fsprogs trust surface, and the residual tar-bomb size/entry
-    caps now fire in the streaming reader.
+  - Per-tenant `UploadBlobs` quota — carved into phase 5 §5.7
+    because its overrun event is a security-event-log row, not a
+    runtime concern.
+  - Toolchain parity check (local host's compiler vs. the OCI
+    image's) — currently operator's responsibility to pin the
+    image patch version against the host.
 
 Farm out compilation to remote workers, isolated in **raw Firecracker
 microVMs driven directly by hpcc**, to parallelize beyond local CPU count

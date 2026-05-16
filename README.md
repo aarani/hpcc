@@ -106,9 +106,12 @@ multi-tenant, and on the audit trail.**
   matching keys without a second knob. `"preprocessed"` remains
   selectable for the inline-bytes fallback. See
   [docs/plan/cas.md](docs/plan/cas.md).
-- **Auto-injected reproducibility flags** (`-Werror=date-time`,
-  `-ffile-prefix-map`, `-frandom-seed`) plus pinned locale/timezone/hostname
-  inside the VM. Byte-identical outputs by default, not by ceremony.
+- **Auto-injected reproducibility flags**, family-aware: GCC/Clang
+  get `-ffile-prefix-map=/src=.` + `-Werror=date-time`; MSVC gets
+  `/d1trimfile:/src` + `/PDBSourcePath:/src`. The per-Exec staging
+  dir gets stripped from `.o`/`.obj`/`.pdb` embedded paths so two
+  Execs of the same source produce byte-identical outputs. Pinned
+  locale/timezone/hostname inside the VM round it out.
 - **Per-job audit row** — `(image_digest, source_digest, flags, output_digest,
   tenant, worker, vm, duration, exit)` — reproducible from a single line.
   This is the table format regulated audit teams want to see.
@@ -135,7 +138,13 @@ multi-tenant, and on the audit trail.**
 - **Hyper-V isolated Windows containers** behind the same `Runtime`
   interface (raw Firecracker driver on Linux, containerd + hcsshim on
   Windows) — MSVC on shared workers with a kernel boundary, which is
-  unsolved in OSS today.
+  unsolved in OSS today. Under Hyper-V isolation hpcc bind-mounts
+  `hpcc-agent.exe` as PID 1 of the utility VM and dispatches every
+  Exec over the same bidi-stream `AgentService.Exec` RPC the Linux
+  side uses, just terminated by HvSocket (the Hyper-V analogue of
+  vsock) instead. Process isolation is a CI / dev fallback for hosts
+  without nested virtualization; both paths share the same image
+  pull, OCI spec, and `Container.Exec` surface.
 
 The cache loop and the daemon are table stakes; sccache does those well.
 hpcc's bet is that the *next* place compiler-distribution has to go — into
@@ -182,17 +191,20 @@ deployments leave it false. Standard AWS credential chain; no hpcc-specific
 auth layer.
 
 ### Phase 4 — Distributed Compilation in Per-Tenant VMs
-The differentiated phase. Raw Firecracker microVMs on Linux driven
-directly by hpcc (Hyper-V-isolated containers via containerd +
-hcsshim on Windows is the follow-up). One long-running VM per
-tenant session; compiles dispatch as one gRPC bidi-streaming `Exec`
-call over vsock. The user supplies an OCI image; the worker pulls,
-flattens, and streams the layer tar through an in-tree clean-room
-squashfs writer — no host staging dir, no `tar -xpf` shell-out, no
-GPL deps in the build path — injecting `hpcc-agent` as PID 1 so the
-VM stays alive across compiles even on distroless/scratch images.
-This replaces firecracker-containerd (stagnated upstream) with a
-small image→rootfs pipeline and a one-method gRPC agent we own.
+The differentiated phase. Raw Firecracker microVMs on Linux and
+Hyper-V isolated containers on Windows, both driven directly by
+hpcc behind a single `Runtime` interface. One long-running
+VM/container per tenant session; compiles dispatch as one gRPC
+bidi-streaming `AgentService.Exec` call over vsock (Linux) or
+HvSocket (Windows Hyper-V). The user supplies an OCI image; on
+Linux the worker pulls, flattens, and streams the layer tar through
+an in-tree clean-room squashfs writer — no host staging dir, no
+`tar -xpf` shell-out, no GPL deps in the build path — and on
+Windows containerd + the runhcs shim handles the snapshot. Either
+way `hpcc-agent` is injected as PID 1 so the VM stays alive across
+compiles even on distroless / scratch / nanoserver images. This
+replaces firecracker-containerd (stagnated upstream) with a small
+image→rootfs pipeline and a one-method gRPC agent we own.
 Route-only scheduler (signs JWTs, never touches payloads); client
 authenticates to the scheduler via OAuth2 password grant against
 any IdP (Okta / Keycloak / Auth0 / etc.), receives a short-lived
@@ -202,18 +214,38 @@ that scheduler-signed token, and cancellation. Per-job audit log. See
 for the full design and the **Limitations** section below for
 what's still in flight.
 
-**Phase 4 status (today):** the Linux end-to-end remote-compile path
-is landed and CI-tested — route-only scheduler, worker `Compile`
-RPC, per-tenant container pool with idle/session TTLs, streaming
-image→squashfs build (clean-room Go writer; no tar/mkfs shell-outs,
-on-wire format validated in CI via `unsquashfs` round-trip), raw
-Firecracker driver under jailer, in-VM `hpcc-agent` as PID 1 over
-vsock, and an integration suite that boots a real toolchain rootfs
-and compiles end-to-end on a GitHub Actions runner. **Both source
-modes are wired:** CAS (the default — content-addressed manifests
-with probe-then-upload, design in [docs/plan/cas.md](docs/plan/cas.md)) and
-PREPROCESSED (selectable fallback that ships preprocessed bytes
-inline). See **Limitations** below for what's still in-flight.
+**Phase 4 status (today):**
+
+*Linux/Firecracker:* end-to-end remote-compile path landed and
+CI-tested — route-only scheduler, worker `Compile` RPC, per-tenant
+container pool with idle/session TTLs, streaming image→squashfs
+build (clean-room Go writer; no tar/mkfs shell-outs, on-wire format
+validated in CI via `unsquashfs` round-trip), raw Firecracker driver
+under jailer, in-VM `hpcc-agent` as PID 1 over vsock, and an
+integration suite that boots a real toolchain rootfs and compiles
+end-to-end on a GitHub Actions runner.
+
+*Windows/hcsshim:* containerd + runhcs driver behind the same
+`Runtime` interface, with two isolation modes wired and tested.
+**Hyper-V isolation** (the §4.1 audit-recognised boundary) bind-mounts
+`hpcc-agent.exe` as PID 1 of the utility VM and dispatches Exec calls
+over HvSocket — no VSMB across the partition boundary, see
+[docs/plan/phase-4-distributed.md](docs/plan/phase-4-distributed.md)
+§4.1.1 "Why not VSMB". **Process isolation** (fallback for hosts
+without nested virtualization) keeps `pause.exe` + `Task.Exec` +
+copyTree. CI covers both: the GitHub-hosted `windows-runtime` job
+exercises process isolation; a self-hosted `[self-hosted, nested]`
+runner runs `windows-runtime-hyperv` against a real utility VM.
+
+*Both source modes are wired:* CAS (the default — content-addressed
+manifests with probe-then-upload, design in [docs/plan/cas.md](docs/plan/cas.md))
+and PREPROCESSED (selectable fallback that ships preprocessed bytes
+inline). Path normalization handles `\\?\` extended-length prefixes,
+rejects UNC up front, case-folds in the digest for cross-platform
+cache hits, and auto-injects family-aware reproducibility flags
+(GCC `-ffile-prefix-map`/`-Werror=date-time`, MSVC `/d1trimfile:` /
+`/PDBSourcePath:`). See **Limitations** below for what's still
+in-flight.
 
 ### Phase 5 — Observability & Polish
 `hpcc inspect <hash>` and `hpcc explain <file>` with structured miss
@@ -246,13 +278,21 @@ follow-up.
   Stdin would need to be consumed twice (hash + compile); multi-
   input produces one `.o` per source that the single-output cache
   entry shape can't represent.
-- **No Windows backend yet.** Linux/Firecracker only; the hcsshim
-  Hyper-V container runtime is planned (§4.1.1).
-- **Toolchain parity between local and FC is manual.** Local mode
-  runs the host's gcc; FC mode runs the OCI image's gcc. Different
-  versions silently produce different `.o` for the same cache key,
-  defeating cross-developer hit rates. Pin the image patch version
-  (e.g. `gcc:13.2.0`) to match the host until §4 ships an automatic
+- **Windows Hyper-V isolation needs a runner that supports nested
+  virt.** The runtime is shipped on both Linux/Firecracker and
+  Windows/hcsshim, with two isolation modes on Windows. End-to-end
+  CI for the Hyper-V path runs on a self-hosted runner labelled
+  `[self-hosted, nested]`; GitHub-hosted `windows-2022` covers only
+  the process-isolation path (no nested virt available there).
+  Operators planning to deploy under Hyper-V isolation need a host
+  with nested virt enabled in the hypervisor, the Hyper-V Windows
+  feature installed, and `vmcompute` running.
+- **Toolchain parity between local and remote is manual.** Local
+  mode runs the host's gcc / cl.exe; remote mode runs the OCI image's
+  toolchain. Different versions silently produce different objects
+  for the same cache key, defeating cross-developer hit rates. Pin
+  the image patch version (e.g. `gcc:13.2.0`, the VS Build Tools
+  release for MSVC) to match the host until §4 ships an automatic
   parity check.
 - **No per-tenant CAS upload quota.** Multi-tenant CAS is
   unbounded — one tenant's noisy CI can monopolize a worker's
