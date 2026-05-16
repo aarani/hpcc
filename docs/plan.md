@@ -38,7 +38,8 @@ authoritative chronology.
   agent wire schema, scheduler, worker, wire protocol, audit, paranoid mode,
   rootfs hardening.
 - [Phase 5: Observability & Polish](plan/phase-5-observability.md) — stats,
-  cache inspection, miss reasons, configuration, eviction.
+  cache inspection, miss reasons, configuration, security event log,
+  eviction.
 - [Project Structure](plan/project-structure.md) — repo layout.
 - [Design Decisions](plan/design-decisions.md) — hashing, storage, sandbox
   model, wire protocols, security.

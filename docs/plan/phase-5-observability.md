@@ -86,7 +86,79 @@ level = "info"                # "debug" | "info" | "warn" | "error"
 file  = "..."
 ```
 
-### 5.5 Eviction
+### 5.5 Security Event Log
+
+The §4.12 audit trail is the *success* table — one row per
+completed compile, reproducible by digest. The security event log
+is its complement: one record per *rejected* or *anomalous*
+interaction, where the question auditors ask is "who tried what
+and why was it refused." Separate stream so an investigator can
+read it without filtering through millions of green-path audit
+rows.
+
+Each event is a structured record with at least: `ts`, `actor`
+(`tenant_id` if a verified JWT was attached, else the peer's
+TLS-cert fingerprint and `remote_addr`), `component`
+(`scheduler` / `worker` / `agent` / `daemon`), `kind` (one of
+the categories below), `reason` (free-form, but stable enough to
+group on), and `request_id` so a single client retry storm
+collates into one investigation.
+
+Categories worth logging:
+
+- **Auth failures.**
+  - OAuth token-exchange rejected at the IdP (`token_url`
+    returned non-200) — scheduler.
+  - JWT signature invalid, expired, or claims missing required
+    fields (`tenant_id`, `image_digest`, `worker_id`) — both
+    scheduler (incoming) and worker (route-token verification).
+  - TLS cert fingerprint mismatch when a client dials a worker —
+    client-side, but worth logging so the scheduler can correlate
+    against routing decisions it made for that
+    `(tenant_id, worker_id)`.
+- **Authorization mismatches.** Verified JWT but the request
+  doesn't line up: wrong `worker_id` for the worker that received
+  it, image digest the worker doesn't have prepared,
+  `tenant_id` not registered with the scheduler.
+- **Wire-protocol violations.** Compile RPC missing the route
+  token; `ExecHeader` not the first agent frame; `OutputFile`
+  path failing the runner's path-traversal guard. These should
+  not happen from a well-formed client; one occurrence is a
+  client bug or a probe.
+- **CAS abuse.** Worker BLAKE3 recompute disagrees with the
+  client-claimed digest (cache-poison attempt — see
+  [docs/cas.md](../cas.md) §"Trust"); `FindMissingBlobs` /
+  `UploadBlobs` against a manifest the tenant isn't authorized
+  for; per-tenant upload quota tripped (once §4.5 wires it).
+- **Image hardening events.** Tar-bomb caps tripped
+  (`ErrTarTotalBytesExceeded` / `ErrTarEntryCountExceeded`);
+  tar-path rejects (`..`, NUL, absolute-in-archive); hardlink
+  target outside the image; OCI digest mismatch at pull time.
+- **Sandbox health.** VM crash mid-job, agent stream errored
+  before `ExecResult`, jailer cleanup left mountpoints behind.
+  Lower-severity than the categories above (these are bugs or
+  the kernel's fault, not adversarial), but the same row format
+  so the same query surfaces them.
+
+Surface:
+
+- **Structured log** to the same writer the rest of the
+  component uses, with `level = "warn"` or `"error"` depending
+  on severity. Auth failures and CAS abuse default to `warn` (a
+  single occurrence is a misconfigured client; a flood is
+  something else); wire violations and tar-bomb caps default to
+  `error` (no client should ever produce one).
+- **Prometheus counters** labelled by `(component, kind,
+  tenant_id)` so dashboards can alert on rate. `tenant_id` is
+  bounded cardinality in any realistic deployment; if it isn't,
+  drop it from the label set and keep the structured-log version
+  for forensics.
+- **Durable sidecar.** Same sink as the §4.12 audit trail —
+  whichever durable target the operator wires up should receive
+  both streams so an investigator doesn't have to join across
+  systems.
+
+### 5.6 Eviction
 
 - LRU with max size (default 10GB) for local cache.
 - Watermark-gated eviction for S3 cache (§3.5) — already implemented.
