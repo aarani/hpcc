@@ -108,6 +108,41 @@ func RewritePathPrefix(inv *Invocation, hostPrefix, vmPrefix string) *Invocation
 	return &cp
 }
 
+// InjectReproducibilityFlags appends compiler-family-specific flags
+// that make `.obj` / `.pdb` output bytes deterministic across Execs.
+// Without these the worker stages each compile under a per-Exec
+// subdirectory (`C:\src\<exec-id>\...`) and the compiler embeds that
+// path into its output — two Execs of the same source produce
+// byte-different outputs, defeating reproducibility audits and
+// content-addressed output caching.
+//
+// MSVC: `/d1trimfile:<srcRoot>` strips srcRoot from embedded source
+// paths in the `.obj`. `/PDBSourcePath:<srcRoot>` does the same for
+// the PDB symbol records. srcRoot is the platform-neutral
+// `/src` token here; the worker's runtime translator rewrites it to
+// the concrete per-Exec staging dir at Exec time, so by the time
+// cl.exe sees the flag the prefix is fully resolved.
+//
+// GNU / Clang: not auto-injected yet. The natural form would be
+// `-ffile-prefix-map=<srcRoot>=.`, but the runtime translator's
+// boundary check rejects `=` as not-a-path-separator so the `/src`
+// inside that flag wouldn't get rewritten to the per-Exec path —
+// the strip would target the wrong prefix. Tracked as still-open in
+// docs/plan/phase-4-distributed.md §4.1.1.
+//
+// Append-only, never duplicates: MSVC accepts `/d1trimfile:` multiple
+// times and applies each prefix in order, so a user-supplied
+// `/d1trimfile:` for their project root composes cleanly with our
+// staging-dir strip.
+func InjectReproducibilityFlags(args []string, family enum.Family, srcRoot string) []string {
+	switch family {
+	case enum.MSVCFamily:
+		return append(args, "/d1trimfile:"+srcRoot, "/PDBSourcePath:"+srcRoot)
+	default:
+		return args
+	}
+}
+
 // RewriteForCAS prepares an Invocation for CAS-mode dispatch. It rewrites:
 //
 //   - All paths matching projectRoot to live under srcRoot ("/src" inside

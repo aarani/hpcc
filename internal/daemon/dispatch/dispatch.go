@@ -331,6 +331,11 @@ func (d *Dispatcher) dispatchCAS(ctx context.Context, c compiler.Compiler, inv *
 	// agent already auto-streams from. The list of original paths
 	// drives the client-side write-back after the response.
 	finalArgs, extraOutputPaths := compiler.RewriteDepEmissionForCAS(rewritten.RawArgs, "/out")
+	// Append family-specific reproducibility flags so the per-Exec
+	// staging-dir prefix doesn't leak into `.obj` / `.pdb` bytes.
+	// MSVC gets /d1trimfile + /PDBSourcePath; GNU is a no-op until
+	// the runtime translator learns about `=` boundaries.
+	finalArgs = compiler.InjectReproducibilityFlags(finalArgs, c.Family(), "/src")
 	entryPath, err := projectRelative(projectRoot, inv.Inputs[0])
 	if err != nil {
 		return nil, fmt.Errorf("compute entry_path: %w", err)

@@ -475,6 +475,22 @@ func hashFileBlob(path string) (BlobRef, error) {
 // distinct (path, digest) sequences cannot collide via boundary
 // shifting). Big-endian to match the convention in Invocation.CacheKey.
 //
+// Path bytes are ASCII-lowercased before mixing in so case-insensitive
+// filesystems (Windows NTFS, macOS APFS by default) produce the same
+// manifest digest as case-sensitive ones (Linux ext4, APFS case-
+// sensitive). A Windows client whose `/showIncludes` emits
+// `src\foo.h` and a Linux client whose `gcc -M` emits `src/Foo.h`
+// pointing at the byte-identical file will compute the same key
+// and cross-developer-hit. BlobRef.Path stays original-case for the
+// worker — materialization preserves what the compile expects to
+// open (`Foo.h`, not `foo.h`), so case-sensitive Linux projects with
+// genuinely distinct `Foo.h` and `foo.h` files keep working: both
+// blobs go into the manifest with different content digests, so the
+// aggregate digest still distinguishes the "has both" case from the
+// "has only one" case. Those projects just can't cross-platform-hit
+// a Windows version of themselves (which makes sense, since Windows
+// can't represent both files anyway).
+//
 // Callers must sort blobs by Path before calling. Exported so the
 // worker can re-verify a client-supplied manifest using the exact
 // same algorithm BuildManifest uses on the client side; drift between
@@ -483,12 +499,43 @@ func AggregateManifestDigest(blobs []BlobRef) [32]byte {
 	h := blake3.New()
 	var lenbuf [8]byte
 	for _, b := range blobs {
-		binary.BigEndian.PutUint64(lenbuf[:], uint64(len(b.Path)))
+		folded := asciiLower(b.Path)
+		binary.BigEndian.PutUint64(lenbuf[:], uint64(len(folded)))
 		h.Write(lenbuf[:])
-		h.Write([]byte(b.Path))
+		h.Write([]byte(folded))
 		h.Write(b.Digest[:])
 	}
 	var out [32]byte
 	copy(out[:], h.Sum(nil))
 	return out
+}
+
+// asciiLower returns s with A–Z folded to a–z. Restricted to ASCII on
+// purpose: Unicode-aware case folding is locale-sensitive and would
+// disagree across hosts (Turkish dotted/dotless I, German ß, etc.) —
+// exactly the kind of "two clients silently produce different keys"
+// failure mode the §4.1.1 path-normalization story is trying to
+// prevent. Filenames in C/C++ projects in practice are ASCII; any
+// non-ASCII bytes pass through unchanged and still hash consistently
+// across hosts.
+func asciiLower(s string) string {
+	hasUpper := false
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			hasUpper = true
+			break
+		}
+	}
+	if !hasUpper {
+		return s
+	}
+	b := make([]byte, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		b[i] = c
+	}
+	return string(b)
 }

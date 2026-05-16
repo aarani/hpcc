@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/aarani/hpcc/internal/enum"
 )
 
 func TestRewriteForCAS_rewritesProjectPathsAndOutput(t *testing.T) {
@@ -739,6 +741,34 @@ func TestRewriteForPreprocessed_MSVC_UnknownFlagKept(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("unknown flag was dropped, got %v", got.RawArgs)
+	}
+}
+
+func TestInjectReproducibilityFlags_MSVC(t *testing.T) {
+	in := []string{"/c", "/src/foo.cpp", "/Fo/out/foo.obj"}
+	got := InjectReproducibilityFlags(in, enum.MSVCFamily, "/src")
+	want := []string{
+		"/c", "/src/foo.cpp", "/Fo/out/foo.obj",
+		"/d1trimfile:/src", "/PDBSourcePath:/src",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("MSVC injection mismatch\n got = %v\nwant = %v", got, want)
+	}
+}
+
+func TestInjectReproducibilityFlags_GNUUnchanged(t *testing.T) {
+	in := []string{"-c", "/src/foo.c", "-o", "/out/foo.o"}
+	got := InjectReproducibilityFlags(in, enum.GNUFamily, "/src")
+	if !reflect.DeepEqual(got, in) {
+		t.Errorf("GNU args should pass through unchanged until the translator handles `=` boundaries\n got = %v\nwant = %v", got, in)
+	}
+}
+
+func TestInjectReproducibilityFlags_UnknownFamilyUnchanged(t *testing.T) {
+	in := []string{"-c", "/src/foo.c"}
+	got := InjectReproducibilityFlags(in, enum.UnknownFamily, "/src")
+	if !reflect.DeepEqual(got, in) {
+		t.Errorf("unknown family should pass through\n got = %v\nwant = %v", got, in)
 	}
 }
 

@@ -766,3 +766,66 @@ func TestBuildManifest_noMarkerKeepsAbsolutePaths(t *testing.T) {
 		t.Errorf("path %q should stay absolute when no .hpcc marker is present", m.Blobs[0].Path)
 	}
 }
+
+func TestAggregateManifestDigest_caseInsensitivePaths(t *testing.T) {
+	// Same content blob referenced under three case-variations of
+	// the same path. The aggregate digest is supposed to be
+	// case-insensitive (lowercase fold before hashing) so a Linux
+	// client whose -M output emitted "src/Foo.h" and a Windows
+	// client whose /showIncludes emitted "src/foo.h" hit the same
+	// cache key.
+	digest := [32]byte{0x42}
+	mixed := []BlobRef{{Path: "src/Foo.h", Digest: digest, Size: 10}}
+	lower := []BlobRef{{Path: "src/foo.h", Digest: digest, Size: 10}}
+	upper := []BlobRef{{Path: "SRC/FOO.H", Digest: digest, Size: 10}}
+
+	a := AggregateManifestDigest(mixed)
+	b := AggregateManifestDigest(lower)
+	c := AggregateManifestDigest(upper)
+	if a != b {
+		t.Errorf("digest for mixed case must equal lowered case; %x vs %x", a, b)
+	}
+	if a != c {
+		t.Errorf("digest for mixed case must equal upper case; %x vs %x", a, c)
+	}
+}
+
+func TestAggregateManifestDigest_distinguishesDistinctContent(t *testing.T) {
+	// A Linux project with both Foo.h and foo.h as DISTINCT files
+	// (genuinely different content) must still produce a different
+	// aggregate digest from a project that has only one of them.
+	// Case-folding the path bytes doesn't merge their content
+	// digests, so the per-blob hash inputs still differ.
+	d1 := [32]byte{0x01}
+	d2 := [32]byte{0x02}
+	both := []BlobRef{
+		{Path: "Foo.h", Digest: d1, Size: 1},
+		{Path: "foo.h", Digest: d2, Size: 1},
+	}
+	onlyLower := []BlobRef{
+		{Path: "foo.h", Digest: d2, Size: 1},
+	}
+	a := AggregateManifestDigest(both)
+	b := AggregateManifestDigest(onlyLower)
+	if a == b {
+		t.Errorf("two-blob digest should differ from one-blob digest even with case-folding; both got %x", a)
+	}
+}
+
+func TestAsciiLower(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"foo", "foo"},
+		{"Foo", "foo"},
+		{"FOO.H", "foo.h"},
+		{"src/Foo.h", "src/foo.h"},
+		// Non-ASCII passes through. We deliberately don't do Unicode
+		// case folding — locale-sensitive and would diverge per host.
+		{"Ünìçødé", "Ünìçødé"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := asciiLower(tc.in); got != tc.want {
+			t.Errorf("asciiLower(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
