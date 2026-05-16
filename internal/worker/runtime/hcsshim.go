@@ -71,6 +71,16 @@ const (
 	pauseMountSub = ".hpcc-pause-mount"
 	agentFileName = "agent.exe"
 	agentMountSub = ".hpcc-agent-mount"
+
+	// Per-Exec staging roots the Windows agent (agent/server.go +
+	// agent/server_windows.go) creates inside the utility VM —
+	// stagingRoot = C:\hpcc, per-Exec subdirs at .\src\<ExecID> and
+	// .\out\<ExecID>. Used by execViaAgentTransport to rewrite the
+	// /src and /out tokens in argv/cwd to the absolute paths the
+	// agent's runCompiler will chdir into and the agent's
+	// streamOutputs will walk.
+	guestAgentStagingSrc = `C:\hpcc\src`
+	guestAgentStagingOut = `C:\hpcc\out`
 )
 
 // HcsshimOptions is the host-side configuration for the containerd +
@@ -573,11 +583,29 @@ func (c *hcsshimContainer) Exec(ctx context.Context, req ExecRequest) (ExecResul
 // /src → C:\hpcc\src\<ExecID> rewrite at runCompiler time, just like
 // the host-side translator does in process-isolation mode.
 func (c *hcsshimContainer) execViaAgentTransport(ctx context.Context, req ExecRequest) (ExecResult, error) {
+	// Translate the platform-neutral /src and /out tokens in argv +
+	// cwd to the agent's in-VM staging dirs BEFORE shipping them
+	// across HvSocket. The agent runs each Exec under
+	// stagingRoot/{src,out}/<ExecID> (C:\hpcc\{src,out}\<ExecID>
+	// on Windows) and does no path rewriting itself — runCompiler
+	// just sets cmd.Dir = hdr.Cwd verbatim. So "/out" reaches the
+	// agent as a literal Windows path that doesn't exist, and
+	// chdir fails with "system cannot find the file specified."
+	// Mirrors firecracker.go's host-side translation against its
+	// /run/hpcc/{src,out}/<id> staging.
+	inSrc := guestAgentStagingSrc + `\` + req.ExecID
+	inOut := guestAgentStagingOut + `\` + req.ExecID
+	argv := translateArgs(req.Argv, inSrc, inOut)
+	cwd := req.Cwd
+	if cwd != "" {
+		cwd = translateExecPath(cwd, inSrc, inOut)
+	}
+
 	result, err := execViaAgent(ctx, c.agentConn, AgentExecRequest{
 		ExecID:      req.ExecID,
-		Argv:        req.Argv,
+		Argv:        argv,
 		Env:         req.Env,
-		Cwd:         req.Cwd,
+		Cwd:         cwd,
 		SrcHostPath: req.SrcHostPath,
 		OutHostPath: req.OutHostPath,
 		Stdout:      req.Stdout,

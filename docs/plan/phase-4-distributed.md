@@ -274,15 +274,25 @@ the existing Task.Exec + copyTree path under process isolation.
 `Container.Stop` closes the connection before killing the task so
 a pending stream surfaces clean EOF rather than a transport reset.
 
-*Still in-flight:* the integration only end-to-end-tests under nested
-virt, which GitHub-hosted Windows-2022 runners don't expose; the
-existing windows-runtime CI job still pins `isolation = "process"`
-so it exercises the pause + Task.Exec path. A self-hosted Windows
-runner (or local repro on a Hyper-V host) is needed to validate the
-new agent transport against a live utility VM, in particular: the
-`"<container-id>@vm"` naming contract from
-containerd-shim-runhcs-v1, and the HvSocket dial completing inside
-the post-`task.Start` window.
+*CI coverage:* two jobs in `.github/workflows/suite.yml`:
+
+- `windows-runtime` on `windows-2022` (GitHub-hosted) exercises the
+  process-isolation path — pause + Task.Exec + copyTree. Runs on
+  every push.
+- `windows-runtime-hyperv` on `[self-hosted, nested]` exercises the
+  Hyper-V path — `hpcc-agent.exe` as PID 1, HvSocket dial against
+  the utility VM, gRPC stream for Exec. The `nested` runner label
+  gates this on a runner with nested virtualization actually
+  enabled; without a matching runner the job stays pending rather
+  than firing on a non-virt host.
+
+Both jobs share the install / containerd-service / pull-and-build
+plumbing; the only thing that changes between them is which
+isolation mode the test asks for and whether the agent binary gets
+staged. `TestHcsshim_HyperV_EndToEnd_Integration` is gated on
+`HPCC_HCSSHIM_RUN_HYPERV` so it skips cleanly off nested-virt hosts
+— same test binary is safe to run on hosted and self-hosted
+runners.
 
 Process-isolation containers (CI, dev) keep using silo bind mounts
 because there's no partition boundary to cross; the §4.1 security

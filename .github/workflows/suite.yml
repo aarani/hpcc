@@ -195,6 +195,126 @@ jobs:
         timeout-minutes: 75
         run: go test -tags=integration -count=1 -v -timeout=60m -run TestHcsshim_EndToEnd_Integration ./internal/worker/runtime/...
 
+  windows-runtime-hyperv:
+    name: Hcsshim runtime e2e (Hyper-V isolation)
+    # Self-hosted runner labelled `nested` for nested-virt-capable
+    # Hyper-V hosts. GitHub-hosted windows-2022 runners can't boot a
+    # utility VM, so the process-isolation job above is all we can run
+    # there; this job is what gives us coverage of the real audit-
+    # recognised boundary (Hyper-V utility VM + hpcc-agent over
+    # HvSocket). Skipped automatically when no matching runner is
+    # available.
+    runs-on: [self-hosted, nested]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        # No-op on a self-hosted runner that already has the right
+        # version. setup-go is idempotent and adds to PATH for this
+        # job either way.
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.26.3'
+
+      - name: Ensure containerd + runhcs shim installed
+        # Windows PowerShell 5.1 (built into every Windows) rather
+        # than pwsh — self-hosted runners typically don't ship
+        # PowerShell 7, and the install steps below don't use any
+        # PS7-only syntax. The GitHub-hosted windows-runtime job
+        # above still uses pwsh because hosted images come with it.
+        shell: powershell
+        # Idempotent install: self-hosted runners persist state across
+        # jobs, so we skip the download if a previous run already
+        # extracted containerd here. Same install layout as the
+        # GitHub-hosted windows-runtime job above so the two stay
+        # interchangeable from the test's point of view.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $install = 'C:\Program Files\containerd'
+          $bin = "$install\bin"
+          if (Test-Path "$bin\containerd.exe") {
+            Write-Host "containerd already present at $bin"
+          } else {
+            $version = '1.7.27'
+            $url = "https://github.com/containerd/containerd/releases/download/v$version/containerd-$version-windows-amd64.tar.gz"
+            $tar = "$env:RUNNER_TEMP\containerd.tar.gz"
+            New-Item -Path $install -ItemType Directory -Force | Out-Null
+            Invoke-WebRequest -Uri $url -OutFile $tar -UseBasicParsing
+            tar.exe -xzf $tar -C $install
+          }
+          # ASCII encoding avoids the BOM Windows PowerShell's
+          # `-Encoding utf8` would prepend. GITHUB_PATH and
+          # GITHUB_ENV are read line-by-line and a leading BOM
+          # breaks the first entry's parsing.
+          "$bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding ascii -Append
+          & "$bin\containerd.exe" --version
+          & "$bin\containerd-shim-runhcs-v1.exe" --version
+
+      - name: Ensure containerd service running
+        shell: powershell
+        # Same idempotence story as the install: only register the
+        # service if it isn't already there, only start it if it
+        # isn't running. Wait for the pipe regardless so the test
+        # doesn't race a slow service start.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bin = 'C:\Program Files\containerd\bin'
+          $svc = Get-Service -Name containerd -ErrorAction SilentlyContinue
+          if (-not $svc) {
+            & "$bin\containerd.exe" --register-service
+          }
+          $svc = Get-Service -Name containerd
+          if ($svc.Status -ne 'Running') {
+            Start-Service containerd
+          }
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Get-Date) -lt $deadline) {
+            if (Test-Path \\.\pipe\containerd-containerd) { break }
+            Start-Sleep -Milliseconds 500
+          }
+          if (-not (Test-Path \\.\pipe\containerd-containerd)) {
+            Write-Error 'containerd pipe never appeared'
+            Get-Service containerd | Format-List *
+            exit 1
+          }
+          & "$bin\ctr.exe" version
+
+      - name: Build hpcc-pause.exe and hpcc-agent.exe
+        shell: powershell
+        # The Hyper-V path needs BOTH binaries staged: pause.exe goes
+        # into cdimage's prepared-image alias (worker config still
+        # carries it for the process-isolation fallback) and the
+        # agent is the actual PID 1 of the utility VM. Both go to
+        # $RUNNER_TEMP so artefacts don't accumulate in the working
+        # copy across runs.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pause = "$env:RUNNER_TEMP\hpcc-pause.exe"
+          $agent = "$env:RUNNER_TEMP\hpcc-agent.exe"
+          Push-Location pause
+          go build -o $pause .
+          Pop-Location
+          Push-Location agent
+          go build -o $agent .
+          Pop-Location
+          "HPCC_HCSSHIM_PAUSE=$pause" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+          "HPCC_HCSSHIM_AGENT=$agent" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+
+      - name: Run Hyper-V isolation integration test
+        # HPCC_HCSSHIM_RUN_HYPERV unblocks TestHcsshim_HyperV_EndToEnd_Integration;
+        # without it the test skips so the same test binary is
+        # safe to run on non-nested hosts. PauseHostPath /
+        # AgentHostPath come from the previous step's GITHUB_ENV.
+        #
+        # 75-minute job timeout / 60-minute test timeout matches the
+        # process-isolation job so a future bigger image (MSVC, ~30
+        # GB) doesn't need separate ceiling-tuning per isolation mode.
+        env:
+          HPCC_HCSSHIM_ADDRESS: \\.\pipe\containerd-containerd
+          HPCC_HCSSHIM_RUN_HYPERV: '1'
+        timeout-minutes: 75
+        run: go test -tags=integration -count=1 -v -timeout=60m -run TestHcsshim_HyperV_EndToEnd_Integration ./internal/worker/runtime/...
+
   firecracker-runtime:
     name: Firecracker runtime e2e
     runs-on: ubuntu-latest
