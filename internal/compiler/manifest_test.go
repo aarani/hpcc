@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -257,7 +258,10 @@ func TestFindProjectRoot_noMarkerReturnsEmpty(t *testing.T) {
 
 func TestNormalizeManifestPath_relativizesUnderRoot(t *testing.T) {
 	root := "/home/alice/proj"
-	got := normalizeManifestPath("/home/alice/proj/src/main.c", root)
+	got, err := normalizeManifestPath("/home/alice/proj/src/main.c", root)
+	if err != nil {
+		t.Fatalf("normalizeManifestPath: %v", err)
+	}
 	// Project-relative paths are emitted with forward slashes on
 	// every platform so a Linux client and a Windows client
 	// compiling the same project produce identical manifest digests
@@ -270,16 +274,65 @@ func TestNormalizeManifestPath_relativizesUnderRoot(t *testing.T) {
 
 func TestNormalizeManifestPath_keepsSystemPathsAbsolute(t *testing.T) {
 	root := "/home/alice/proj"
-	got := normalizeManifestPath("/usr/include/stdio.h", root)
+	got, err := normalizeManifestPath("/usr/include/stdio.h", root)
+	if err != nil {
+		t.Fatalf("normalizeManifestPath: %v", err)
+	}
 	if got != "/usr/include/stdio.h" {
 		t.Errorf("system header path was rewritten to %q; should stay absolute", got)
 	}
 }
 
 func TestNormalizeManifestPath_emptyRootIsNoOp(t *testing.T) {
-	got := normalizeManifestPath("/home/alice/proj/src/main.c", "")
+	got, err := normalizeManifestPath("/home/alice/proj/src/main.c", "")
+	if err != nil {
+		t.Fatalf("normalizeManifestPath: %v", err)
+	}
 	if got != "/home/alice/proj/src/main.c" {
 		t.Errorf("got %q, want input unchanged", got)
+	}
+}
+
+func TestNormalizeManifestPath_rejectsUNC(t *testing.T) {
+	cases := []struct {
+		name string
+		p    string
+		root string
+	}{
+		{
+			name: "raw UNC input",
+			p:    `\\fs\share\proj\src\main.c`,
+			root: `Z:\proj`,
+		},
+		{
+			name: "extended-length UNC input",
+			p:    `\\?\UNC\fs\share\proj\src\main.c`,
+			root: `Z:\proj`,
+		},
+		{
+			name: "UNC project root",
+			p:    `Z:\proj\src\main.c`,
+			root: `\\fs\share\proj`,
+		},
+		{
+			name: "UNC input with empty root (system path path)",
+			// Even when there's no .hpcc marker to relativize
+			// against, a UNC path in the manifest would be a silent
+			// cross-developer-hit miss. Reject up front.
+			p:    `\\fs\share\toolchain\include\stdio.h`,
+			root: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := normalizeManifestPath(tc.p, tc.root)
+			if err == nil {
+				t.Fatal("expected error rejecting UNC, got nil")
+			}
+			if !strings.Contains(err.Error(), "UNC") {
+				t.Errorf("error %q should mention UNC", err)
+			}
+		})
 	}
 }
 

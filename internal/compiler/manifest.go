@@ -70,32 +70,75 @@ func FindProjectRoot(startDir string) string {
 //     the same project produce identical manifest digests. The worker
 //     already calls `filepath.FromSlash` when materializing, so this
 //     is a one-sided change.
+//   - UNC paths (`\\server\share\...`, including the
+//     `\\?\UNC\server\share\...` form after the extended-length strip)
+//     are explicitly rejected with an error rather than passed
+//     through. Without runtime resolution of the share-to-drive
+//     mapping, the cache key for the same file accessed via UNC vs
+//     via a mapped drive would differ — silent cache misses no
+//     user can debug. The error tells the caller to map the share
+//     to a drive letter or run from a local copy.
 //
 // Out-of-project absolute paths stay platform-native on purpose —
 // they identify toolchain resources, and `/usr/include/foo.h` on
 // Linux SHOULDN'T cross-platform-collide with `C:\\…\\foo.h` on
 // Windows because they came from different toolchain images.
-func normalizeManifestPath(p, projectRoot string) string {
+func normalizeManifestPath(p, projectRoot string) (string, error) {
+	if err := rejectUNC(p, "input path"); err != nil {
+		return "", err
+	}
 	if projectRoot == "" {
-		return p
+		return p, nil
 	}
 	absP, err := filepath.Abs(p)
 	if err != nil {
-		return p
+		return p, nil
 	}
 	absP = stripExtendedLengthPrefix(absP)
 	projectRoot = stripExtendedLengthPrefix(projectRoot)
+	if err := rejectUNC(absP, "input path"); err != nil {
+		return "", err
+	}
+	if err := rejectUNC(projectRoot, "project root"); err != nil {
+		return "", err
+	}
 
 	rel, err := filepath.Rel(projectRoot, absP)
 	if err != nil {
-		return p
+		return p, nil
 	}
 	// filepath.Rel returns a cleaned relative path; ".." can only
 	// appear as a leading segment if absP is outside projectRoot.
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return p
+		return p, nil
 	}
-	return filepath.ToSlash(rel)
+	return filepath.ToSlash(rel), nil
+}
+
+// rejectUNC errors out on Windows UNC paths (`\\server\share\...`)
+// regardless of whether they arrive in raw or `\\?\UNC\…` extended-
+// length form. Applies stripExtendedLengthPrefix internally so the
+// check is correct whether the caller has already stripped or not —
+// matters because on a non-Windows host `filepath.Abs` mangles the
+// `\\?\` prefix before the strip would otherwise get a chance to
+// run, but a UNC input on a real Windows client must still be
+// caught.
+func rejectUNC(p, what string) error {
+	stripped := stripExtendedLengthPrefix(p)
+	if !strings.HasPrefix(stripped, `\\`) {
+		return nil
+	}
+	// `\\?\` that wasn't a UNC variant (e.g. `\\?\C:\foo`) is a
+	// drive-letter path under the extended-length escape, not a
+	// share — let it through; stripExtendedLengthPrefix already
+	// rewrites the recognised forms, anything left starting with
+	// `\\?\` is uninterpretable and fails better downstream.
+	if strings.HasPrefix(stripped, `\\?\`) {
+		return nil
+	}
+	return fmt.Errorf("UNC %s %q is not supported: map the share to a drive letter "+
+		"or compile from a local copy (UNC vs. mapped-drive cache keys would diverge silently)",
+		what, p)
 }
 
 // stripExtendedLengthPrefix removes the Win32 `\\?\` extended-length
@@ -233,7 +276,11 @@ func BuildManifest(inv *Invocation, ctx *Context) (*Manifest, error) {
 		if err != nil {
 			return nil, err
 		}
-		ref.Path = normalizeManifestPath(full, projectRoot)
+		normalized, err := normalizeManifestPath(full, projectRoot)
+		if err != nil {
+			return nil, fmt.Errorf("normalize %q: %w", full, err)
+		}
+		ref.Path = normalized
 		blobs = append(blobs, ref)
 	}
 
