@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -160,6 +161,47 @@ func ExtractDepEmissionPaths(args []string) []string {
 		}
 	}
 	return out
+}
+
+// CollectDepEmissionExtras reads the dep-emission output files the
+// compiler just produced (one per path returned by
+// ExtractDepEmissionPaths) off disk, returning them keyed by their
+// as-spelled argv path. Used by every callsite that runs the user's
+// compiler with `-Wp,-MMD,…` / `-MF` still in argv (i.e. expects the
+// .d files on disk afterwards) and wants to round-trip them through
+// the cache so warm hits replay the same .d files the cold compile
+// produced.
+//
+// Returns nil if argv carries no dep-emission flags. Returns an
+// (otherwise non-nil) map even when individual files are missing —
+// a flag like `-Wp,-MMD,<path>` may produce no output for a source
+// with no #includes; that's not an error, just nothing to cache for
+// that entry.
+//
+// Relative paths are resolved against inv.Cwd. Read errors other
+// than ENOENT are silently skipped on the same theory: an extras
+// blob is best-effort, the primary artifact is the contract.
+func CollectDepEmissionExtras(inv *Invocation) map[string][]byte {
+	depPaths := ExtractDepEmissionPaths(inv.RawArgs)
+	if len(depPaths) == 0 {
+		return nil
+	}
+	extras := make(map[string][]byte, len(depPaths))
+	for _, p := range depPaths {
+		full := p
+		if !filepath.IsAbs(p) && inv.Cwd != "" {
+			full = filepath.Join(inv.Cwd, p)
+		}
+		b, err := os.ReadFile(full)
+		if err != nil {
+			continue
+		}
+		extras[p] = b
+	}
+	if len(extras) == 0 {
+		return nil
+	}
+	return extras
 }
 
 // splitWpDepEmission parses a -Wp,-M*,PATH flag into (prefix, path).

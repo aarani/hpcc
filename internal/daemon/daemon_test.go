@@ -196,6 +196,64 @@ func TestDaemonCacheHit(t *testing.T) {
 	}
 }
 
+// Pins the fix for a regression where local-mode cache hits restored
+// the .o but not the user's -Wp,-MMD,<path> .d file. The kernel's
+// fixdep (and ninja's depfile parser) re-reads the .d on every build;
+// without it, a warm rebuild after `make clean` fails:
+//
+//	fixdep: error opening file: scripts/mod/.empty.o.d: No such file
+//	make: *** [scripts/Makefile.build:289: scripts/mod/empty.o] Error 2
+//
+// The cold compile naturally writes the .d (clang/gcc -MMD does so as
+// a side effect of -c). The fix is to capture it into result.Extras
+// after Invoke so the cache round-trips it; this test deletes both
+// .o and .d between passes and asserts both come back.
+func TestDaemonCacheHitRestoresDepFile(t *testing.T) {
+	clangAvailable(t)
+	ctx := setupTestContext(t)
+	d := NewDefaultDaemon()
+	d.Contexts.Store("clang", ctx)
+
+	l := startTestDaemon(t, d)
+	conn := dialDaemon(t, l)
+
+	dir := t.TempDir()
+	src := writeSource(t, dir, "withdep.c", "int f(void) { return 0; }\n")
+	out := filepath.Join(dir, "withdep.o")
+	dep := filepath.Join(dir, "withdep.d")
+
+	req := &gen.CompileRequest{
+		// -Wp,-MMD,<path> is the form the kernel build uses; we want
+		// CollectDepEmissionExtras to recognise it (and not just bare
+		// -MMD with implicit path).
+		Args: []string{"clang", "-c", src, "-o", out, "-Wp,-MMD," + dep},
+	}
+
+	sendCompileRequest(t, conn, req)
+	resp1 := readCompileResponse(t, conn)
+	if resp1.ExitCode != 0 {
+		t.Fatalf("first compile failed: %s", resp1.Stderr)
+	}
+	if _, err := os.Stat(dep); err != nil {
+		t.Fatalf("cold compile did not produce .d file at %s: %v", dep, err)
+	}
+
+	os.Remove(out)
+	os.Remove(dep)
+
+	sendCompileRequest(t, conn, req)
+	resp2 := readCompileResponse(t, conn)
+	if resp2.ExitCode != 0 {
+		t.Fatalf("cached compile failed: %s", resp2.Stderr)
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Fatalf("output file not restored from cache: %v", err)
+	}
+	if _, err := os.Stat(dep); err != nil {
+		t.Fatalf("dep file not restored from cache: %v", err)
+	}
+}
+
 func TestDaemonCompileError(t *testing.T) {
 	clangAvailable(t)
 	ctx := setupTestContext(t)

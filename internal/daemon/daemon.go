@@ -391,6 +391,22 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 		if len(fallbackWarning) > 0 {
 			result.Stderr = append(append([]byte{}, fallbackWarning...), result.Stderr...)
 		}
+		// Capture the user's dep-emission .d files (written by the
+		// compiler's own -MMD/-MF side effect during Invoke above) into
+		// result.Extras so the cache round-trips them. Without this,
+		// a warm rebuild after `make clean` gets the .o restored from
+		// cache but no .d, and tools that re-read the .d (kernel
+		// `fixdep`, ninja's depfile parser) fail. Same shape as
+		// dispatchPreprocessed's promotion.
+		if extras := compiler.CollectDepEmissionExtras(inv); extras != nil {
+			if result.Extras == nil {
+				result.Extras = extras
+			} else {
+				for k, v := range extras {
+					result.Extras[k] = v
+				}
+			}
+		}
 		if locallyCacheable {
 			_ = context.Cache.Store(inv, result)
 		}
