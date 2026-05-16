@@ -52,6 +52,49 @@ func TestNewHcsshim_RequiresAddressAndRunDir(t *testing.T) {
 			t.Errorf("error %q should mention pause_host_path", err)
 		}
 	})
+	t.Run("agent path missing under hyperv", func(t *testing.T) {
+		runDir := t.TempDir()
+		fakePause := filepath.Join(runDir, "pause.exe")
+		if err := os.WriteFile(fakePause, []byte("fake"), 0o755); err != nil {
+			t.Fatalf("write fake pause: %v", err)
+		}
+		_, err := NewHcsshim(HcsshimOptions{
+			Address:       `\\.\pipe\x`,
+			RunDir:        runDir,
+			Isolation:     IsolationHyperV,
+			PauseHostPath: fakePause,
+			// AgentHostPath deliberately omitted: hyperv mode must
+			// reject this configuration up front rather than fail
+			// the first compile.
+		})
+		if err == nil {
+			t.Fatal("expected error when agent_host_path is empty under hyperv")
+		}
+		if !strings.Contains(err.Error(), "agent_host_path") {
+			t.Errorf("error %q should mention agent_host_path", err)
+		}
+	})
+	t.Run("process isolation doesn't need agent path", func(t *testing.T) {
+		runDir := t.TempDir()
+		fakePause := filepath.Join(runDir, "pause.exe")
+		if err := os.WriteFile(fakePause, []byte("fake"), 0o755); err != nil {
+			t.Fatalf("write fake pause: %v", err)
+		}
+		// Process isolation skips the agent code path entirely;
+		// the only failure path here is dialing containerd at a
+		// non-existent pipe. We only care that the agent check
+		// didn't fire before the dial — anything other than an
+		// agent_host_path error is fine for this assertion.
+		_, err := NewHcsshim(HcsshimOptions{
+			Address:       `\\.\pipe\definitely-not-running`,
+			RunDir:        runDir,
+			Isolation:     IsolationProcess,
+			PauseHostPath: fakePause,
+		})
+		if err != nil && strings.Contains(err.Error(), "agent_host_path") {
+			t.Errorf("process isolation should not require agent_host_path; got %v", err)
+		}
+	})
 }
 
 func TestTranslateArgs_RewritesSrcAndOutRoots(t *testing.T) {

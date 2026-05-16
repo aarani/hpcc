@@ -261,17 +261,28 @@ utility VM GUID and returns a `*grpc.ClientConn`. Unit tests
 exercise the helper against an in-process gRPC server so the
 protocol shape is covered without nested-virt access.
 
-*Still open:* the hcsshim runtime needs to (a) stage
-`hpcc-agent.exe` alongside `pause.exe`, (b) override the container
-entrypoint to the agent rather than pause when isolation is
-Hyper-V, (c) look up the utility VM's GUID from the
-`containerd.Container` handle (hcsshim-internals call), (d) call
-`dialAgentHvsock` after container Start and store the connection
-on the container, (e) replace the Task.Exec + copyTree path in
-`Container.Exec` with `execViaAgent`. (c)–(e) need nested
-virtualization to end-to-end-test, which GitHub-hosted runners
-don't expose; landing the full integration will need a self-hosted
-Windows runner or local repro on a Hyper-V host.
+*Integration:* `Hcsshim.Start` now branches by `Isolation`. Under
+`hyperv` it stages `hpcc-agent.exe` (`AgentHostPath` is required),
+mounts only the agent dir (skipping the C:\src / C:\out scratch
+setup process-isolation needs), pivots the OCI entrypoint to
+`C:\.hpcc\agent.exe`, then resolves the runhcs utility VM's
+RuntimeID via `hcsshim.GetContainers({IDs: ["<container-id>@vm"]})`
+and dials the agent over HvSocket. The resulting `*grpc.ClientConn`
+hangs off `hcsshimContainer.agentConn`; `Container.Exec` checks for
+it and dispatches via `execViaAgent` when present, falling back to
+the existing Task.Exec + copyTree path under process isolation.
+`Container.Stop` closes the connection before killing the task so
+a pending stream surfaces clean EOF rather than a transport reset.
+
+*Still in-flight:* the integration only end-to-end-tests under nested
+virt, which GitHub-hosted Windows-2022 runners don't expose; the
+existing windows-runtime CI job still pins `isolation = "process"`
+so it exercises the pause + Task.Exec path. A self-hosted Windows
+runner (or local repro on a Hyper-V host) is needed to validate the
+new agent transport against a live utility VM, in particular: the
+`"<container-id>@vm"` naming contract from
+containerd-shim-runhcs-v1, and the HvSocket dial completing inside
+the post-`task.Start` window.
 
 Process-isolation containers (CI, dev) keep using silo bind mounts
 because there's no partition boundary to cross; the §4.1 security
