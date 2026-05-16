@@ -58,6 +58,23 @@ func FindProjectRoot(startDir string) string {
 //
 // An empty projectRoot disables normalization and is the right
 // behaviour when no `.hpcc` marker is found.
+//
+// Windows path canonicalization (§4.1.1):
+//   - The `\\?\` extended-length prefix is stripped from both `p` and
+//     `projectRoot` before relativizing. `\\?\C:\proj\src\foo.cpp` and
+//     `C:\proj\src\foo.cpp` are the same file; without this, two
+//     clients (or one client using one form for the project root and
+//     another for the input) would produce different manifest entries.
+//   - Project-relative paths are emitted with forward slashes (via
+//     `filepath.ToSlash`) so a Linux and a Windows client compiling
+//     the same project produce identical manifest digests. The worker
+//     already calls `filepath.FromSlash` when materializing, so this
+//     is a one-sided change.
+//
+// Out-of-project absolute paths stay platform-native on purpose —
+// they identify toolchain resources, and `/usr/include/foo.h` on
+// Linux SHOULDN'T cross-platform-collide with `C:\\…\\foo.h` on
+// Windows because they came from different toolchain images.
 func normalizeManifestPath(p, projectRoot string) string {
 	if projectRoot == "" {
 		return p
@@ -66,6 +83,9 @@ func normalizeManifestPath(p, projectRoot string) string {
 	if err != nil {
 		return p
 	}
+	absP = stripExtendedLengthPrefix(absP)
+	projectRoot = stripExtendedLengthPrefix(projectRoot)
+
 	rel, err := filepath.Rel(projectRoot, absP)
 	if err != nil {
 		return p
@@ -75,7 +95,25 @@ func normalizeManifestPath(p, projectRoot string) string {
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return p
 	}
-	return rel
+	return filepath.ToSlash(rel)
+}
+
+// stripExtendedLengthPrefix removes the Win32 `\\?\` extended-length
+// path prefix from p, leaving non-prefixed paths untouched. A no-op
+// on Linux/macOS paths (which can't legally start with that
+// sequence). Handles the UNC variant `\\?\UNC\server\share\...` by
+// rewriting to `\\server\share\...` so UNC paths stay recognisable
+// as UNC after the strip.
+func stripExtendedLengthPrefix(p string) string {
+	const prefix = `\\?\`
+	const uncPrefix = `\\?\UNC\`
+	if strings.HasPrefix(p, uncPrefix) {
+		return `\\` + p[len(uncPrefix):]
+	}
+	if strings.HasPrefix(p, prefix) {
+		return p[len(prefix):]
+	}
+	return p
 }
 
 // BlobRef names a single file in a source-closure manifest by path
