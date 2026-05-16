@@ -177,20 +177,30 @@ affect v1 or the parser):
   the same string in the hasher, or two developers compiling the same source
   via different mounts produce different keys. Couple with `/d1trimfile:` and
   `/PDBSourcePath:` (MSVC equivalents of `-ffile-prefix-map`) so embedded
-  paths in objects/PDBs don't poison the hash. **Partly shipped**:
-  `normalizeManifestPath` now strips `\\?\` (and `\\?\UNC\`) extended-length
-  prefixes before relativizing, emits project-relative paths with forward
-  slashes (Linux and Windows clients of the same `.hpcc`-rooted project
-  produce byte-identical manifest digests), and **rejects UNC paths
-  outright** rather than passing them through silently. UNC↔mapped-drive
-  resolution would require runtime lookup of share mappings; until that
-  lands the safer behaviour is to error up front with a clear message
-  ("map the share to a drive letter or compile from a local copy") so the
-  user can't accidentally produce two divergent cache keys for the same
-  file accessed through two different mounts. **Still open**: case-folding
-  (Windows is case-insensitive; Linux/macOS aren't), and the MSVC
-  `/d1trimfile:` / `/PDBSourcePath:` auto-injection so embedded paths
-  in `.obj` / `.pdb` files don't poison the hash.
+  paths in objects/PDBs don't poison the hash. **Mostly shipped**:
+  `normalizeManifestPath` strips `\\?\` (and `\\?\UNC\`) extended-length
+  prefixes, emits project-relative paths with forward slashes (Linux and
+  Windows clients of the same `.hpcc`-rooted project produce byte-identical
+  manifest digests), and **rejects UNC paths outright** rather than passing
+  them through silently — UNC↔mapped-drive resolution would need runtime
+  lookup of share mappings, so the safer behaviour is to error up front
+  with a clear message ("map the share to a drive letter or compile from
+  a local copy") so the user can't accidentally produce two divergent
+  cache keys for the same file. `AggregateManifestDigest` ASCII-folds
+  path bytes to lowercase before hashing so a Windows client whose
+  `/showIncludes` emits `src\foo.h` and a Linux client whose `gcc -M`
+  emits `src/Foo.h` hit the same cache key; `BlobRef.Path` stays
+  original-case for the worker so materialization opens the exact file
+  the compile expects. MSVC reproducibility flags
+  (`/d1trimfile:/src`, `/PDBSourcePath:/src`) are auto-injected by the
+  dispatcher for `MSVCFamily` compiles — the runtime translator
+  rewrites `/src` to the per-Exec staging dir so cl.exe gets the
+  concrete prefix at compile time, and `.obj` / `.pdb` outputs become
+  byte-identical across Execs. **Still open**: GNU/Clang
+  `-ffile-prefix-map=/src=.` auto-injection — the equivalent flag uses
+  `=` as a separator that the runtime translator's boundary check
+  (currently `/` or end-of-string) doesn't recognise; needs the
+  translator boundary set widened before injection lands.
 - **MAX_PATH (260) limit.** Monorepo builds blow past this routinely. Workers
   need `LongPathsEnabled` registry, and the worker may rewrite paths to
   `\\?\` form before invoking `cl.exe`.
