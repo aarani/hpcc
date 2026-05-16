@@ -24,34 +24,39 @@ var File_scheduler_proto protoreflect.FileDescriptor
 
 const file_scheduler_proto_rawDesc = "" +
 	"\n" +
-	"\x0fscheduler.proto\x12\bprotocol\x1a\x0emessages.proto2\xa5\x02\n" +
-	"\x10SchedulerService\x12=\n" +
+	"\x0fscheduler.proto\x12\bprotocol\x1a\x0emessages.proto2\xf4\x02\n" +
+	"\x10SchedulerService\x12M\n" +
+	"\fGetTenantIdP\x12\x1d.protocol.GetTenantIdPRequest\x1a\x1e.protocol.GetTenantIdPResponse\x12=\n" +
 	"\fAuthenticate\x12\x15.protocol.AuthRequest\x1a\x16.protocol.AuthResponse\x128\n" +
 	"\x05Route\x12\x16.protocol.RouteRequest\x1a\x17.protocol.RouteResponse\x12S\n" +
 	"\x0eRegisterWorker\x12\x1f.protocol.RegisterWorkerRequest\x1a .protocol.RegisterWorkerResponse\x12C\n" +
 	"\tHeartbeat\x12\x19.protocol.WorkerHeartbeat\x1a\x1b.protocol.HeartbeatResponseB\aZ\x05./genb\x06proto3"
 
 var file_scheduler_proto_goTypes = []any{
-	(*AuthRequest)(nil),            // 0: protocol.AuthRequest
-	(*RouteRequest)(nil),           // 1: protocol.RouteRequest
-	(*RegisterWorkerRequest)(nil),  // 2: protocol.RegisterWorkerRequest
-	(*WorkerHeartbeat)(nil),        // 3: protocol.WorkerHeartbeat
-	(*AuthResponse)(nil),           // 4: protocol.AuthResponse
-	(*RouteResponse)(nil),          // 5: protocol.RouteResponse
-	(*RegisterWorkerResponse)(nil), // 6: protocol.RegisterWorkerResponse
-	(*HeartbeatResponse)(nil),      // 7: protocol.HeartbeatResponse
+	(*GetTenantIdPRequest)(nil),    // 0: protocol.GetTenantIdPRequest
+	(*AuthRequest)(nil),            // 1: protocol.AuthRequest
+	(*RouteRequest)(nil),           // 2: protocol.RouteRequest
+	(*RegisterWorkerRequest)(nil),  // 3: protocol.RegisterWorkerRequest
+	(*WorkerHeartbeat)(nil),        // 4: protocol.WorkerHeartbeat
+	(*GetTenantIdPResponse)(nil),   // 5: protocol.GetTenantIdPResponse
+	(*AuthResponse)(nil),           // 6: protocol.AuthResponse
+	(*RouteResponse)(nil),          // 7: protocol.RouteResponse
+	(*RegisterWorkerResponse)(nil), // 8: protocol.RegisterWorkerResponse
+	(*HeartbeatResponse)(nil),      // 9: protocol.HeartbeatResponse
 }
 var file_scheduler_proto_depIdxs = []int32{
-	0, // 0: protocol.SchedulerService.Authenticate:input_type -> protocol.AuthRequest
-	1, // 1: protocol.SchedulerService.Route:input_type -> protocol.RouteRequest
-	2, // 2: protocol.SchedulerService.RegisterWorker:input_type -> protocol.RegisterWorkerRequest
-	3, // 3: protocol.SchedulerService.Heartbeat:input_type -> protocol.WorkerHeartbeat
-	4, // 4: protocol.SchedulerService.Authenticate:output_type -> protocol.AuthResponse
-	5, // 5: protocol.SchedulerService.Route:output_type -> protocol.RouteResponse
-	6, // 6: protocol.SchedulerService.RegisterWorker:output_type -> protocol.RegisterWorkerResponse
-	7, // 7: protocol.SchedulerService.Heartbeat:output_type -> protocol.HeartbeatResponse
-	4, // [4:8] is the sub-list for method output_type
-	0, // [0:4] is the sub-list for method input_type
+	0, // 0: protocol.SchedulerService.GetTenantIdP:input_type -> protocol.GetTenantIdPRequest
+	1, // 1: protocol.SchedulerService.Authenticate:input_type -> protocol.AuthRequest
+	2, // 2: protocol.SchedulerService.Route:input_type -> protocol.RouteRequest
+	3, // 3: protocol.SchedulerService.RegisterWorker:input_type -> protocol.RegisterWorkerRequest
+	4, // 4: protocol.SchedulerService.Heartbeat:input_type -> protocol.WorkerHeartbeat
+	5, // 5: protocol.SchedulerService.GetTenantIdP:output_type -> protocol.GetTenantIdPResponse
+	6, // 6: protocol.SchedulerService.Authenticate:output_type -> protocol.AuthResponse
+	7, // 7: protocol.SchedulerService.Route:output_type -> protocol.RouteResponse
+	8, // 8: protocol.SchedulerService.RegisterWorker:output_type -> protocol.RegisterWorkerResponse
+	9, // 9: protocol.SchedulerService.Heartbeat:output_type -> protocol.HeartbeatResponse
+	5, // [5:10] is the sub-list for method output_type
+	0, // [0:5] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name

@@ -10,8 +10,8 @@ import (
 // and pulling cache into compiler would form an import cycle. Any concrete
 // cache (e.g. cache.CompileCache) satisfies this interface via duck typing.
 type CacheBackend interface {
-	Lookup(inv *Invocation) (*InvocationResult, error)
-	Store(inv *Invocation, res *InvocationResult) error
+	Lookup(inv *Invocation, tenantID string) (*InvocationResult, error)
+	Store(inv *Invocation, res *InvocationResult, tenantID string) error
 }
 
 // Context bundles everything the runner / cache layer needs about a

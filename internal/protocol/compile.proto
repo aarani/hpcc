@@ -96,6 +96,19 @@ message ProbeMiss {}
 message BlobDigest {
   bytes digest = 1;
   uint64 size = 2;
+  // tenant_id scopes the source-store namespace this blob lives in,
+  // and is cross-checked against scheduler_token's tenant claim by
+  // the worker. Required on every header.
+  string tenant_id = 3;
+  // scheduler_token is the short-lived per-route JWT the scheduler
+  // issued when the client called Route. Worker verifies it against
+  // the scheduler pubkey (already hydrated at RegisterWorker) and
+  // refuses the stream if tenant_id, image_digest, or worker_id
+  // don't match. Required on every header — repeated rather than
+  // stream-init because gRPC bidi streams have no first-message
+  // contract enforced by the runtime. See docs/multi-tenant.md
+  // "Worker enforcement".
+  string scheduler_token = 4;
 }
 
 message BlobChunk {

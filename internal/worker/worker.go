@@ -337,7 +337,7 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 	useCache := w.Config.Paranoid || req.Descriptor_.SourceMode == gen.SourceMode_CAS
 
 	if useCache {
-		if hit, err := cctx.Cache.Lookup(inv); err == nil && hit != nil {
+		if hit, err := cctx.Cache.Lookup(inv, req.Descriptor_.TenantId); err == nil && hit != nil {
 			// Cache hit. hit.Extras was populated by loadEntry from
 			// the cached `extras` blob, so the client gets the same
 			// .d files the original cold compile produced — even
@@ -368,7 +368,7 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 		// request can recompute and try again. Extras go into the
 		// cache too so warm hits replay the same .d files cold
 		// compiles produced.
-		_ = cctx.Cache.Store(inv, result)
+		_ = cctx.Cache.Store(inv, result, req.Descriptor_.TenantId)
 	}
 
 	return w.respond(cctx, req, container, inv, result), nil
@@ -700,6 +700,27 @@ func (w *Worker) ValidateToken(req *gen.CompileRequest) error {
 // RPCs (flat-shaped, no Descriptor wrapper) can share one
 // implementation.
 func (w *Worker) validateSchedulerToken(rawToken, tenantID, imageDigest string) error {
+	claims, err := w.parseSchedulerToken(rawToken, tenantID)
+	if err != nil {
+		return err
+	}
+	if claims["image_digest"] != imageDigest {
+		return fmt.Errorf("scheduler token image digest does not match request")
+	}
+	return nil
+}
+
+// validateSchedulerTokenForCAS is the same chain minus the
+// image_digest comparison. FindMissingBlobs and UploadBlobs are
+// content-addressed by tenant only — the image isn't part of the
+// blob's identity — so the token's image_digest claim is informational
+// rather than required to match anything on the request side.
+func (w *Worker) validateSchedulerTokenForCAS(rawToken, tenantID string) error {
+	_, err := w.parseSchedulerToken(rawToken, tenantID)
+	return err
+}
+
+func (w *Worker) parseSchedulerToken(rawToken, tenantID string) (jwt.MapClaims, error) {
 	// EdDSA verification expects an ed25519.PublicKey value, not a
 	// raw []byte — the JWT lib type-switches on the exact type. Convert
 	// at the boundary; ed25519.PublicKey is itself a []byte so this is a
@@ -708,21 +729,17 @@ func (w *Worker) validateSchedulerToken(rawToken, tenantID, imageDigest string) 
 		return ed25519.PublicKey(w.SchedulerSigningKey()), nil
 	}, jwt.WithValidMethods([]string{jwt.SigningMethodEdDSA.Alg()}))
 	if err != nil || !token.Valid {
-		return fmt.Errorf("invalid scheduler token: %w", err)
+		return nil, fmt.Errorf("invalid scheduler token: %w", err)
 	}
 
 	claims := token.Claims.(jwt.MapClaims)
 	if claims["tenant_id"] != tenantID {
-		return fmt.Errorf("scheduler token tenant ID does not match request")
-	}
-	if claims["image_digest"] != imageDigest {
-		return fmt.Errorf("scheduler token image digest does not match request")
+		return nil, fmt.Errorf("scheduler token tenant ID does not match request")
 	}
 	if claims["worker_id"] != w.workerID {
-		return fmt.Errorf("scheduler token worker ID does not match request")
+		return nil, fmt.Errorf("scheduler token worker ID does not match request")
 	}
-
-	return nil
+	return claims, nil
 }
 
 // --- scheduler liaison ---------------------------------------------------

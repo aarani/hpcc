@@ -579,11 +579,24 @@ func (*ProbeMiss) Descriptor() ([]byte, []int) {
 }
 
 type BlobDigest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Digest        []byte                 `protobuf:"bytes,1,opt,name=digest,proto3" json:"digest,omitempty"`
-	Size          uint64                 `protobuf:"varint,2,opt,name=size,proto3" json:"size,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Digest []byte                 `protobuf:"bytes,1,opt,name=digest,proto3" json:"digest,omitempty"`
+	Size   uint64                 `protobuf:"varint,2,opt,name=size,proto3" json:"size,omitempty"`
+	// tenant_id scopes the source-store namespace this blob lives in,
+	// and is cross-checked against scheduler_token's tenant claim by
+	// the worker. Required on every header.
+	TenantId string `protobuf:"bytes,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	// scheduler_token is the short-lived per-route JWT the scheduler
+	// issued when the client called Route. Worker verifies it against
+	// the scheduler pubkey (already hydrated at RegisterWorker) and
+	// refuses the stream if tenant_id, image_digest, or worker_id
+	// don't match. Required on every header — repeated rather than
+	// stream-init because gRPC bidi streams have no first-message
+	// contract enforced by the runtime. See docs/multi-tenant.md
+	// "Worker enforcement".
+	SchedulerToken string `protobuf:"bytes,4,opt,name=scheduler_token,json=schedulerToken,proto3" json:"scheduler_token,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *BlobDigest) Reset() {
@@ -628,6 +641,20 @@ func (x *BlobDigest) GetSize() uint64 {
 		return x.Size
 	}
 	return 0
+}
+
+func (x *BlobDigest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *BlobDigest) GetSchedulerToken() string {
+	if x != nil {
+		return x.SchedulerToken
+	}
+	return ""
 }
 
 type BlobChunk struct {
@@ -1064,11 +1091,13 @@ const file_compile_proto_rawDesc = "" +
 	"\x03hit\x18\x01 \x01(\v2\x19.protocol.CompileResponseH\x00R\x03hit\x12)\n" +
 	"\x04miss\x18\x02 \x01(\v2\x13.protocol.ProbeMissH\x00R\x04missB\b\n" +
 	"\x06result\"\v\n" +
-	"\tProbeMiss\"8\n" +
+	"\tProbeMiss\"~\n" +
 	"\n" +
 	"BlobDigest\x12\x16\n" +
 	"\x06digest\x18\x01 \x01(\fR\x06digest\x12\x12\n" +
-	"\x04size\x18\x02 \x01(\x04R\x04size\"Y\n" +
+	"\x04size\x18\x02 \x01(\x04R\x04size\x12\x1b\n" +
+	"\ttenant_id\x18\x03 \x01(\tR\btenantId\x12'\n" +
+	"\x0fscheduler_token\x18\x04 \x01(\tR\x0eschedulerToken\"Y\n" +
 	"\tBlobChunk\x12.\n" +
 	"\x06header\x18\x01 \x01(\v2\x14.protocol.BlobDigestH\x00R\x06header\x12\x14\n" +
 	"\x04data\x18\x02 \x01(\fH\x00R\x04dataB\x06\n" +

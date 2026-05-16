@@ -74,23 +74,47 @@ func (s *fakeFindMissingStream) Send(d *gen.BlobDigest) error {
 }
 
 // newSourceTestWorker builds a Worker with a sourceStore backed by a
-// fresh temp dir. No runtime / image / scheduler wiring — only the
-// pieces FindMissingBlobs touches.
-func newSourceTestWorker(t *testing.T) *Worker {
+// fresh temp dir, plus the scheduler-token validation fields that
+// FindMissingBlobs / UploadBlobs read on every header. Returns the
+// worker plus the scheduler private key so callers can mint matching
+// tokens via casToken.
+func newSourceTestWorker(t *testing.T) (*Worker, ed25519.PrivateKey) {
 	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519 key: %v", err)
+	}
 	ds, err := store.NewDiskCacheStore(t.TempDir(), "")
 	if err != nil {
 		t.Fatalf("NewDiskCacheStore: %v", err)
 	}
-	return &Worker{sourceStore: ds.Namespace("source")}
+	return &Worker{
+		sourceStore:     ds.Namespace("source"),
+		workerID:        testWorkerID,
+		schedulerPubKey: pub,
+	}, priv
+}
+
+// casToken mints a scheduler token valid for the CAS handlers. The
+// image_digest claim is set to a fixed placeholder — the CAS
+// streams don't verify it (they're not image-scoped), but the
+// signTaskToken contract requires it to be present.
+func casToken(t *testing.T, priv ed25519.PrivateKey, tenant string) string {
+	t.Helper()
+	return signToken(t, priv, jwt.MapClaims{
+		"tenant_id":    tenant,
+		"image_digest": "irrelevant",
+		"worker_id":    testWorkerID,
+	})
 }
 
 func TestFindMissingBlobs_emptyStoreReportsAllMissing(t *testing.T) {
-	w := newSourceTestWorker(t)
+	w, priv := newSourceTestWorker(t)
+	tok := casToken(t, priv, testTenant)
 	probes := []*gen.BlobDigest{
-		{Digest: bytes.Repeat([]byte{0x11}, 32), Size: 100},
-		{Digest: bytes.Repeat([]byte{0x22}, 32), Size: 200},
-		{Digest: bytes.Repeat([]byte{0x33}, 32), Size: 300},
+		{Digest: bytes.Repeat([]byte{0x11}, 32), Size: 100, TenantId: testTenant, SchedulerToken: tok},
+		{Digest: bytes.Repeat([]byte{0x22}, 32), Size: 200, TenantId: testTenant, SchedulerToken: tok},
+		{Digest: bytes.Repeat([]byte{0x33}, 32), Size: 300, TenantId: testTenant, SchedulerToken: tok},
 	}
 	stream := &fakeFindMissingStream{ctx: context.Background(), sendQueue: probes}
 
@@ -103,20 +127,21 @@ func TestFindMissingBlobs_emptyStoreReportsAllMissing(t *testing.T) {
 }
 
 func TestFindMissingBlobs_presentBlobsOmitted(t *testing.T) {
-	w := newSourceTestWorker(t)
+	w, priv := newSourceTestWorker(t)
 	present := bytes.Repeat([]byte{0xab}, 32)
 	missing := bytes.Repeat([]byte{0xcd}, 32)
 
 	// Plant `present` in the store so it should be filtered out.
-	if err := w.sourceStore.Put(present, blobData, []byte("hello")); err != nil {
+	if err := w.sourceStore.Namespace(testTenant).Put(present, blobData, []byte("hello")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
+	tok := casToken(t, priv, testTenant)
 	stream := &fakeFindMissingStream{
 		ctx: context.Background(),
 		sendQueue: []*gen.BlobDigest{
-			{Digest: present, Size: 5},
-			{Digest: missing, Size: 7},
+			{Digest: present, Size: 5, TenantId: testTenant, SchedulerToken: tok},
+			{Digest: missing, Size: 7, TenantId: testTenant, SchedulerToken: tok},
 		},
 	}
 	if err := w.FindMissingBlobs(stream); err != nil {
@@ -144,10 +169,10 @@ func TestFindMissingBlobs_noSourceStoreIsFailedPrecondition(t *testing.T) {
 }
 
 func TestFindMissingBlobs_rejectsEmptyDigest(t *testing.T) {
-	w := newSourceTestWorker(t)
+	w, priv := newSourceTestWorker(t)
 	stream := &fakeFindMissingStream{
 		ctx:       context.Background(),
-		sendQueue: []*gen.BlobDigest{{Digest: nil, Size: 0}},
+		sendQueue: []*gen.BlobDigest{{Digest: nil, Size: 0, TenantId: testTenant, SchedulerToken: casToken(t, priv, testTenant)}},
 	}
 	err := w.FindMissingBlobs(stream)
 	if err == nil {
@@ -192,8 +217,18 @@ func (s *fakeUploadStream) SendAndClose(r *gen.UploadResult) error {
 	return nil
 }
 
-func mkHeader(digest []byte, size uint64) *gen.BlobChunk {
-	return &gen.BlobChunk{Body: &gen.BlobChunk_Header{Header: &gen.BlobDigest{Digest: digest, Size: size}}}
+// testTenant is the tenant every CAS test runs under. Step 3 wired
+// the source store namespace by tenant; tests just need to use the
+// same string everywhere they touch the store directly.
+const testTenant = "t1"
+
+func mkHeader(t *testing.T, priv ed25519.PrivateKey, digest []byte, size uint64) *gen.BlobChunk {
+	return &gen.BlobChunk{Body: &gen.BlobChunk_Header{Header: &gen.BlobDigest{
+		Digest:         digest,
+		Size:           size,
+		TenantId:       testTenant,
+		SchedulerToken: casToken(t, priv, testTenant),
+	}}}
 }
 
 func mkData(data []byte) *gen.BlobChunk {
@@ -207,13 +242,13 @@ func b3(data []byte) []byte {
 }
 
 func TestUploadBlobs_acceptsMatchingHash(t *testing.T) {
-	w := newSourceTestWorker(t)
+	w, priv := newSourceTestWorker(t)
 	payload := []byte("the quick brown fox")
 	digest := b3(payload)
 
 	stream := &fakeUploadStream{
 		ctx:       context.Background(),
-		sendQueue: []*gen.BlobChunk{mkHeader(digest, uint64(len(payload))), mkData(payload)},
+		sendQueue: []*gen.BlobChunk{mkHeader(t, priv, digest, uint64(len(payload))), mkData(payload)},
 	}
 	if err := w.UploadBlobs(stream); err != nil {
 		t.Fatalf("UploadBlobs: %v", err)
@@ -231,7 +266,7 @@ func TestUploadBlobs_acceptsMatchingHash(t *testing.T) {
 		t.Errorf("expected no rejections; got %v", stream.result.RejectedDigests)
 	}
 
-	got, err := w.sourceStore.Get(digest, blobData)
+	got, err := w.sourceStore.Namespace(testTenant).Get(digest, blobData)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -241,13 +276,13 @@ func TestUploadBlobs_acceptsMatchingHash(t *testing.T) {
 }
 
 func TestUploadBlobs_rejectsHashMismatch(t *testing.T) {
-	w := newSourceTestWorker(t)
+	w, priv := newSourceTestWorker(t)
 	claimed := bytes.Repeat([]byte{0xff}, 32)
 	payload := []byte("doesn't match")
 
 	stream := &fakeUploadStream{
 		ctx:       context.Background(),
-		sendQueue: []*gen.BlobChunk{mkHeader(claimed, uint64(len(payload))), mkData(payload)},
+		sendQueue: []*gen.BlobChunk{mkHeader(t, priv, claimed, uint64(len(payload))), mkData(payload)},
 	}
 	if err := w.UploadBlobs(stream); err != nil {
 		t.Fatalf("UploadBlobs: %v", err)
@@ -258,7 +293,7 @@ func TestUploadBlobs_rejectsHashMismatch(t *testing.T) {
 	if len(stream.result.RejectedDigests) != 1 || !bytes.Equal(stream.result.RejectedDigests[0], claimed) {
 		t.Errorf("RejectedDigests=%v, want [%x]", stream.result.RejectedDigests, claimed)
 	}
-	got, err := w.sourceStore.Get(claimed, blobData)
+	got, err := w.sourceStore.Namespace(testTenant).Get(claimed, blobData)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -268,7 +303,7 @@ func TestUploadBlobs_rejectsHashMismatch(t *testing.T) {
 }
 
 func TestUploadBlobs_multiBlobMixHitAndMiss(t *testing.T) {
-	w := newSourceTestWorker(t)
+	w, priv := newSourceTestWorker(t)
 	goodPayload := []byte("good")
 	goodDigest := b3(goodPayload)
 	badClaimed := bytes.Repeat([]byte{0x55}, 32)
@@ -277,8 +312,8 @@ func TestUploadBlobs_multiBlobMixHitAndMiss(t *testing.T) {
 	stream := &fakeUploadStream{
 		ctx: context.Background(),
 		sendQueue: []*gen.BlobChunk{
-			mkHeader(goodDigest, uint64(len(goodPayload))), mkData(goodPayload),
-			mkHeader(badClaimed, uint64(len(badPayload))), mkData(badPayload),
+			mkHeader(t, priv, goodDigest, uint64(len(goodPayload))), mkData(goodPayload),
+			mkHeader(t, priv, badClaimed, uint64(len(badPayload))), mkData(badPayload),
 		},
 	}
 	if err := w.UploadBlobs(stream); err != nil {
@@ -290,18 +325,18 @@ func TestUploadBlobs_multiBlobMixHitAndMiss(t *testing.T) {
 	if len(stream.result.RejectedDigests) != 1 {
 		t.Errorf("expected 1 rejection, got %d", len(stream.result.RejectedDigests))
 	}
-	got, _ := w.sourceStore.Get(goodDigest, blobData)
+	got, _ := w.sourceStore.Namespace(testTenant).Get(goodDigest, blobData)
 	if !bytes.Equal(got, goodPayload) {
 		t.Errorf("good blob not stored correctly: got %q want %q", got, goodPayload)
 	}
 }
 
 func TestUploadBlobs_multiChunkBlob(t *testing.T) {
-	w := newSourceTestWorker(t)
+	w, priv := newSourceTestWorker(t)
 	payload := bytes.Repeat([]byte("abcdefgh"), 1000)
 	digest := b3(payload)
 
-	chunks := []*gen.BlobChunk{mkHeader(digest, uint64(len(payload)))}
+	chunks := []*gen.BlobChunk{mkHeader(t, priv, digest, uint64(len(payload)))}
 	for i := 0; i < len(payload); i += 1024 {
 		end := i + 1024
 		if end > len(payload) {
@@ -317,19 +352,19 @@ func TestUploadBlobs_multiChunkBlob(t *testing.T) {
 	if stream.result.BlobsReceived != 1 {
 		t.Errorf("BlobsReceived=%d, want 1", stream.result.BlobsReceived)
 	}
-	got, _ := w.sourceStore.Get(digest, blobData)
+	got, _ := w.sourceStore.Namespace(testTenant).Get(digest, blobData)
 	if !bytes.Equal(got, payload) {
 		t.Errorf("stored bytes don't match payload")
 	}
 }
 
 func TestUploadBlobs_emptyBlobIsValid(t *testing.T) {
-	w := newSourceTestWorker(t)
+	w, priv := newSourceTestWorker(t)
 	emptyDigest := b3(nil)
 
 	stream := &fakeUploadStream{
 		ctx:       context.Background(),
-		sendQueue: []*gen.BlobChunk{mkHeader(emptyDigest, 0)},
+		sendQueue: []*gen.BlobChunk{mkHeader(t, priv, emptyDigest, 0)},
 	}
 	if err := w.UploadBlobs(stream); err != nil {
 		t.Fatalf("UploadBlobs: %v", err)
@@ -340,7 +375,7 @@ func TestUploadBlobs_emptyBlobIsValid(t *testing.T) {
 }
 
 func TestUploadBlobs_dataBeforeHeaderIsInvalidArg(t *testing.T) {
-	w := newSourceTestWorker(t)
+	w, _ := newSourceTestWorker(t)
 	stream := &fakeUploadStream{
 		ctx:       context.Background(),
 		sendQueue: []*gen.BlobChunk{mkData([]byte("orphan"))},
@@ -355,10 +390,10 @@ func TestUploadBlobs_dataBeforeHeaderIsInvalidArg(t *testing.T) {
 }
 
 func TestUploadBlobs_malformedHeaderIsInvalidArg(t *testing.T) {
-	w := newSourceTestWorker(t)
+	w, priv := newSourceTestWorker(t)
 	stream := &fakeUploadStream{
 		ctx:       context.Background(),
-		sendQueue: []*gen.BlobChunk{mkHeader(nil, 0)},
+		sendQueue: []*gen.BlobChunk{mkHeader(t, priv, nil, 0)},
 	}
 	err := w.UploadBlobs(stream)
 	if err == nil {
@@ -366,6 +401,119 @@ func TestUploadBlobs_malformedHeaderIsInvalidArg(t *testing.T) {
 	}
 	if got := status.Code(err); got != codes.InvalidArgument {
 		t.Errorf("got code %v, want InvalidArgument", got)
+	}
+}
+
+// --- step-4 enforcement tests ----------------------------------------
+//
+// Every CAS stream header must carry a scheduler_token whose claims
+// match the header's tenant_id and the worker's own ID; a stream may
+// not switch tenants mid-flight. These are the security properties
+// the worker stops being wide-open about.
+
+func TestFindMissingBlobs_rejectsMissingToken(t *testing.T) {
+	w, _ := newSourceTestWorker(t)
+	stream := &fakeFindMissingStream{
+		ctx: context.Background(),
+		sendQueue: []*gen.BlobDigest{
+			{Digest: bytes.Repeat([]byte{0x11}, 32), Size: 1, TenantId: testTenant /* SchedulerToken absent */},
+		},
+	}
+	err := w.FindMissingBlobs(stream)
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("got %v, want Unauthenticated", err)
+	}
+}
+
+func TestFindMissingBlobs_rejectsTokenForOtherTenant(t *testing.T) {
+	w, priv := newSourceTestWorker(t)
+	wrongTenantToken := casToken(t, priv, "some-other-tenant")
+	stream := &fakeFindMissingStream{
+		ctx: context.Background(),
+		sendQueue: []*gen.BlobDigest{
+			{Digest: bytes.Repeat([]byte{0x11}, 32), Size: 1, TenantId: testTenant, SchedulerToken: wrongTenantToken},
+		},
+	}
+	err := w.FindMissingBlobs(stream)
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("got %v, want Unauthenticated (token's tenant != header's tenant)", err)
+	}
+}
+
+func TestFindMissingBlobs_rejectsMidStreamTenantSwitch(t *testing.T) {
+	w, priv := newSourceTestWorker(t)
+	tokA := casToken(t, priv, "tenant-a")
+	tokB := casToken(t, priv, "tenant-b")
+	stream := &fakeFindMissingStream{
+		ctx: context.Background(),
+		sendQueue: []*gen.BlobDigest{
+			{Digest: bytes.Repeat([]byte{0x11}, 32), Size: 1, TenantId: "tenant-a", SchedulerToken: tokA},
+			{Digest: bytes.Repeat([]byte{0x22}, 32), Size: 1, TenantId: "tenant-b", SchedulerToken: tokB},
+		},
+	}
+	err := w.FindMissingBlobs(stream)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("got %v, want InvalidArgument (mid-stream tenant switch)", err)
+	}
+}
+
+func TestUploadBlobs_rejectsMissingToken(t *testing.T) {
+	w, _ := newSourceTestWorker(t)
+	payload := []byte("x")
+	digest := b3(payload)
+	// Build a header manually without a scheduler_token.
+	hdr := &gen.BlobChunk{Body: &gen.BlobChunk_Header{Header: &gen.BlobDigest{
+		Digest: digest, Size: uint64(len(payload)), TenantId: testTenant,
+	}}}
+	stream := &fakeUploadStream{
+		ctx:       context.Background(),
+		sendQueue: []*gen.BlobChunk{hdr, mkData(payload)},
+	}
+	err := w.UploadBlobs(stream)
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("got %v, want Unauthenticated", err)
+	}
+}
+
+func TestUploadBlobs_rejectsTokenForOtherTenant(t *testing.T) {
+	w, priv := newSourceTestWorker(t)
+	payload := []byte("x")
+	digest := b3(payload)
+	wrongTok := casToken(t, priv, "some-other-tenant")
+	hdr := &gen.BlobChunk{Body: &gen.BlobChunk_Header{Header: &gen.BlobDigest{
+		Digest: digest, Size: uint64(len(payload)), TenantId: testTenant, SchedulerToken: wrongTok,
+	}}}
+	stream := &fakeUploadStream{
+		ctx:       context.Background(),
+		sendQueue: []*gen.BlobChunk{hdr, mkData(payload)},
+	}
+	err := w.UploadBlobs(stream)
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("got %v, want Unauthenticated", err)
+	}
+}
+
+func TestUploadBlobs_rejectsMidStreamTenantSwitch(t *testing.T) {
+	w, priv := newSourceTestWorker(t)
+	payloadA := []byte("aa")
+	payloadB := []byte("bb")
+	digA := b3(payloadA)
+	digB := b3(payloadB)
+	tokA := casToken(t, priv, "tenant-a")
+	tokB := casToken(t, priv, "tenant-b")
+	hdrA := &gen.BlobChunk{Body: &gen.BlobChunk_Header{Header: &gen.BlobDigest{
+		Digest: digA, Size: uint64(len(payloadA)), TenantId: "tenant-a", SchedulerToken: tokA,
+	}}}
+	hdrB := &gen.BlobChunk{Body: &gen.BlobChunk_Header{Header: &gen.BlobDigest{
+		Digest: digB, Size: uint64(len(payloadB)), TenantId: "tenant-b", SchedulerToken: tokB,
+	}}}
+	stream := &fakeUploadStream{
+		ctx:       context.Background(),
+		sendQueue: []*gen.BlobChunk{hdrA, mkData(payloadA), hdrB, mkData(payloadB)},
+	}
+	err := w.UploadBlobs(stream)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("got %v, want InvalidArgument (mid-stream tenant switch)", err)
 	}
 }
 
@@ -558,7 +706,7 @@ func probeWith(t *testing.T, priv ed25519.PrivateKey, manifestDigest []byte, arg
 // the handler will derive it: parse args, set ManifestDigest, build
 // the worker's compileContext with the image digest as
 // IdentityOverride, call CompileCache.Store.
-func primeCompileCache(t *testing.T, w *Worker, manifestDigest []byte, args []string, image string, result *compiler.InvocationResult) {
+func primeCompileCache(t *testing.T, w *Worker, manifestDigest []byte, args []string, tenant, image string, result *compiler.InvocationResult) {
 	t.Helper()
 	c, err := compiler.Detect(args[0])
 	if err != nil {
@@ -573,7 +721,7 @@ func primeCompileCache(t *testing.T, w *Worker, manifestDigest []byte, args []st
 	inv.ManifestDigest = &md
 
 	cctx := w.compileContext(c, image)
-	if err := cctx.Cache.Store(inv, result); err != nil {
+	if err := cctx.Cache.Store(inv, result, tenant); err != nil {
 		t.Fatalf("Cache.Store: %v", err)
 	}
 }
@@ -588,7 +736,7 @@ func TestProbeCompileCache_hitReturnsCachedArtifact(t *testing.T) {
 		Stderr:   []byte("warning: unused var"),
 		ExitCode: 0,
 	}
-	primeCompileCache(t, w, manifestDigest, args, "d1", want)
+	primeCompileCache(t, w, manifestDigest, args, "t1", "d1", want)
 
 	req := probeWith(t, priv, manifestDigest, args, "t1", "d1")
 	resp, err := w.ProbeCompileCache(context.Background(), req)
@@ -639,7 +787,7 @@ func TestProbeCompileCache_missOnDifferentArgs(t *testing.T) {
 	manifestDigest := bytes.Repeat([]byte{0xab}, 32)
 	primeCompileCache(t, w, manifestDigest,
 		[]string{"clang", "-O2", "-c", "/src/main.i", "-o", "/out/main.o"},
-		"d1",
+		"t1", "d1",
 		&compiler.InvocationResult{Output: []byte("x"), ExitCode: 0})
 
 	req := probeWith(t, priv, manifestDigest,
@@ -658,7 +806,7 @@ func TestProbeCompileCache_missOnDifferentImage(t *testing.T) {
 	w, priv := newProbeTestWorker(t)
 	manifestDigest := bytes.Repeat([]byte{0xab}, 32)
 	args := []string{"clang", "-c", "/src/main.i", "-o", "/out/main.o"}
-	primeCompileCache(t, w, manifestDigest, args, "d1",
+	primeCompileCache(t, w, manifestDigest, args, "t1", "d1",
 		&compiler.InvocationResult{Output: []byte("x"), ExitCode: 0})
 
 	// Probe with the same manifest+args but a different image digest.
@@ -810,7 +958,7 @@ func TestValidateBlobPath_rejectsTraversal(t *testing.T) {
 }
 
 func TestMaterializeCASBlobs_writesProjectFilesSkipsSystem(t *testing.T) {
-	w := newSourceTestWorker(t)
+	w, _ := newSourceTestWorker(t)
 	main := []byte("int main(void){return 0;}\n")
 	header := []byte("#define X 1\n")
 
@@ -820,7 +968,7 @@ func TestMaterializeCASBlobs_writesProjectFilesSkipsSystem(t *testing.T) {
 
 	// Pre-populate sourceStore with the two project blobs.
 	for _, b := range []*gen.BlobRef{mainBlob, headerBlob} {
-		if err := w.sourceStore.Put(b.Digest, blobData, contentFor(b)); err != nil {
+		if err := w.sourceStore.Namespace(testTenant).Put(b.Digest, blobData, contentFor(b)); err != nil {
 			t.Fatalf("seed sourceStore: %v", err)
 		}
 	}
@@ -830,7 +978,7 @@ func TestMaterializeCASBlobs_writesProjectFilesSkipsSystem(t *testing.T) {
 		ManifestDigest: nil, // not checked by materializeCASBlobs
 		Blobs:          []*gen.BlobRef{mainBlob, headerBlob, sysBlob},
 	}
-	if err := materializeCASBlobs(srcDir, cas, w.sourceStore); err != nil {
+	if err := materializeCASBlobs(srcDir, cas, w.sourceStore.Namespace(testTenant)); err != nil {
 		t.Fatalf("materializeCASBlobs: %v", err)
 	}
 
@@ -859,7 +1007,7 @@ func TestMaterializeCASBlobs_writesProjectFilesSkipsSystem(t *testing.T) {
 }
 
 func TestMaterializeCASBlobs_missingBlobIsError(t *testing.T) {
-	w := newSourceTestWorker(t)
+	w, _ := newSourceTestWorker(t)
 	// Reference a blob digest we never seeded.
 	b := blobRefWithDigest("src/main.c", []byte("x"))
 	cas := &gen.CasDescriptor{Blobs: []*gen.BlobRef{b}}
@@ -874,10 +1022,10 @@ func TestMaterializeCASBlobs_missingBlobIsError(t *testing.T) {
 }
 
 func TestMaterializeCASBlobs_rejectsTraversalBlobPath(t *testing.T) {
-	w := newSourceTestWorker(t)
+	w, _ := newSourceTestWorker(t)
 	content := []byte("oops")
 	b := &gen.BlobRef{Path: "../escape.txt", Digest: b3(content), Size: uint64(len(content))}
-	if err := w.sourceStore.Put(b.Digest, blobData, content); err != nil {
+	if err := w.sourceStore.Namespace(testTenant).Put(b.Digest, blobData, content); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	cas := &gen.CasDescriptor{Blobs: []*gen.BlobRef{b}}

@@ -404,12 +404,15 @@ func casDescriptor(t *testing.T, entryPath string, files map[string][]byte) *gen
 // seedSourceStore puts every (path → content) pair into the worker's
 // sourceStore keyed by BLAKE3(content). The path is informational;
 // the store is content-addressed, so only the digest and bytes matter.
+// Hardcoded to tenant "t1" — every worker test uses that tenant on
+// its CompileRequest, so the store namespace must match.
 func seedSourceStore(t *testing.T, w *Worker, files map[string][]byte) {
 	t.Helper()
+	ts := w.sourceStore.Namespace("t1")
 	for _, content := range files {
 		h := blake3.New()
 		h.Write(content)
-		if err := w.sourceStore.Put(h.Sum(nil), blobData, content); err != nil {
+		if err := ts.Put(h.Sum(nil), blobData, content); err != nil {
 			t.Fatalf("sourceStore.Put: %v", err)
 		}
 	}

@@ -102,12 +102,16 @@ func TestE2E_DispatchClientToSchedulerToWorker(t *testing.T) {
 		},
 		Auth: scheduler.Auth{
 			WorkerToken: testWorkerToken,
-			JWKS: scheduler.JWKSAuth{
-				URL:      idp.URL + "/.well-known/jwks.json",
-				Issuer:   testIssuer,
-				Audience: testAudience,
-			},
 		},
+		Tenants: []scheduler.Tenant{{
+			ID:       testTenantID,
+			Issuer:   testIssuer,
+			JWKSURL:  idp.URL + "/.well-known/jwks.json",
+			TokenURL: idp.URL + "/token",
+			Audience: testAudience,
+			ClientID: "hpcc-test",
+			Scope:    "hpcc",
+		}},
 		Routing: scheduler.Routing{StickyTenants: true},
 	}
 	sched, err := scheduler.NewScheduler(schedCfg)
@@ -199,12 +203,9 @@ func TestE2E_DispatchClientToSchedulerToWorker(t *testing.T) {
 			CAFile: schedCertFile,
 		},
 		OAuth: config.OAuthConfig{
-			TokenURL:     idp.URL + "/token",
-			ClientID:     "hpcc-test",
 			ClientSecret: "test-secret",
 			Username:     "alice",
 			Password:     "p4ssw0rd",
-			Scope:        "hpcc",
 		},
 	}
 	disp, err := dispatch.New(dispCfg, enum.SourceModePreprocessed)

@@ -14,6 +14,7 @@ type Config struct {
 	Listen   string    `toml:"listen"`
 	TLS      TLSConfig `toml:"tls"`
 	Auth     Auth      `toml:"auth"`
+	Tenants  []Tenant  `toml:"tenant"`
 	Routing  Routing   `toml:"routing"`
 	Paranoid bool      `toml:"paranoid"`
 }
@@ -24,14 +25,23 @@ type TLSConfig struct {
 }
 
 type Auth struct {
-	WorkerToken string   `toml:"worker_token"` // static token workers use to authenticate
-	JWKS        JWKSAuth `toml:"jwks"`
+	WorkerToken string `toml:"worker_token"` // static token workers use to authenticate
 }
 
-type JWKSAuth struct {
-	URL      string `toml:"url"`      // JWKS endpoint (e.g. https://idp.corp/.well-known/jwks.json)
-	Issuer   string `toml:"issuer"`   // expected "iss" claim
-	Audience string `toml:"audience"` // expected "aud" claim
+// Tenant is one namespace boundary. A JWT carrying tenant_id = ID is
+// validated against this entry's IdP (JWKSURL, Issuer, Audience). See
+// docs/multi-tenant.md for the threat model the per-tenant IdP closes.
+type Tenant struct {
+	ID       string `toml:"id"`
+	Issuer   string `toml:"issuer"`
+	JWKSURL  string `toml:"jwks_url"`
+	TokenURL string `toml:"token_url"` // returned by GetTenantIdP so clients don't hardcode it
+	Audience string `toml:"audience"`
+	// ClientID and Scope are served back via GetTenantIdP so clients
+	// don't carry them either. Both optional — empty fields are
+	// omitted from the OAuth password-grant POST.
+	ClientID string `toml:"client_id"`
+	Scope    string `toml:"scope"`
 }
 
 type Routing struct {
@@ -85,14 +95,30 @@ func (c Config) Validate() error {
 	if len(c.Auth.WorkerToken) < 16 {
 		return fmt.Errorf("auth.worker_token must be at least 16 characters")
 	}
-	if c.Auth.JWKS.URL == "" {
-		return fmt.Errorf("auth.jwks.url is required")
+	if len(c.Tenants) == 0 {
+		return fmt.Errorf("at least one [[tenant]] entry is required (see docs/multi-tenant.md)")
 	}
-	if c.Auth.JWKS.Issuer == "" {
-		return fmt.Errorf("auth.jwks.issuer is required")
-	}
-	if c.Auth.JWKS.Audience == "" {
-		return fmt.Errorf("auth.jwks.audience is required")
+	seen := make(map[string]struct{}, len(c.Tenants))
+	for i, t := range c.Tenants {
+		if t.ID == "" {
+			return fmt.Errorf("tenant[%d].id is required", i)
+		}
+		if _, dup := seen[t.ID]; dup {
+			return fmt.Errorf("tenant[%d].id %q is duplicated", i, t.ID)
+		}
+		seen[t.ID] = struct{}{}
+		if t.Issuer == "" {
+			return fmt.Errorf("tenant[%q].issuer is required", t.ID)
+		}
+		if t.JWKSURL == "" {
+			return fmt.Errorf("tenant[%q].jwks_url is required", t.ID)
+		}
+		if t.TokenURL == "" {
+			return fmt.Errorf("tenant[%q].token_url is required", t.ID)
+		}
+		if t.Audience == "" {
+			return fmt.Errorf("tenant[%q].audience is required", t.ID)
+		}
 	}
 	return nil
 }

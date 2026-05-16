@@ -16,21 +16,40 @@ listen = ":9091"
 cert_file = "/etc/hpcc/scheduler.crt"
 key_file  = "/etc/hpcc/scheduler.key"
 
-# Authentication.
-#
-# - `worker_token` is the shared static token workers present at
-#   `Authenticate`. Must be the same string set in worker.toml under
-#   `[scheduler] worker_token`. Min length 16.
-# - `[jwks]` is the OIDC discovery surface for verifying user tokens
-#   (issued by your IdP and presented by the client daemon). The
-#   scheduler enforces both `iss` and `aud` claims.
+# Worker authentication. Shared static token workers present at
+# `Authenticate`. Must be the same string set in worker.toml under
+# `[scheduler] worker_token`. Min length 16.
 [auth]
 worker_token = "replace-with-a-long-random-string"
 
-[auth.jwks]
-url      = "https://idp.example.com/.well-known/jwks.json"
-issuer   = "https://idp.example.com/"
-audience = "hpcc-scheduler"
+# Tenants. Each `[[tenant]]` entry is one namespace boundary. The
+# client sends `tenant_id` on AuthRequest; the scheduler picks the
+# matching entry and validates the presented JWT against ONLY that
+# entry's JWKS, then confirms `iss` and `aud` match. `token_url` is
+# served back to clients via the unauthenticated GetTenantIdP RPC so
+# they don't hardcode it. At least one tenant is required. See
+# docs/multi-tenant.md.
+[[tenant]]
+id        = "acme"
+issuer    = "https://idp.acme.example/"
+jwks_url  = "https://idp.acme.example/.well-known/jwks.json"
+token_url = "https://idp.acme.example/oauth/token"
+audience  = "hpcc"
+client_id = "hpcc-acme"        # OAuth client registered with the IdP
+scope     = "hpcc"             # both optional; sent on the password grant when non-empty
+
+# Add more tenants by repeating the [[tenant]] block. Each may point
+# at a different IdP — a JWT signed by one tenant's IdP but presented
+# as another tenant is rejected, because only the named tenant's JWKS
+# is ever consulted.
+# [[tenant]]
+# id        = "globex"
+# issuer    = "https://keycloak.globex.example/realms/eng"
+# jwks_url  = "https://keycloak.globex.example/realms/eng/protocol/openid-connect/certs"
+# token_url = "https://keycloak.globex.example/realms/eng/protocol/openid-connect/token"
+# audience  = "hpcc"
+# client_id = "hpcc-globex"
+# scope     = "hpcc"
 
 # Routing knobs.
 #

@@ -67,7 +67,7 @@ func TestCacheMissThenHit(t *testing.T) {
 	}
 
 	// First lookup: cache miss.
-	result, err := ctx.Cache.Lookup(inv)
+	result, err := ctx.Cache.Lookup(inv, cache.TenantLocal)
 	if err != nil {
 		t.Fatalf("first Lookup error: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestCacheMissThenHit(t *testing.T) {
 	origOutput := make([]byte, len(result.Output))
 	copy(origOutput, result.Output)
 
-	if err := ctx.Cache.Store(inv, result); err != nil {
+	if err := ctx.Cache.Store(inv, result, cache.TenantLocal); err != nil {
 		t.Fatalf("Store: %v", err)
 	}
 
@@ -94,7 +94,7 @@ func TestCacheMissThenHit(t *testing.T) {
 	os.Remove(out)
 
 	// Second lookup: cache hit.
-	cached, err := ctx.Cache.Lookup(inv)
+	cached, err := ctx.Cache.Lookup(inv, cache.TenantLocal)
 	if err != nil {
 		t.Fatalf("second Lookup error: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestCacheInvalidatedBySourceChange(t *testing.T) {
 	if res1.ExitCode != 0 {
 		t.Fatalf("compile v1 failed: %s", res1.Stderr)
 	}
-	if err := ctx.Cache.Store(inv1, res1); err != nil {
+	if err := ctx.Cache.Store(inv1, res1, cache.TenantLocal); err != nil {
 		t.Fatal(err)
 	}
 
@@ -151,7 +151,7 @@ func TestCacheInvalidatedBySourceChange(t *testing.T) {
 	}
 
 	// Lookup should miss because the cache key includes preprocessed source.
-	cached, err := ctx.Cache.Lookup(inv2)
+	cached, err := ctx.Cache.Lookup(inv2, cache.TenantLocal)
 	if err != nil {
 		t.Fatalf("Lookup after source change: %v", err)
 	}
@@ -178,13 +178,13 @@ func TestCacheHitReplayStderr(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ctx.Cache.Store(inv, result); err != nil {
+	if err := ctx.Cache.Store(inv, result, cache.TenantLocal); err != nil {
 		t.Fatal(err)
 	}
 
 	os.Remove(out)
 
-	cached, err := ctx.Cache.Lookup(inv)
+	cached, err := ctx.Cache.Lookup(inv, cache.TenantLocal)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestCacheMissWithDifferentFlags(t *testing.T) {
 	if res0.ExitCode != 0 {
 		t.Fatalf("compile -O0 failed: %s", res0.Stderr)
 	}
-	if err := ctx.Cache.Store(inv0, res0); err != nil {
+	if err := ctx.Cache.Store(inv0, res0, cache.TenantLocal); err != nil {
 		t.Fatal(err)
 	}
 
@@ -231,7 +231,7 @@ func TestCacheMissWithDifferentFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cached, err := ctx.Cache.Lookup(inv2)
+	cached, err := ctx.Cache.Lookup(inv2, cache.TenantLocal)
 	if err != nil {
 		t.Fatalf("Lookup -O2: %v", err)
 	}

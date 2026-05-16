@@ -225,12 +225,16 @@ func main() {
 		},
 		Auth: scheduler.Auth{
 			WorkerToken: workerToken,
-			JWKS: scheduler.JWKSAuth{
-				URL:      idpURL + "/.well-known/jwks.json",
-				Issuer:   idpIssuer,
-				Audience: idpAudience,
-			},
 		},
+		Tenants: []scheduler.Tenant{{
+			ID:       tenantID,
+			Issuer:   idpIssuer,
+			JWKSURL:  idpURL + "/.well-known/jwks.json",
+			TokenURL: idpURL + "/token",
+			Audience: idpAudience,
+			ClientID: "fcstack-bench",
+			Scope:    "hpcc",
+		}},
 		Routing: scheduler.Routing{StickyTenants: true},
 	}
 	sched, err := scheduler.NewScheduler(schedCfg)
@@ -370,13 +374,10 @@ url     = %q
 ca_file = %q
 
 [remote.oauth]
-token_url     = %q
-client_id     = "fcstack-bench"
 client_secret = "unused"
 username      = "bench"
 password      = "unused"
-scope         = "hpcc"
-`, *sourceMode, tenantID, pinnedRef, digest, schedAddr, certPath, idpURL+"/token")
+`, *sourceMode, tenantID, pinnedRef, digest, schedAddr, certPath)
 
 	if err := os.WriteFile(*clientCfg, []byte(clientToml), 0o600); err != nil {
 		log.Fatalf("write client config: %v", err)

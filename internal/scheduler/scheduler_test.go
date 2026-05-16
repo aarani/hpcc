@@ -16,9 +16,16 @@ import (
 
 const (
 	testWorkerToken = "static-worker-secret-token"
+	testTenantID    = "acme"
 	testIssuer      = "https://idp.test/"
 	testAudience    = "scheduler"
 	testKID         = "test-kid"
+
+	// Second tenant used by the cross-IdP spoof test.
+	otherTenantID = "globex"
+	otherIssuer   = "https://idp.other/"
+	otherAudience = "scheduler"
+	otherKID      = "other-kid"
 )
 
 func newTestScheduler(t *testing.T) *Scheduler {
@@ -29,33 +36,21 @@ func newTestScheduler(t *testing.T) *Scheduler {
 	}
 	return &Scheduler{
 		config: Config{
-			Auth: Auth{
-				WorkerToken: testWorkerToken,
-				JWKS: JWKSAuth{
-					Issuer:   testIssuer,
-					Audience: testAudience,
-				},
-			},
+			Auth: Auth{WorkerToken: testWorkerToken},
 			Routing: Routing{StickyTenants: true},
 		},
+		tenantAuth:     map[string]*tenantAuth{},
 		signingPubKey:  pub,
 		signingPrivKey: priv,
 	}
 }
 
-// newTestSchedulerWithJWKS returns a scheduler whose jwtKeyFunc validates
-// against an in-memory JWKS, plus the IDP private key tests can sign with.
-func newTestSchedulerWithJWKS(t *testing.T) (*Scheduler, ed25519.PrivateKey) {
+// inMemoryKeyfunc builds a keyfunc.Keyfunc backed by a single in-memory
+// JWK so tests don't need an HTTP server.
+func inMemoryKeyfunc(t *testing.T, pub ed25519.PublicKey, kid string) keyfunc.Keyfunc {
 	t.Helper()
-	s := newTestScheduler(t)
-
-	idpPub, idpPriv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate idp keypair: %v", err)
-	}
-
-	jwk, err := jwkset.NewJWKFromKey(idpPub, jwkset.JWKOptions{
-		Metadata: jwkset.JWKMetadataOptions{KID: testKID},
+	jwk, err := jwkset.NewJWKFromKey(pub, jwkset.JWKOptions{
+		Metadata: jwkset.JWKMetadataOptions{KID: kid},
 	})
 	if err != nil {
 		t.Fatalf("build jwk: %v", err)
@@ -72,14 +67,65 @@ func newTestSchedulerWithJWKS(t *testing.T) (*Scheduler, ed25519.PrivateKey) {
 	if err != nil {
 		t.Fatalf("build keyfunc: %v", err)
 	}
-	s.jwtKeyFunc = kf
+	return kf
+}
+
+// newTestSchedulerWithJWKS returns a scheduler with one tenant ("acme")
+// whose JWKS validates against the returned private key.
+func newTestSchedulerWithJWKS(t *testing.T) (*Scheduler, ed25519.PrivateKey) {
+	t.Helper()
+	s := newTestScheduler(t)
+
+	idpPub, idpPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate idp keypair: %v", err)
+	}
+	s.tenantAuth[testTenantID] = &tenantAuth{
+		keyfunc:  inMemoryKeyfunc(t, idpPub, testKID),
+		issuer:   testIssuer,
+		tokenURL: "https://idp.test/token",
+		audience: testAudience,
+		clientID: "hpcc-acme",
+		scope:    "hpcc",
+	}
 	return s, idpPriv
 }
 
-func signIDPJWT(t *testing.T, priv ed25519.PrivateKey, claims jwt.MapClaims) string {
+// newTestSchedulerWithTwoIdPs registers two tenants, each with its own
+// keypair/JWKS/issuer. Returns (tenantA priv, tenantB priv) so tests
+// can sign tokens with either IdP and confirm cross-tenant spoofs are
+// rejected.
+func newTestSchedulerWithTwoIdPs(t *testing.T) (*Scheduler, ed25519.PrivateKey, ed25519.PrivateKey) {
+	t.Helper()
+	s := newTestScheduler(t)
+
+	aPub, aPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate idp A keypair: %v", err)
+	}
+	bPub, bPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate idp B keypair: %v", err)
+	}
+	s.tenantAuth[testTenantID] = &tenantAuth{
+		keyfunc:  inMemoryKeyfunc(t, aPub, testKID),
+		issuer:   testIssuer,
+		tokenURL: "https://idp.test/token",
+		audience: testAudience,
+	}
+	s.tenantAuth[otherTenantID] = &tenantAuth{
+		keyfunc:  inMemoryKeyfunc(t, bPub, otherKID),
+		issuer:   otherIssuer,
+		tokenURL: "https://idp.other/token",
+		audience: otherAudience,
+	}
+	return s, aPriv, bPriv
+}
+
+func signIDPJWT(t *testing.T, priv ed25519.PrivateKey, kid string, claims jwt.MapClaims) string {
 	t.Helper()
 	tok := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
-	tok.Header["kid"] = testKID
+	tok.Header["kid"] = kid
 	out, err := tok.SignedString(priv)
 	if err != nil {
 		t.Fatalf("sign jwt: %v", err)
@@ -95,6 +141,30 @@ func defaultIDPClaims() jwt.MapClaims {
 		"sub": "user-1",
 		"iat": now.Unix(),
 		"exp": now.Add(5 * time.Minute).Unix(),
+	}
+}
+
+// --- GetTenantIdP --------------------------------------------------------
+
+func TestGetTenantIdP_Success(t *testing.T) {
+	s, _ := newTestSchedulerWithJWKS(t)
+	resp, err := s.GetTenantIdP(context.Background(), &gen.GetTenantIdPRequest{TenantId: testTenantID})
+	if err != nil {
+		t.Fatalf("GetTenantIdP: %v", err)
+	}
+	if resp.Issuer != testIssuer || resp.Audience != testAudience || resp.TokenUrl == "" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	if resp.ClientId != "hpcc-acme" || resp.Scope != "hpcc" {
+		t.Fatalf("client_id/scope not returned: %+v", resp)
+	}
+}
+
+func TestGetTenantIdP_UnknownTenant(t *testing.T) {
+	s, _ := newTestSchedulerWithJWKS(t)
+	_, err := s.GetTenantIdP(context.Background(), &gen.GetTenantIdPRequest{TenantId: "nope"})
+	if err == nil {
+		t.Fatalf("expected error for unknown tenant")
 	}
 }
 
@@ -161,10 +231,11 @@ func TestAuthenticate_NoToken(t *testing.T) {
 
 func TestAuthenticate_JWT_Success(t *testing.T) {
 	s, idpPriv := newTestSchedulerWithJWKS(t)
-	tokenStr := signIDPJWT(t, idpPriv, defaultIDPClaims())
+	tokenStr := signIDPJWT(t, idpPriv, testKID, defaultIDPClaims())
 
 	resp, err := s.Authenticate(context.Background(), &gen.AuthRequest{
-		Token: &gen.AuthRequest_JwtToken{JwtToken: tokenStr},
+		TenantId: testTenantID,
+		Token:    &gen.AuthRequest_JwtToken{JwtToken: tokenStr},
 	})
 	if err != nil {
 		t.Fatalf("Authenticate returned error: %v", err)
@@ -178,8 +249,12 @@ func TestAuthenticate_JWT_Success(t *testing.T) {
 	if resp.SigningPublicKey != nil {
 		t.Fatalf("user JWT auth must not return signing public key")
 	}
-	if _, ok := s.userSessions.Load(resp.SessionToken); !ok {
+	v, ok := s.userSessions.Load(resp.SessionToken)
+	if !ok {
 		t.Fatalf("session not stored in userSessions")
+	}
+	if tid, _ := v.(string); tid != testTenantID {
+		t.Fatalf("session should be bound to tenant %q, got %v", testTenantID, v)
 	}
 }
 
@@ -187,10 +262,11 @@ func TestAuthenticate_JWT_BadIssuer(t *testing.T) {
 	s, idpPriv := newTestSchedulerWithJWKS(t)
 	claims := defaultIDPClaims()
 	claims["iss"] = "https://evil.example/"
-	tokenStr := signIDPJWT(t, idpPriv, claims)
+	tokenStr := signIDPJWT(t, idpPriv, testKID, claims)
 
 	resp, _ := s.Authenticate(context.Background(), &gen.AuthRequest{
-		Token: &gen.AuthRequest_JwtToken{JwtToken: tokenStr},
+		TenantId: testTenantID,
+		Token:    &gen.AuthRequest_JwtToken{JwtToken: tokenStr},
 	})
 	if resp.Success {
 		t.Fatalf("expected JWT with wrong issuer to be rejected")
@@ -201,10 +277,11 @@ func TestAuthenticate_JWT_BadAudience(t *testing.T) {
 	s, idpPriv := newTestSchedulerWithJWKS(t)
 	claims := defaultIDPClaims()
 	claims["aud"] = "other-service"
-	tokenStr := signIDPJWT(t, idpPriv, claims)
+	tokenStr := signIDPJWT(t, idpPriv, testKID, claims)
 
 	resp, _ := s.Authenticate(context.Background(), &gen.AuthRequest{
-		Token: &gen.AuthRequest_JwtToken{JwtToken: tokenStr},
+		TenantId: testTenantID,
+		Token:    &gen.AuthRequest_JwtToken{JwtToken: tokenStr},
 	})
 	if resp.Success {
 		t.Fatalf("expected JWT with wrong audience to be rejected")
@@ -216,10 +293,11 @@ func TestAuthenticate_JWT_Expired(t *testing.T) {
 	claims := defaultIDPClaims()
 	claims["iat"] = time.Now().Add(-1 * time.Hour).Unix()
 	claims["exp"] = time.Now().Add(-1 * time.Minute).Unix()
-	tokenStr := signIDPJWT(t, idpPriv, claims)
+	tokenStr := signIDPJWT(t, idpPriv, testKID, claims)
 
 	resp, _ := s.Authenticate(context.Background(), &gen.AuthRequest{
-		Token: &gen.AuthRequest_JwtToken{JwtToken: tokenStr},
+		TenantId: testTenantID,
+		Token:    &gen.AuthRequest_JwtToken{JwtToken: tokenStr},
 	})
 	if resp.Success {
 		t.Fatalf("expected expired JWT to be rejected")
@@ -229,10 +307,83 @@ func TestAuthenticate_JWT_Expired(t *testing.T) {
 func TestAuthenticate_JWT_Garbage(t *testing.T) {
 	s, _ := newTestSchedulerWithJWKS(t)
 	resp, _ := s.Authenticate(context.Background(), &gen.AuthRequest{
-		Token: &gen.AuthRequest_JwtToken{JwtToken: "not-a-jwt"},
+		TenantId: testTenantID,
+		Token:    &gen.AuthRequest_JwtToken{JwtToken: "not-a-jwt"},
 	})
 	if resp.Success {
 		t.Fatalf("expected garbage JWT to be rejected")
+	}
+}
+
+func TestAuthenticate_JWT_MissingTenantID(t *testing.T) {
+	s, idpPriv := newTestSchedulerWithJWKS(t)
+	tokenStr := signIDPJWT(t, idpPriv, testKID, defaultIDPClaims())
+
+	resp, _ := s.Authenticate(context.Background(), &gen.AuthRequest{
+		// TenantId left empty
+		Token: &gen.AuthRequest_JwtToken{JwtToken: tokenStr},
+	})
+	if resp.Success {
+		t.Fatalf("expected JWT auth without tenant_id to be rejected")
+	}
+}
+
+func TestAuthenticate_JWT_UnknownTenant(t *testing.T) {
+	s, idpPriv := newTestSchedulerWithJWKS(t)
+	tokenStr := signIDPJWT(t, idpPriv, testKID, defaultIDPClaims())
+
+	resp, _ := s.Authenticate(context.Background(), &gen.AuthRequest{
+		TenantId: "no-such-tenant",
+		Token:    &gen.AuthRequest_JwtToken{JwtToken: tokenStr},
+	})
+	if resp.Success {
+		t.Fatalf("expected JWT for unknown tenant to be rejected")
+	}
+}
+
+// TestAuthenticate_JWT_TwoTenants confirms both tenants validate
+// against their own IdP independently.
+func TestAuthenticate_JWT_TwoTenants(t *testing.T) {
+	s, aPriv, bPriv := newTestSchedulerWithTwoIdPs(t)
+
+	aTok := signIDPJWT(t, aPriv, testKID, defaultIDPClaims())
+	if resp, _ := s.Authenticate(context.Background(), &gen.AuthRequest{
+		TenantId: testTenantID,
+		Token:    &gen.AuthRequest_JwtToken{JwtToken: aTok},
+	}); !resp.Success {
+		t.Fatalf("tenant A JWT signed by IdP A should succeed")
+	}
+
+	bClaims := defaultIDPClaims()
+	bClaims["iss"] = otherIssuer
+	bClaims["aud"] = otherAudience
+	bTok := signIDPJWT(t, bPriv, otherKID, bClaims)
+	if resp, _ := s.Authenticate(context.Background(), &gen.AuthRequest{
+		TenantId: otherTenantID,
+		Token:    &gen.AuthRequest_JwtToken{JwtToken: bTok},
+	}); !resp.Success {
+		t.Fatalf("tenant B JWT signed by IdP B should succeed")
+	}
+}
+
+// TestAuthenticate_JWT_CrossTenantSpoof_Rejected is the load-bearing
+// security property: a client labeling itself as tenant B but
+// presenting a JWT signed by IdP A is rejected, because tenant B's
+// JWKS (the only one consulted for tenant_id=B) won't verify A's
+// signature. IdP A is never asked to validate anything for B.
+func TestAuthenticate_JWT_CrossTenantSpoof_Rejected(t *testing.T) {
+	s, aPriv, _ := newTestSchedulerWithTwoIdPs(t)
+
+	// Token would be a perfectly good tenant-A token (iss/aud match
+	// IdP A), but the client labels the request as tenant B.
+	aTok := signIDPJWT(t, aPriv, testKID, defaultIDPClaims())
+
+	resp, _ := s.Authenticate(context.Background(), &gen.AuthRequest{
+		TenantId: otherTenantID,
+		Token:    &gen.AuthRequest_JwtToken{JwtToken: aTok},
+	})
+	if resp.Success {
+		t.Fatalf("must reject: tenant B's IdP should never be replaced by tenant A's")
 	}
 }
 
@@ -253,7 +404,7 @@ func TestRoute_Unauthenticated(t *testing.T) {
 func TestRoute_NoEligibleWorker(t *testing.T) {
 	s := newTestScheduler(t)
 	session := "user-session"
-	s.userSessions.Store(session, true)
+	s.userSessions.Store(session, "t1")
 
 	_, err := s.Route(context.Background(), &gen.RouteRequest{
 		SessionToken: session,
@@ -268,7 +419,7 @@ func TestRoute_NoEligibleWorker(t *testing.T) {
 func TestRoute_Success(t *testing.T) {
 	s := newTestScheduler(t)
 	session := "user-session"
-	s.userSessions.Store(session, true)
+	s.userSessions.Store(session, "t1")
 
 	s.workerStates.Store("w1", &WorkerState{
 		WorkerID:        "w1",
@@ -306,6 +457,30 @@ func TestRoute_Success(t *testing.T) {
 	}
 	if claims["tenant_id"] != "t1" || claims["image_digest"] != "img-a" || claims["worker_id"] != "w1" {
 		t.Fatalf("unexpected claims: %v", claims)
+	}
+}
+
+// TestRoute_SessionTenantMismatch is the Route-side half of the
+// trust-model property: even with a valid session token for tenant
+// A, the scheduler refuses to route as tenant B. Without this
+// check, a client that authenticated honestly as A could swap the
+// tenant_id field on Route and act inside B's namespace.
+func TestRoute_SessionTenantMismatch(t *testing.T) {
+	s := newTestScheduler(t)
+	session := "user-session"
+	s.userSessions.Store(session, "tenant-a")
+
+	s.workerStates.Store("w1", &WorkerState{
+		WorkerID: "w1", AvailableVCPUs: 4, ImageDigests: []string{"img-a"},
+	})
+
+	_, err := s.Route(context.Background(), &gen.RouteRequest{
+		SessionToken: session,
+		TenantId:     "tenant-b", // ← does not match the session's tenant
+		ImageDigest:  "img-a",
+	})
+	if err == nil {
+		t.Fatalf("expected Route to reject tenant_id != session tenant")
 	}
 }
 
