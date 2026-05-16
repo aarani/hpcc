@@ -196,11 +196,13 @@ affect v1 or the parser):
   dispatcher for `MSVCFamily` compiles — the runtime translator
   rewrites `/src` to the per-Exec staging dir so cl.exe gets the
   concrete prefix at compile time, and `.obj` / `.pdb` outputs become
-  byte-identical across Execs. **Still open**: GNU/Clang
-  `-ffile-prefix-map=/src=.` auto-injection — the equivalent flag uses
-  `=` as a separator that the runtime translator's boundary check
-  (currently `/` or end-of-string) doesn't recognise; needs the
-  translator boundary set widened before injection lands.
+  byte-identical across Execs. GNU/Clang reproducibility flags
+  (`-ffile-prefix-map=/src=.`, `-Werror=date-time`) are now also
+  auto-injected by the dispatcher for `GNUFamily` — both the
+  client-side `rewritePrefix` and the worker-side `rewriteRoot`
+  recognise `=` as a path boundary in addition to `/`, so the `/src`
+  inside the `-ffile-prefix-map` payload translates to the per-Exec
+  staging dir the same way bare path arguments do.
 - **MAX_PATH (260) limit.** Monorepo builds blow past this routinely. Workers
   need `LongPathsEnabled` registry, and the worker may rewrite paths to
   `\\?\` form before invoking `cl.exe`.

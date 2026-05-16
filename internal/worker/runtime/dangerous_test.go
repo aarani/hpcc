@@ -128,6 +128,17 @@ func TestRewriteRoot_BoundaryAware(t *testing.T) {
 		// project directory whose literal bytes survive.
 		{"/src/src/main.c", "/src", "/tmp/staged", "/tmp/staged/src/main.c"},
 		{"-I/src/src/include", "/src", "/tmp/staged", "-I/tmp/staged/src/include"},
+		// `=` is a path boundary too: GNU `-ffile-prefix-map=A=B`
+		// puts the root immediately before `=`. Without this the
+		// reproducibility flag injection's `/src` would stay
+		// literal and the staging-dir wouldn't get stripped from
+		// .o embedded paths.
+		{"-ffile-prefix-map=/src=.", "/src", "/tmp/staged", "-ffile-prefix-map=/tmp/staged=."},
+		// Single-match still holds across `=` boundary: only the
+		// first /src on the left of `=` gets rewritten; the inner
+		// /src on the right survives as a literal replacement
+		// payload.
+		{"-ffile-prefix-map=/src=/src/replacement", "/src", "/tmp/staged", "-ffile-prefix-map=/tmp/staged=/src/replacement"},
 	}
 	for _, c := range cases {
 		got := rewriteRoot(c.in, c.root, c.repl)
