@@ -242,31 +242,14 @@ func (d *Dispatcher) dispatchPreprocessed(ctx context.Context, c compiler.Compil
 	// Promote the cpp-side-effect .d files into result.Extras so they
 	// flow through the same cache + writeback pipeline as CAS-mode
 	// extras. The client-side Preprocess pass above ran with the user's
-	// -Wp,-MMD,<path> flags intact and wrote the .d file(s) to the
-	// requested paths under inv.Cwd; we just capture them here. After
-	// this returns, the daemon's writeCompileResult materialises
-	// result.Extras (so cache HITS on later compiles replay the .d
-	// file even though no cpp ran — same property CAS gets from the
-	// worker shipping extras back over the wire).
-	if depPaths := compiler.ExtractDepEmissionPaths(inv.RawArgs); len(depPaths) > 0 {
-		extras := make(map[string][]byte, len(depPaths))
-		for _, p := range depPaths {
-			full := p
-			if !filepath.IsAbs(p) && inv.Cwd != "" {
-				full = filepath.Join(inv.Cwd, p)
-			}
-			b, err := os.ReadFile(full)
-			if err != nil {
-				// The cpp pass may have produced no .d for this path
-				// (e.g. -MMD on a no-include source); not an error,
-				// just nothing to cache for that entry.
-				continue
-			}
-			extras[p] = b
-		}
-		if len(extras) > 0 {
-			result.Extras = extras
-		}
+	// -Wp,-MMD,<path> flags intact and wrote the .d file(s); we just
+	// capture them here. After this returns, the daemon's
+	// writeCompileResult materialises result.Extras (so cache HITS on
+	// later compiles replay the .d file even though no cpp ran — same
+	// property CAS gets from the worker shipping extras back over
+	// the wire).
+	if extras := compiler.CollectDepEmissionExtras(inv); extras != nil {
+		result.Extras = extras
 	}
 
 	// One-shot user-visible notice: if the user's argv carried
