@@ -7,6 +7,7 @@ import "fmt"
 // populate every backend up front and let Select pick.
 type Options struct {
 	Firecracker FirecrackerOptions
+	Hcsshim     HcsshimOptions
 }
 
 // Select returns the Runtime implementation that matches the configured
@@ -18,16 +19,15 @@ type Options struct {
 //	"really_really_dangerous"  — DangerouslyExecOnHost; dev only.
 //	"firecracker"              — raw Firecracker driver (Linux).
 //	"runhcs-wcow-hypervisor"   — containerd + hcsshim Hyper-V isolation
-//	                             (Windows); not implemented.
+//	                             (Windows).
 func Select(handler string, opts Options) (Runtime, error) {
 	switch handler {
 	case HandlerReallyReallyDangerous:
 		return DangerouslyExecOnHost{}, nil
 	case HandlerFirecracker:
 		return NewFirecracker(opts.Firecracker)
-	case "runhcs-wcow-hypervisor":
-		return nil, fmt.Errorf("runtime handler %q (containerd + hcsshim Hyper-V) is not implemented yet; "+
-			"set runtime.handler = %q to run without isolation (dev only)", handler, HandlerReallyReallyDangerous)
+	case HandlerHcsshim:
+		return NewHcsshim(opts.Hcsshim)
 	default:
 		return nil, fmt.Errorf("unknown runtime.handler %q", handler)
 	}

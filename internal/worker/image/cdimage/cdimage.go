@@ -372,6 +372,15 @@ func normalizeDigest(s string) digest.Digest {
 	return digest.Digest(s)
 }
 
+// PreparedImageName returns the containerd image-record name under
+// which a prepared image (pause-binary injected) is registered for a
+// given user-supplied image digest. Exported so the Windows runtime
+// can resolve a prepared image by user digest without re-implementing
+// the naming convention.
+func PreparedImageName(userDigest string) string {
+	return preparedImageName(normalizeDigest(userDigest))
+}
+
 func preparedImageName(userDigest digest.Digest) string {
 	// containerd image references must look like a registry path. A
 	// fake "prepared.hpcc.local" host keeps things parseable without

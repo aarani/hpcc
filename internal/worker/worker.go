@@ -169,9 +169,21 @@ func NewWorker(cfg Config) (*Worker, error) {
 			GID:            cfg.Runtime.Firecracker.GID,
 			BootArgs:       cfg.Runtime.Firecracker.BootArgs,
 		},
+		Hcsshim: runtime.HcsshimOptions{
+			Address:     cfg.Runtime.Hcsshim.Address,
+			Namespace:   cfg.Runtime.Hcsshim.Namespace,
+			RunDir:      cfg.Runtime.Hcsshim.RunDir,
+			Runtime:     cfg.Runtime.Hcsshim.Runtime,
+			Snapshotter: cfg.Runtime.Hcsshim.Snapshotter,
+			Isolation:   cfg.Runtime.Hcsshim.Isolation,
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("init worker runtime: %w", err)
+	}
+	imageStore, err := buildImageStore(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("init worker image store: %w", err)
 	}
 	// Wrap the runtime in a per-tenant container pool so consecutive
 	// compiles for the same (tenant, image) reuse a warm VM instead
@@ -196,7 +208,30 @@ func NewWorker(cfg Config) (*Worker, error) {
 		sessionTTL = d
 	}
 	rt = runtime.NewPooledRuntime(rt, idleTTL, sessionTTL, cfg.Pool.MaxActive)
-	return &Worker{Config: cfg, caches: caches, sourceStore: sourceStore, runtime: rt}, nil
+	return &Worker{Config: cfg, caches: caches, sourceStore: sourceStore, runtime: rt, ImageStore: imageStore}, nil
+}
+
+// buildImageStore picks an image.Store backend that matches the
+// configured runtime. The Linux Firecracker path uses a host-side
+// rootfs cache (image/rootfs) and the Windows hcsshim path uses
+// containerd (image/cdimage); the dev "really_really_dangerous" runtime
+// short-circuits with no store so the worker can boot without
+// containerd or a rootfs builder. Returning (nil, nil) for the dev
+// runtime is deliberate — Worker handles a nil ImageStore as the
+// "every advertised digest is locally present" path.
+func buildImageStore(cfg Config) (image.Store, error) {
+	switch cfg.Runtime.Handler {
+	case runtime.HandlerHcsshim:
+		return newHcsshimImageStore(cfg)
+	default:
+		// Linux Firecracker uses rootfs.Store but resolves prepared
+		// rootfs files directly by path inside the Firecracker driver
+		// today, not via the image.Store contract. Wiring rootfs.Store
+		// into Worker.ImageStore is tracked separately; until then the
+		// Firecracker path stays at the pre-Windows behaviour where
+		// the worker treats every advertised digest as locally present.
+		return nil, nil
+	}
 }
 
 func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.CompileResponse, error) {
