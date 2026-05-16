@@ -54,3 +54,36 @@ check-protoc:
 		echo "protoc-gen-go-grpc not found; run: go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest"; \
 		exit 1; \
 	}
+
+# --- build ------------------------------------------------------------
+#
+# Five workspace modules (see go.work). `go build ./...` from the
+# repo root only touches the main module — the others are sibling
+# modules the workspace glues in, so each needs its own invocation.
+# Per-module targets so a failure attributes to a specific module
+# rather than disappearing into a sea of compiler output.
+#
+# `build` is compile-only (no install); it just confirms the tree
+# builds. Use `go install ./...` from a module dir if you actually
+# want binaries in $GOBIN.
+
+GO ?= go
+
+.PHONY: build build-main build-agent build-pause build-proto build-squashfs
+
+build: build-main build-agent build-pause build-proto build-squashfs
+
+build-main:
+	$(GO) build ./...
+
+build-agent:
+	cd agent && $(GO) build ./...
+
+build-pause:
+	cd pause && $(GO) build ./...
+
+build-proto:
+	cd proto && $(GO) build ./...
+
+build-squashfs:
+	cd squashfs && $(GO) build ./...
