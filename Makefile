@@ -69,15 +69,28 @@ check-protoc:
 
 GO ?= go
 
-.PHONY: build build-main build-agent build-pause build-proto build-squashfs
+.PHONY: build build-main build-agent build-agent-windows build-pause build-proto build-squashfs
 
 build: build-main build-agent build-pause build-proto build-squashfs
 
 build-main:
 	$(GO) build ./...
 
+# Default build-agent builds for the host platform — on dev macOS that's
+# the "other" stub that compiles but doesn't run. CI on a Linux worker
+# host builds the real Linux PID-1 binary; the Windows worker uses
+# build-agent-windows.
 build-agent:
 	cd agent && $(GO) build ./...
+
+# Cross-build hpcc-agent.exe for the Windows runtime. The HvSocket
+# server only exists under //go:build windows so a host-arch build
+# from a Linux/macOS dev box doesn't materialise the Windows side;
+# this target forces GOOS=windows so the deliverable the hcsshim
+# runtime bind-mounts into containers actually contains the
+# HvSocket listener.
+build-agent-windows:
+	cd agent && GOOS=windows GOARCH=amd64 $(GO) build -o hpcc-agent.exe .
 
 build-pause:
 	cd pause && $(GO) build ./...
