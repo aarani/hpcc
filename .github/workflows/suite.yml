@@ -208,40 +208,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify runner is elevated
-        # containerd on Windows creates `\\.\pipe\containerd-containerd`
-        # with a security descriptor that only grants access to
-        # BUILTIN\Administrators and NT AUTHORITY\SYSTEM. A
-        # non-admin runner-user can't dial it (the error is
-        # "Access is denied" out of CreateFile on the pipe), so
-        # fail fast here with a clear message instead of letting
-        # the containerd / ctr / go test steps below blow up
-        # confusingly.
-        #
-        # Fix on the runner: reinstall via `config.cmd` and select
-        # "Yes" to "Run as a service", then enter `NT AUTHORITY\
-        # SYSTEM` (or any local Administrators-group user) when
-        # prompted for the service account. After the runner
-        # restarts, this check passes.
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $id = [Security.Principal.WindowsIdentity]::GetCurrent()
-          $principal = [Security.Principal.WindowsPrincipal]$id
-          if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-            Write-Error @"
-          The self-hosted runner is not running as an administrator
-          (current user: $($id.Name)). The containerd named pipe
-          \\.\pipe\containerd-containerd is admin-only on Windows,
-          so this job cannot proceed.
-
-          Reconfigure the runner service to run as NT AUTHORITY\SYSTEM
-          (re-run config.cmd on the runner host) and try again.
-          "@
-            exit 1
-          }
-          Write-Host "Runner identity OK: $($id.Name)"
-
       - name: Set up Go
         # No-op on a self-hosted runner that already has the right
         # version. setup-go is idempotent and adds to PATH for this
