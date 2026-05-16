@@ -465,10 +465,14 @@ specific deployment topology, and the trust story for "client
 filesystem appears in the worker's VM" was hard to defend in a
 multi-tenant setup.)
 
-The cross-tenant probe disclosure and the missing per-tenant
-upload quota called out in this section's history are addressed
-together by promoting `tenant_id` to a storage namespace boundary
-— design in [docs/multi-tenant.md](../multi-tenant.md).
+The cross-tenant probe disclosure called out in this section's
+history is closed by promoting `tenant_id` to a storage namespace
+boundary on every cache and CAS store — see
+[docs/multi-tenant.md](../multi-tenant.md). The matching
+per-tenant upload quota is deferred to
+[docs/plan/phase-5-observability.md §5.7](phase-5-observability.md)
+since its overrun event is a security-event-log row that lands
+with the rest of that infrastructure.
 
 ### 4.6 Build-System Compatibility (CMake/ninja/make)
 
@@ -549,8 +553,13 @@ thousands of concurrent compiles without becoming a bottleneck.
 The single-IdP assumption baked into this section is lifted in
 [docs/multi-tenant.md](../multi-tenant.md): the scheduler holds a
 per-tenant IdP table, exposes an unauthenticated `GetTenantIdP`
-discovery RPC, and validates each incoming JWT against the
-tenant-claimed IdP's JWKS.
+discovery RPC, and validates each incoming JWT against the IdP
+named by the `AuthRequest.tenant_id` field (not a JWT claim — so
+an IdP configured for tenant A is never asked to verify a token
+labeled as tenant B). The same doc adds per-RPC worker
+enforcement: every `FindMissingBlobs` / `UploadBlobs` header now
+carries the scheduler-issued task token, and the stream is
+pinned to its first header's tenant.
 
 ### 4.9 Worker
 
@@ -668,6 +677,13 @@ This is the mode banks will run. In lower-trust environments it can be
 combined with **signed artifacts**: the worker signs the `(cache_key,
 output_digest)` tuple and the client verifies the signature before
 writing the `.o` to disk, so even the wire path is tamper-evident.
+
+Paranoid mode is also where the multi-tenant work in
+[docs/multi-tenant.md](../multi-tenant.md) earns the most: with
+the cache prefixed by `tenant_id` and worker CAS streams
+authenticated by a tenant-bound scheduler token, a compromised
+tenant-A laptop cannot read or poison tenant-B's artifacts even
+when worker-side credentials are in play.
 
 ### 4.14 Rootfs Extraction Hardening
 
