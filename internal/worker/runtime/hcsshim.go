@@ -318,6 +318,15 @@ func (h *Hcsshim) prepareScratchDirs(id string) (src, out, scratch string, err e
 			return "", "", "", fmt.Errorf("mkdir %q: %w", d, err)
 		}
 	}
+	// Container processes run as a non-admin SID (ContainerUser in
+	// stock nanoserver / servercore) and inherit the host runner's
+	// restrictive temp-dir ACL otherwise — cmd.exe inside the
+	// container gets "Access is denied" trying to write its output
+	// to C:\out\<ExecID>\... Apply the grant once on scratch; the
+	// inheritance flags carry through to per-Exec subdirs.
+	if err := grantContainerModify(scratch); err != nil {
+		return "", "", "", fmt.Errorf("grant container access on %q: %w", scratch, err)
+	}
 	return src, out, scratch, nil
 }
 
