@@ -30,7 +30,7 @@ type Auth struct {
 
 // Tenant is one namespace boundary. A JWT carrying tenant_id = ID is
 // validated against this entry's IdP (JWKSURL, Issuer, Audience). See
-// docs/multi-tenant.md for the threat model the per-tenant IdP closes.
+// docs/plan/multi-tenant.md for the threat model the per-tenant IdP closes.
 type Tenant struct {
 	ID       string `toml:"id"`
 	Issuer   string `toml:"issuer"`
@@ -96,7 +96,7 @@ func (c Config) Validate() error {
 		return fmt.Errorf("auth.worker_token must be at least 16 characters")
 	}
 	if len(c.Tenants) == 0 {
-		return fmt.Errorf("at least one [[tenant]] entry is required (see docs/multi-tenant.md)")
+		return fmt.Errorf("at least one [[tenant]] entry is required (see docs/plan/multi-tenant.md)")
 	}
 	seen := make(map[string]struct{}, len(c.Tenants))
 	for i, t := range c.Tenants {

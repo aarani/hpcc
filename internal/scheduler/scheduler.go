@@ -116,7 +116,7 @@ func (s *Scheduler) Authenticate(ctx context.Context, in *gen.AuthRequest) (*gen
 			// Single opaque rejection across "missing tenant_id",
 			// "unknown tenant", "bad signature", "bad iss/aud",
 			// and "expired" — distinguishing any of these would
-			// leak tenant enumeration. See docs/multi-tenant.md.
+			// leak tenant enumeration. See docs/plan/multi-tenant.md.
 			return &gen.AuthResponse{Success: false}, nil
 		}
 
@@ -177,7 +177,7 @@ func (s *Scheduler) Route(ctx context.Context, in *gen.RouteRequest) (*gen.Route
 }
 
 // verifyTenantJWT runs the per-tenant validation chain described in
-// docs/multi-tenant.md: tenants[tenantID] → signature against that
+// docs/plan/multi-tenant.md: tenants[tenantID] → signature against that
 // tenant's JWKS → iss/aud match. tenantID comes from the
 // AuthRequest, not from a JWT claim — this is the property that
 // stops an IdP configured for tenant A from ever being asked to

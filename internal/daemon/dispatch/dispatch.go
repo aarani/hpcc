@@ -266,7 +266,7 @@ func (d *Dispatcher) dispatchPreprocessed(ctx context.Context, c compiler.Compil
 	return result, nil
 }
 
-// dispatchCAS is the CAS-mode path (docs/cas.md). Builds a content-
+// dispatchCAS is the CAS-mode path (docs/plan/cas.md). Builds a content-
 // addressed manifest of the source closure and asks the worker if the
 // resulting compile cache key is already a hit (1-RPC short-circuit,
 // the headline incremental-build + cross-developer win). On miss,
@@ -394,7 +394,7 @@ func (d *Dispatcher) casUpload(ctx context.Context, workerClient gen.WorkerServi
 	// FindMissingBlobs: stream the digests we'd like to ship; collect
 	// the subset the worker doesn't already have. Every header carries
 	// the route's scheduler_token so the worker can authenticate the
-	// stream — see docs/multi-tenant.md "Worker enforcement".
+	// stream — see docs/plan/multi-tenant.md "Worker enforcement".
 	probeStream, err := workerClient.FindMissingBlobs(ctx)
 	if err != nil {
 		return fmt.Errorf("open FindMissingBlobs: %w", err)
@@ -586,7 +586,7 @@ func (d *Dispatcher) ensureSession(ctx context.Context) error {
 	// Discovery: ask the scheduler where this tenant's IdP lives,
 	// rather than hardcoding token_url in client config. Keeps the
 	// scheduler authoritative; lets ops rotate IdPs without editing
-	// every laptop. See docs/multi-tenant.md "Identity discovery".
+	// every laptop. See docs/plan/multi-tenant.md "Identity discovery".
 	idp, err := d.sched.GetTenantIdP(ctx, &gen.GetTenantIdPRequest{TenantId: d.cfg.TenantID})
 	if err != nil {
 		return fmt.Errorf("scheduler GetTenantIdP for tenant %q: %w", d.cfg.TenantID, err)

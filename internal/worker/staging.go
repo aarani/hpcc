@@ -27,7 +27,7 @@ const preprocessedSourceName = "main.i"
 //
 //   - PREPROCESSED: write the inline preprocessed bytes to
 //     <srcDir>/main.i; allocate an empty <outDir> for artifacts.
-//   - CAS (docs/cas.md): materialize every project-relative blob from
+//   - CAS (docs/plan/cas.md): materialize every project-relative blob from
 //     the CasDescriptor onto srcDir under its declared path, by
 //     looking up the bytes in the worker-local source store. Absolute
 //     (system) paths are skipped — those files live in the toolchain

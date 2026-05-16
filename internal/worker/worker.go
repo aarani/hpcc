@@ -150,7 +150,7 @@ func NewWorker(cfg Config) (*Worker, error) {
 	// namespace. CompileCache will namespace its own view of the same
 	// underlying disk store to "compile"; we take "source". S3 caches
 	// are skipped — source blobs are worker-local-ephemeral by design
-	// (see docs/cas.md Step 4). Nil when no disk cache is configured.
+	// (see docs/plan/cas.md Step 4). Nil when no disk cache is configured.
 	var sourceStore store.Store
 	for i, c := range cfg.Caches {
 		if c.Type == enum.CacheDisk {

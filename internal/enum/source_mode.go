@@ -32,7 +32,7 @@ import "fmt"
 //	manifest, probes the worker's compile cache, and (on miss)
 //	ships only the missing source blobs via UploadBlobs. Required
 //	for workloads where preprocessed output isn't self-contained
-//	(e.g. GAS .S files with .incbin). See docs/cas.md.
+//	(e.g. GAS .S files with .incbin). See docs/plan/cas.md.
 //
 // Maps 1:1 to protocol.SourceMode but lives in `enum` so the config
 // package can hold it without dragging the generated proto into its

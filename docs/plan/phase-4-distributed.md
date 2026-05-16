@@ -431,7 +431,7 @@ the `remote.source_mode` config:
   upload-on-miss only ships project deltas), and unlocks `.S` /
   `.incbin` workloads that PREPROCESSED can't represent.
 
-The full CAS design lives in [docs/cas.md](../cas.md). Key
+The full CAS design lives in [docs/plan/cas.md](cas.md). Key
 properties:
 
 - **Probe-then-upload.** Mirrors Bazel's
@@ -468,7 +468,7 @@ multi-tenant setup.)
 The cross-tenant probe disclosure called out in this section's
 history is closed by promoting `tenant_id` to a storage namespace
 boundary on every cache and CAS store — see
-[docs/multi-tenant.md](../multi-tenant.md). The matching
+[docs/plan/multi-tenant.md](multi-tenant.md). The matching
 per-tenant upload quota is deferred to
 [docs/plan/phase-5-observability.md §5.7](phase-5-observability.md)
 since its overrun event is a security-event-log row that lands
@@ -551,7 +551,7 @@ lookups, not multi-MB artifact transfers. A single scheduler can serve
 thousands of concurrent compiles without becoming a bottleneck.
 
 The single-IdP assumption baked into this section is lifted in
-[docs/multi-tenant.md](../multi-tenant.md): the scheduler holds a
+[docs/plan/multi-tenant.md](multi-tenant.md): the scheduler holds a
 per-tenant IdP table, exposes an unauthenticated `GetTenantIdP`
 discovery RPC, and validates each incoming JWT against the IdP
 named by the `AuthRequest.tenant_id` field (not a JWT claim — so
@@ -679,7 +679,7 @@ output_digest)` tuple and the client verifies the signature before
 writing the `.o` to disk, so even the wire path is tamper-evident.
 
 Paranoid mode is also where the multi-tenant work in
-[docs/multi-tenant.md](../multi-tenant.md) earns the most: with
+[docs/plan/multi-tenant.md](multi-tenant.md) earns the most: with
 the cache prefixed by `tenant_id` and worker CAS streams
 authenticated by a tenant-bound scheduler token, a compromised
 tenant-A laptop cannot read or poison tenant-B's artifacts even

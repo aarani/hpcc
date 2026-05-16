@@ -131,7 +131,7 @@ func main() {
 		// the client build a content-addressed manifest and run the
 		// probe-then-upload dance; the bench script must drop a
 		// .hpcc marker at the kernel root for path normalization to
-		// fire. See docs/cas.md.
+		// fire. See docs/plan/cas.md.
 		sourceMode = flag.String("source-mode", "preprocessed", `"preprocessed" or "cas"`)
 	)
 	flag.Parse()

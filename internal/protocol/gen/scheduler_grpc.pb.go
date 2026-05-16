@@ -33,7 +33,7 @@ type SchedulerServiceClient interface {
 	// GetTenantIdP is unauthenticated by design: the client only knows
 	// its tenant_id + scheduler URL from local config, and needs to
 	// discover where to OAuth before it can produce a JWT. See
-	// docs/multi-tenant.md "Identity discovery (client side)".
+	// docs/plan/multi-tenant.md "Identity discovery (client side)".
 	GetTenantIdP(ctx context.Context, in *GetTenantIdPRequest, opts ...grpc.CallOption) (*GetTenantIdPResponse, error)
 	Authenticate(ctx context.Context, in *AuthRequest, opts ...grpc.CallOption) (*AuthResponse, error)
 	Route(ctx context.Context, in *RouteRequest, opts ...grpc.CallOption) (*RouteResponse, error)
@@ -106,7 +106,7 @@ type SchedulerServiceServer interface {
 	// GetTenantIdP is unauthenticated by design: the client only knows
 	// its tenant_id + scheduler URL from local config, and needs to
 	// discover where to OAuth before it can produce a JWT. See
-	// docs/multi-tenant.md "Identity discovery (client side)".
+	// docs/plan/multi-tenant.md "Identity discovery (client side)".
 	GetTenantIdP(context.Context, *GetTenantIdPRequest) (*GetTenantIdPResponse, error)
 	Authenticate(context.Context, *AuthRequest) (*AuthResponse, error)
 	Route(context.Context, *RouteRequest) (*RouteResponse, error)

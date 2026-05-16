@@ -10,7 +10,7 @@ service SchedulerService {
   // GetTenantIdP is unauthenticated by design: the client only knows
   // its tenant_id + scheduler URL from local config, and needs to
   // discover where to OAuth before it can produce a JWT. See
-  // docs/multi-tenant.md "Identity discovery (client side)".
+  // docs/plan/multi-tenant.md "Identity discovery (client side)".
   rpc GetTenantIdP(GetTenantIdPRequest) returns (GetTenantIdPResponse);
   rpc Authenticate(AuthRequest) returns (AuthResponse);
   rpc Route(RouteRequest) returns (RouteResponse);

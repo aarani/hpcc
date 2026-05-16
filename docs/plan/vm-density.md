@@ -2,8 +2,8 @@
 
 Re-opens the "VMs are sized for many cores but absorb one compile
 at a time" gap in §4.4 of
-[plan/phase-4-distributed.md](plan/phase-4-distributed.md), and the
-aspirational-but-wrong comment in [worker.go](../internal/worker/worker.go)
+[phase-4-distributed.md](phase-4-distributed.md), and the
+aspirational-but-wrong comment in [worker.go](../../internal/worker/worker.go)
 that claims "A single VM can absorb VM.VCPUs concurrent Task.Execs."
 Today it can't — the pool pops the container on Start and re-parks
 it on Stop, so the second concurrent compile for the same
@@ -24,9 +24,9 @@ two stacks don't entangle.
    call streaming RPC with a unique `exec_id`; staging dirs
    land at `/run/hpcc/src/<exec_id>/` and
    `/run/hpcc/out/<exec_id>/` by design (see
-   [agent.proto](../proto/agent/agent.proto)). The host runtime
+   [agent.proto](../../proto/agent/agent.proto)). The host runtime
    already passes a per-`ExecRequest` `ExecID` through
-   ([firecracker.go:349](../internal/worker/runtime/firecracker.go)).
+   ([firecracker.go:349](../../internal/worker/runtime/firecracker.go)).
    The only thing serializing compiles is `PooledRuntime.Start`
    removing the container from the pool, forcing one Exec at a
    time per VM.
@@ -64,7 +64,7 @@ concurrency cap. Three pieces:
 
 ### 1. Pool: refcount, not pop
 
-[`PooledRuntime.Start`](../internal/worker/runtime/pool.go) is
+[`PooledRuntime.Start`](../../internal/worker/runtime/pool.go) is
 rewritten from "pop entry, return wrapper, park on Stop" to
 "acquire entry (refcount++), return wrapper, release on Stop
 (refcount--)." A `pooledEntry` gains:
@@ -104,7 +104,7 @@ refcount semantics propagating through.
 ### 3. Host-side staging stays per-Compile
 
 The host's temporary `srcDir` / `outDir` (created in
-[staging.go](../internal/worker/staging.go)) remain per-Compile.
+[staging.go](../../internal/worker/staging.go)) remain per-Compile.
 They're host-side scratch the worker assembles bytes into
 before streaming them to the agent via the per-Exec
 `exec_id`-scoped channel. Concurrent Compiles get unique

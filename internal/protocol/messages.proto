@@ -27,7 +27,7 @@ message AuthRequest {
   // (workers are tenant-agnostic at the auth layer). Carried in the
   // request rather than as a JWT claim so that an IdP configured for
   // tenant A is never asked to validate a token labeled as tenant B —
-  // see docs/multi-tenant.md "Threat model".
+  // see docs/plan/multi-tenant.md "Threat model".
   string tenant_id = 3;
   oneof token {
     string jwt_token = 1;

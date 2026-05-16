@@ -127,10 +127,10 @@ Categories worth logging:
   client bug or a probe.
 - **CAS abuse.** Worker BLAKE3 recompute disagrees with the
   client-claimed digest (cache-poison attempt — see
-  [docs/cas.md](../cas.md) §"Trust"); `FindMissingBlobs` /
+  [docs/plan/cas.md](cas.md) §"Trust"); `FindMissingBlobs` /
   `UploadBlobs` against a manifest the tenant isn't authorized
   for; missing or wrong-tenant `scheduler_token` on a CAS
-  stream header (step 4 of [docs/multi-tenant.md](../multi-tenant.md)
+  stream header (step 4 of [docs/plan/multi-tenant.md](multi-tenant.md)
   rejects today with `codes.Unauthenticated` but doesn't yet
   emit a record — that hook lands here); per-tenant upload quota
   tripped (see §5.7 below).
@@ -172,7 +172,7 @@ Surface:
 
 ### 5.7 Per-tenant CAS upload quota
 
-Carved out of phase 4 ([docs/multi-tenant.md](../multi-tenant.md)
+Carved out of phase 4 ([docs/plan/multi-tenant.md](multi-tenant.md)
 *Per-tenant quota — deferred*) because it's a fairness property,
 not a security one, and because its overrun event is a row in
 the §5.5 security event log — so it lands here once that log
