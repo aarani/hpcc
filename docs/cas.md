@@ -86,6 +86,16 @@ seeing preprocessed source.
     `preprocess.go`).
   - For each path in `(main_source ∪ headers)`, hash file contents
     with BLAKE3.
+  - For `.S` / `.s` inputs, run a recursive `.incbin` / `.include`
+    closure scanner over the input AND each cpp-discovered header:
+    GAS directives are invisible to `gcc -M`, but `.incbin "foo.bin"`
+    and `.include "bar.S"` still pull files into the build. The
+    walker is worklist+seen-set, recurses through `.include` chains
+    (not `.incbin` binaries), and resolves paths against the
+    invocation's cwd. Without this, kernel `usr/initramfs_data.S`
+    and `arch/x86/realmode/rmpiggy.S` cause the worker compile to
+    fail on missing files even though `gcc -M` reported a clean
+    closure.
   - Aggregate as `BLAKE3( sort_by_path(path || ":" || file_digest)
     joined by "\x00" )`.
   - Return manifest digest + the sorted `[]BlobRef{path, digest, size}`.
@@ -325,8 +335,12 @@ On any remote-side error in steps 3–5, fall back to local compile
 (per §4.11). The probe-and-fail path is no worse than today's
 direct-Compile-and-fail.
 
-Mode selection: per-image / per-tenant config flag, default
-PREPROCESSED. CAS becomes the default once it's bedded in.
+Mode selection: top-level `source_mode` config field, default
+`"cas"`. The same field drives the local cache-key derivation
+algorithm so a client's local cache and a worker-fronted shared
+cache (S3, paranoid mode) stay coherent without an extra knob —
+see `enum.SourceMode` for the full story. `"preprocessed"` remains
+selectable as the fallback / oracle path.
 
 ### Step 6 — Worker-side materialization
 
@@ -354,7 +368,36 @@ dance (Steps 3–4 + client). `Compile` handler with
    `AgentService.Exec` input-files channel (§4.4.1). Agent
    materializes under `/run/hpcc/src/<exec_id>/<blob.path>`,
    invokes the compiler with `entry_path` as the TU root.
-5. On success, store output keyed by the manifest-derived cache key
+5. Pre-create parent directories the compiler will need but the
+   manifest doesn't carry as files:
+   - Output parents (`mkdirOutputParents`): for every `/out/<path>`
+     the argv mentions (joined `-o`, separate `-o`, embedded
+     `-Wp,-MMD,<path>`, separate `-MF`), `mkdir -p` the parent
+     under `outHostPath`. Compilers refuse to create missing
+     parents for output files — they `open(...O_CREAT)` the leaf
+     only — so without this, `-Wp,-MMD,/out/build/main.d` ENOENTs
+     before clang produces the .o.
+   - Search-path parents (`mkdirSearchPaths`): for every
+     `-I` / `-iquote` / `-isystem` / `-idirafter` / `-L` argument
+     that resolves under `/src/`, `mkdir -p` it under
+     `srcHostPath` (empty if needed). The dep closure only ships
+     files actually `#include`'d by this TU, so an `-I` dir whose
+     contents this TU doesn't pull in never materializes — and
+     `-Werror=missing-include-dirs` (kernel and many other builds
+     enable it) fires before the compile starts.
+   Both helpers also live on the agent side for the firecracker
+   path, where argv arrives post-translation and srcHostPath is the
+   agent's per-Exec staging dir.
+6. Capture side-effect outputs (`.d` files etc.) the compiler wrote
+   under `outHostPath` into `CompileResponse.extra_outputs`. The
+   client's `dispatchCAS` promotes these onto `result.Extras`; the
+   daemon's `writeCompileResult` materializes them under `inv.Cwd`.
+   Cached the same way as `output_artifact` (a binary length-prefixed
+   `extras` blob in the compile cache, NOT JSON), so warm hits replay
+   the same `.d` files cold compiles produced — without this, the
+   kernel's `fixdep` fails on the first warm rebuild after `make
+   clean` (the .o comes back from cache, the .d doesn't).
+7. On success, store output keyed by the manifest-derived cache key
    (same formula as Step 2a uses for the probe).
 
 ### Step 7 — GC
@@ -388,15 +431,28 @@ handles hit detection on the remote side.
 
 This is the original forcing function. The actual end-to-end smoke
 test — kernel `.S` with `.incbin` compiling through the full stack
-— runs out of `bench/fc/kernel-bench-fc.sh` against a real
-firecracker setup; it's not unit-testable in CI without a live
-worker. Unit coverage in this repo:
+— runs out of `bench/kernel-bench-fc.sh` against a real firecracker
+setup, gated in CI by the `fc-bench` matrix in
+`.github/workflows/kernel-bench.yml`. Unit coverage in this repo:
 
 - `TestDispatchableUnderCAS` (internal/compiler/invocation_test.go) —
   pins the new gate's contents.
 - `TestCacheableAndCASDivergeOnAssembly` — pins the divergence
   invariant: `Cacheable==false && DispatchableUnderCAS==true` for
   `.S` inputs.
+- `TestCompile_CASReturnsDepFileAsExtraOutput`
+  (internal/worker/worker_test.go) — pins that the worker collects
+  `.d` files and surfaces them as `extra_outputs`, the wire piece
+  of Step 6.
+
+A separate carve-out exists for argv shapes the dispatch path can't
+faithfully reproduce: `compiler.HasUncapturedSideEffectFlag`
+recognises `-save-temps`, `-fdump-*`, `-fcallgraph-info`,
+`-fprofile-generate`, `-fprofile-arcs`, `-ftest-coverage`,
+`--coverage`, `-gsplit-dwarf`, and `-fdiagnostics-format=*-file`.
+`Cacheable()` / `DispatchableUnderCAS()` both return false on a
+match, the daemon invokes locally, and a one-shot yellow notice on
+stderr explains why the cache/remote was bypassed for that compile.
 
 ## Open questions — resolved log
 
@@ -405,7 +461,12 @@ worker. Unit coverage in this repo:
   separate Store namespaces (`compile/`, `source/`, `manifest/`). A
   cache-key bit-collision between a ManifestDigest-derived key and a
   PreprocessedDigest-derived key can no longer land in the same
-  store directory, so the scheme-version tag isn't needed.
+  store directory, so the scheme-version tag isn't needed. The
+  related question of whether to expose key-derivation as a separate
+  config knob (briefly shipped as `cache_key_mode`) was resolved by
+  collapsing it back into `source_mode`: cache-key derivation and
+  dispatch wire format always have to track the same value, so one
+  field expresses both decisions.
 - ~~**L2 confirmed-set / L3 S3 probe.**~~ **Both dropped.** Step 3
   collapses to `sourceStore.Has`. Source blobs are worker-local-only
   (no S3 storage for source), so there's nothing for L3 to probe; L2
@@ -427,14 +488,18 @@ worker. Unit coverage in this repo:
   silent fallback to absolute paths (preserves current behavior for
   unmigrated users). Empty file is valid; TOML contents hold
   project-scoped config. Sibling pattern to `.editorconfig`.
-- **Upload concurrency from one client.** Single stream per worker,
-  or multiple parallel `UploadBlobs` streams? Lean: single stream;
-  HTTP/2 framing already multiplexes, and one stream simplifies
-  quota accounting.
-- **Quota response shape.** Hard reject vs. backpressure (server
-  withholds reads until window opens). Lean: hard reject + client
-  falls back to local — matches §4.11's "never fail a build"
-  posture better than indefinite blocking.
+- ~~**Upload concurrency from one client.**~~ **Single stream**,
+  per the lean. HTTP/2 framing multiplexes well enough that the
+  kernel-bench numbers don't justify the quota-accounting headache
+  of parallel streams. Revisit if profiling shows the single
+  `UploadBlobs` stream saturating before the worker's compile pool
+  does.
+- **Per-tenant write quota.** Not yet implemented. The Step 4
+  design calls for a token bucket on bytes/sec and bytes/window
+  keyed by `tenant_id`, with hard-reject + client-side local
+  fallback (vs. backpressure) so the build never blocks
+  indefinitely. Deferred until a multi-tenant deployment actually
+  needs it; single-tenant CI use is unbounded today.
 
 ## What this does *not* change
 
@@ -450,8 +515,32 @@ worker. Unit coverage in this repo:
 
 ## Status
 
-Sub-plan only. Step 1 (manifest-mode cache key) has landed in
-`internal/compiler/manifest.go`; the wire-protocol and worker pieces
-(Steps 2–5) remain. Update §4.5 in
-[plan/phase-4-distributed.md](plan/phase-4-distributed.md) to point
-here when the wire work begins.
+Shipped. All build-order steps have landed and CAS is the default
+`source_mode`. End-to-end coverage:
+
+- `internal/compiler/manifest.go` — Step 1 manifest computation +
+  the `.S` / `.incbin` / `.include` closure scanner.
+- `internal/protocol/compile.proto` — Step 2 wire types
+  (`ProbeCompileCache`, `FindMissingBlobs`, `UploadBlobs`,
+  `CasDescriptor`, `BlobRef`, `BlobChunk`, etc.).
+- `internal/worker/cas.go` — Steps 2a / 3 / 4 server handlers,
+  including BLAKE3-on-the-fly verification and the
+  `recomputed-digest` storage key.
+- `internal/daemon/dispatch/dispatch.go` `dispatchCAS` — Step 5b
+  client flow.
+- `internal/worker/worker.go` `Compile` (CAS branch) — Step 6
+  materialization, plus `mkdirOutputParents` /
+  `mkdirSearchPaths` for the parent-dir gaps the manifest doesn't
+  carry and the `extras` round-trip for `.d` files.
+- `internal/cache/compile.go` — Step 6 extras encoding (binary,
+  length-prefixed; not JSON) and the `extras` cache blob.
+- `bench/kernel-bench-fc.sh` + `bench/kernel-bench-fc-both.sh` +
+  `.github/workflows/kernel-bench.yml` — CI exercises both
+  `source_mode` legs against a real `v7.0` kernel build via
+  firecracker.
+
+Outstanding work tracked in **Open questions** above: per-tenant
+write quota (Step 4 hook unimplemented), the tenant-isolated
+content-addressed disclosure paranoid-knob (Step 2a caveat). Update
+§4.5 in [plan/phase-4-distributed.md](plan/phase-4-distributed.md)
+to point here.
