@@ -310,7 +310,7 @@ func (d *Dispatcher) dispatchCAS(ctx context.Context, c compiler.Compiler, inv *
 	}
 
 	// Probe miss: run the upload dance, then Compile.
-	if err := d.casUpload(ctx, workerClient, manifest, inv); err != nil {
+	if err := d.casUpload(ctx, workerClient, manifest, inv, route.Token); err != nil {
 		return nil, fmt.Errorf("cas upload: %w", err)
 	}
 
@@ -385,14 +385,16 @@ func (d *Dispatcher) dispatchCAS(ctx context.Context, c compiler.Compiler, inv *
 // project-relative slice of the manifest's blob list. System (absolute)
 // paths are skipped — those files live in the toolchain image, not in
 // the source closure the worker materialises.
-func (d *Dispatcher) casUpload(ctx context.Context, workerClient gen.WorkerServiceClient, manifest *compiler.Manifest, inv *compiler.Invocation) error {
+func (d *Dispatcher) casUpload(ctx context.Context, workerClient gen.WorkerServiceClient, manifest *compiler.Manifest, inv *compiler.Invocation, schedulerToken string) error {
 	projectBlobs := projectBlobs(manifest.Blobs)
 	if len(projectBlobs) == 0 {
 		return nil
 	}
 
 	// FindMissingBlobs: stream the digests we'd like to ship; collect
-	// the subset the worker doesn't already have.
+	// the subset the worker doesn't already have. Every header carries
+	// the route's scheduler_token so the worker can authenticate the
+	// stream — see docs/multi-tenant.md "Worker enforcement".
 	probeStream, err := workerClient.FindMissingBlobs(ctx)
 	if err != nil {
 		return fmt.Errorf("open FindMissingBlobs: %w", err)
@@ -400,7 +402,12 @@ func (d *Dispatcher) casUpload(ctx context.Context, workerClient gen.WorkerServi
 	sendDone := make(chan error, 1)
 	go func() {
 		for _, b := range projectBlobs {
-			if err := probeStream.Send(&gen.BlobDigest{Digest: b.Digest[:], Size: uint64(b.Size)}); err != nil {
+			if err := probeStream.Send(&gen.BlobDigest{
+				Digest:         b.Digest[:],
+				Size:           uint64(b.Size),
+				TenantId:       d.cfg.TenantID,
+				SchedulerToken: schedulerToken,
+			}); err != nil {
 				sendDone <- fmt.Errorf("send probe: %w", err)
 				return
 			}
@@ -441,7 +448,7 @@ func (d *Dispatcher) casUpload(ctx context.Context, workerClient gen.WorkerServi
 			continue
 		}
 		full := filepath.Join(projectRoot, filepath.FromSlash(b.Path))
-		if err := streamUpload(upStream, b, full); err != nil {
+		if err := streamUpload(upStream, b, full, d.cfg.TenantID, schedulerToken); err != nil {
 			return err
 		}
 	}
@@ -458,9 +465,14 @@ func (d *Dispatcher) casUpload(ctx context.Context, workerClient gen.WorkerServi
 // streamUpload sends one blob over the UploadBlobs stream: a header
 // carrying the claimed digest, then chunks of file content sized to
 // fit comfortably inside one gRPC frame.
-func streamUpload(stream gen.WorkerService_UploadBlobsClient, ref compiler.BlobRef, path string) error {
+func streamUpload(stream gen.WorkerService_UploadBlobsClient, ref compiler.BlobRef, path string, tenantID string, schedulerToken string) error {
 	if err := stream.Send(&gen.BlobChunk{
-		Body: &gen.BlobChunk_Header{Header: &gen.BlobDigest{Digest: ref.Digest[:], Size: uint64(ref.Size)}},
+		Body: &gen.BlobChunk_Header{Header: &gen.BlobDigest{
+			Digest:         ref.Digest[:],
+			Size:           uint64(ref.Size),
+			TenantId:       tenantID,
+			SchedulerToken: schedulerToken,
+		}},
 	}); err != nil {
 		return fmt.Errorf("send header for %q: %w", ref.Path, err)
 	}
@@ -571,13 +583,23 @@ func (d *Dispatcher) ensureSession(ctx context.Context) error {
 		return nil
 	}
 
-	jwt, err := fetchOAuthToken(ctx, d.cfg.OAuth)
+	// Discovery: ask the scheduler where this tenant's IdP lives,
+	// rather than hardcoding token_url in client config. Keeps the
+	// scheduler authoritative; lets ops rotate IdPs without editing
+	// every laptop. See docs/multi-tenant.md "Identity discovery".
+	idp, err := d.sched.GetTenantIdP(ctx, &gen.GetTenantIdPRequest{TenantId: d.cfg.TenantID})
+	if err != nil {
+		return fmt.Errorf("scheduler GetTenantIdP for tenant %q: %w", d.cfg.TenantID, err)
+	}
+
+	jwt, err := fetchOAuthToken(ctx, idp, d.cfg.OAuth)
 	if err != nil {
 		return fmt.Errorf("oauth password grant: %w", err)
 	}
 
 	resp, err := d.sched.Authenticate(ctx, &gen.AuthRequest{
-		Token: &gen.AuthRequest_JwtToken{JwtToken: jwt},
+		TenantId: d.cfg.TenantID,
+		Token:    &gen.AuthRequest_JwtToken{JwtToken: jwt},
 	})
 	if err != nil {
 		return fmt.Errorf("scheduler Authenticate RPC: %w", err)
@@ -662,25 +684,25 @@ func (d *Dispatcher) workerClient(addr string, fingerprint []byte) (gen.WorkerSe
 // POST, JSON response. We pull only access_token; refresh tokens
 // aren't useful here because the scheduler session token is what gets
 // reused — when it dies, we re-run the whole grant.
-func fetchOAuthToken(ctx context.Context, oc config.OAuthConfig) (string, error) {
-	if oc.TokenURL == "" {
-		return "", fmt.Errorf("remote.oauth.token_url is required")
+func fetchOAuthToken(ctx context.Context, idp *gen.GetTenantIdPResponse, oc config.OAuthConfig) (string, error) {
+	if idp.TokenUrl == "" {
+		return "", fmt.Errorf("scheduler returned empty token_url for tenant")
 	}
 	form := url.Values{}
 	form.Set("grant_type", "password")
 	form.Set("username", oc.Username)
 	form.Set("password", oc.Password)
-	if oc.ClientID != "" {
-		form.Set("client_id", oc.ClientID)
+	if idp.ClientId != "" {
+		form.Set("client_id", idp.ClientId)
 	}
 	if oc.ClientSecret != "" {
 		form.Set("client_secret", oc.ClientSecret)
 	}
-	if oc.Scope != "" {
-		form.Set("scope", oc.Scope)
+	if idp.Scope != "" {
+		form.Set("scope", idp.Scope)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, oc.TokenURL, bytes.NewBufferString(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, idp.TokenUrl, bytes.NewBufferString(form.Encode()))
 	if err != nil {
 		return "", err
 	}

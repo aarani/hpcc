@@ -60,10 +60,25 @@ type CompileCache struct {
 // sibling facades (SourceStore, ManifestStore) will share this shape
 // — they won't, since they key on raw content digests rather than
 // parsed invocations.
+//
+// tenantID is an explicit per-call parameter rather than a constructor
+// arg: one CompileCache instance backs every tenant on a shared
+// worker/daemon, but each Lookup/Store binds to one tenant for the
+// duration of that call. See docs/multi-tenant.md "Storage
+// isolation". Callers with no tenant context (the runner-only local
+// fast path) pass "local".
 type CompileCacheBackend interface {
-	Lookup(inv *compiler.Invocation) (*compiler.InvocationResult, error)
-	Store(inv *compiler.Invocation, res *compiler.InvocationResult) error
+	Lookup(inv *compiler.Invocation, tenantID string) (*compiler.InvocationResult, error)
+	Store(inv *compiler.Invocation, res *compiler.InvocationResult, tenantID string) error
 }
+
+// TenantLocal is the sentinel tenant used by the local-only runner
+// path (no daemon, no remote). A single developer's machine has no
+// meaningful namespace neighbours to isolate from; pinning to a
+// constant keeps the on-disk layout shape uniform across runner,
+// daemon, and worker so tooling that walks the cache tree doesn't
+// have to special-case "no-tenant" entries.
+const TenantLocal = "local"
 
 var _ CompileCacheBackend = (*CompileCache)(nil)
 
@@ -99,9 +114,12 @@ func NewCompileCache(ctx *compiler.Context, stores []store.Store) *CompileCache 
 // inv.Output before the result is returned, so the caller's contract
 // with the user — that the output file exists at the requested path —
 // holds whether the compile ran or was replayed.
-func (c *CompileCache) Lookup(inv *compiler.Invocation) (*compiler.InvocationResult, error) {
+func (c *CompileCache) Lookup(inv *compiler.Invocation, tenantID string) (*compiler.InvocationResult, error) {
 	if len(c.stores) == 0 {
 		return nil, nil
+	}
+	if tenantID == "" {
+		return nil, fmt.Errorf("CompileCache.Lookup: tenantID is required")
 	}
 	key, err := inv.CacheKey(c.ctx)
 	if err != nil {
@@ -109,11 +127,12 @@ func (c *CompileCache) Lookup(inv *compiler.Invocation) (*compiler.InvocationRes
 	}
 
 	for _, s := range c.stores {
-		has, err := s.Has(key)
+		ts := s.Namespace(tenantID)
+		has, err := ts.Has(key)
 		if err != nil || !has {
 			continue
 		}
-		res, ok, err := loadEntry(s, key, inv.Output)
+		res, ok, err := loadEntry(ts, key, inv.Output)
 		if err != nil {
 			return nil, err
 		}
@@ -145,9 +164,12 @@ func (c *CompileCache) Lookup(inv *compiler.Invocation) (*compiler.InvocationRes
 // fixes that without needing to teach Store about the runtime
 // path translation. A missing output is still tolerated (modes
 // that don't produce a single output file simply skip the blob).
-func (c *CompileCache) Store(inv *compiler.Invocation, res *compiler.InvocationResult) error {
+func (c *CompileCache) Store(inv *compiler.Invocation, res *compiler.InvocationResult, tenantID string) error {
 	if len(c.stores) == 0 || res == nil {
 		return nil
+	}
+	if tenantID == "" {
+		return fmt.Errorf("CompileCache.Store: tenantID is required")
 	}
 	key, err := inv.CacheKey(c.ctx)
 	if err != nil {
@@ -186,25 +208,26 @@ func (c *CompileCache) Store(inv *compiler.Invocation, res *compiler.InvocationR
 	}
 
 	for _, s := range c.stores {
+		ts := s.Namespace(tenantID)
 		if output != nil {
-			if err := s.Put(key, blobOutput, output); err != nil {
+			if err := ts.Put(key, blobOutput, output); err != nil {
 				return err
 			}
 		}
-		if err := s.Put(key, blobStdout, res.Stdout); err != nil {
+		if err := ts.Put(key, blobStdout, res.Stdout); err != nil {
 			return err
 		}
-		if err := s.Put(key, blobStderr, res.Stderr); err != nil {
+		if err := ts.Put(key, blobStderr, res.Stderr); err != nil {
 			return err
 		}
-		if err := s.Put(key, blobExitCode, exitCode); err != nil {
+		if err := ts.Put(key, blobExitCode, exitCode); err != nil {
 			return err
 		}
-		if err := s.Put(key, blobMetadata, meta); err != nil {
+		if err := ts.Put(key, blobMetadata, meta); err != nil {
 			return err
 		}
 		if extrasBlob != nil {
-			if err := s.Put(key, blobExtras, extrasBlob); err != nil {
+			if err := ts.Put(key, blobExtras, extrasBlob); err != nil {
 				return err
 			}
 		}

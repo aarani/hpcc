@@ -72,7 +72,7 @@ func (w *Worker) stageSource(req *gen.CompileRequest) (srcHostPath, outHostPath 
 			cleanup()
 			return "", "", nil, fmt.Errorf("source_mode=CAS but worker has no source store configured")
 		}
-		if err := materializeCASBlobs(srcDir, cas, w.sourceStore); err != nil {
+		if err := materializeCASBlobs(srcDir, cas, w.sourceStore.Namespace(req.Descriptor_.TenantId)); err != nil {
 			cleanup()
 			return "", "", nil, fmt.Errorf("materialize CAS blobs: %w", err)
 		}

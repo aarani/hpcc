@@ -17,13 +17,28 @@ import (
 
 type Scheduler struct {
 	config         Config
-	jwtKeyFunc     keyfunc.Keyfunc
-	workerSessions sync.Map // session token → worker ID
-	userSessions   sync.Map // session token → true
-	workerStates   sync.Map // worker ID → *WorkerState
+	tenantAuth     map[string]*tenantAuth // tenant_id → per-tenant IdP
+	workerSessions sync.Map               // session token → worker ID
+	userSessions   sync.Map               // session token → true
+	workerStates   sync.Map               // worker ID → *WorkerState
 	signingPrivKey ed25519.PrivateKey
 	signingPubKey  ed25519.PublicKey
 	gen.UnimplementedSchedulerServiceServer
+}
+
+// tenantAuth bundles the JWKS keyfunc and expected iss/aud for a single
+// tenant. Issuer/audience are checked manually rather than via
+// jwt.WithIssuer/jwt.WithAudience because the parser's keyfunc fires
+// before those validators, and we need to choose the keyfunc based on
+// the tenant claim — so we run all post-signature checks ourselves
+// after picking the tenant.
+type tenantAuth struct {
+	keyfunc  keyfunc.Keyfunc
+	issuer   string
+	tokenURL string
+	audience string
+	clientID string
+	scope    string
 }
 
 func NewDefaultScheduler() (*Scheduler, error) {
@@ -48,14 +63,25 @@ func NewScheduler(config Config) (*Scheduler, error) {
 		return nil, fmt.Errorf("generate signing keypair: %w", err)
 	}
 
-	kf, err := keyfunc.NewDefault([]string{config.Auth.JWKS.URL})
-	if err != nil {
-		return nil, fmt.Errorf("init JWKS keyfunc from %q: %w", config.Auth.JWKS.URL, err)
+	tenants := make(map[string]*tenantAuth, len(config.Tenants))
+	for _, t := range config.Tenants {
+		kf, err := keyfunc.NewDefault([]string{t.JWKSURL})
+		if err != nil {
+			return nil, fmt.Errorf("init JWKS keyfunc for tenant %q from %q: %w", t.ID, t.JWKSURL, err)
+		}
+		tenants[t.ID] = &tenantAuth{
+			keyfunc:  kf,
+			issuer:   t.Issuer,
+			tokenURL: t.TokenURL,
+			audience: t.Audience,
+			clientID: t.ClientID,
+			scope:    t.Scope,
+		}
 	}
 
 	return &Scheduler{
 		config:         config,
-		jwtKeyFunc:     kf,
+		tenantAuth:     tenants,
 		signingPrivKey: privKey,
 		signingPubKey:  pubKey,
 	}, nil
@@ -63,19 +89,42 @@ func NewScheduler(config Config) (*Scheduler, error) {
 
 var _ gen.SchedulerServiceServer = (*Scheduler)(nil)
 
+// GetTenantIdP returns the OAuth discovery info for a tenant so the
+// client doesn't have to hardcode token_url/issuer/audience in its
+// config. Unauthenticated by design — the client has only its
+// tenant_id + scheduler URL at this point. Unknown tenant returns an
+// error; the response contains no secrets (issuer/token_url are
+// publicly observable in any issued JWT or OAuth flow).
+func (s *Scheduler) GetTenantIdP(ctx context.Context, in *gen.GetTenantIdPRequest) (*gen.GetTenantIdPResponse, error) {
+	ta, ok := s.tenantAuth[in.TenantId]
+	if !ok {
+		return nil, fmt.Errorf("unknown tenant")
+	}
+	return &gen.GetTenantIdPResponse{
+		Issuer:   ta.issuer,
+		TokenUrl: ta.tokenURL,
+		Audience: ta.audience,
+		ClientId: ta.clientID,
+		Scope:    ta.scope,
+	}, nil
+}
+
 func (s *Scheduler) Authenticate(ctx context.Context, in *gen.AuthRequest) (*gen.AuthResponse, error) {
 	switch t := in.GetToken().(type) {
 	case *gen.AuthRequest_JwtToken:
-		token, err := jwt.Parse(t.JwtToken, s.jwtKeyFunc.Keyfunc,
-			jwt.WithIssuer(s.config.Auth.JWKS.Issuer),
-			jwt.WithAudience(s.config.Auth.JWKS.Audience),
-		)
-		if err != nil || !token.Valid {
+		if !s.verifyTenantJWT(in.TenantId, t.JwtToken) {
+			// Single opaque rejection across "missing tenant_id",
+			// "unknown tenant", "bad signature", "bad iss/aud",
+			// and "expired" — distinguishing any of these would
+			// leak tenant enumeration. See docs/multi-tenant.md.
 			return &gen.AuthResponse{Success: false}, nil
 		}
 
 		sessionToken := rand.Text()
-		s.userSessions.Store(sessionToken, true)
+		// Bind the session to the tenant the JWT was validated for so
+		// downstream Route calls can reject session_token-for-A used
+		// against tenant_id=B.
+		s.userSessions.Store(sessionToken, in.TenantId)
 		return &gen.AuthResponse{Success: true, SessionToken: sessionToken}, nil
 
 	case *gen.AuthRequest_StaticToken:
@@ -99,7 +148,14 @@ func (s *Scheduler) Authenticate(ctx context.Context, in *gen.AuthRequest) (*gen
 }
 
 func (s *Scheduler) Route(ctx context.Context, in *gen.RouteRequest) (*gen.RouteResponse, error) {
-	if _, authenticated := s.userSessions.Load(in.SessionToken); !authenticated {
+	sessVal, authenticated := s.userSessions.Load(in.SessionToken)
+	if !authenticated {
+		return nil, fmt.Errorf("unauthenticated")
+	}
+	sessTenant, _ := sessVal.(string)
+	// Session is bound to the tenant the JWT authenticated. A session
+	// for tenant A cannot route as tenant B even if the JWT verified.
+	if sessTenant == "" || sessTenant != in.TenantId {
 		return nil, fmt.Errorf("unauthenticated")
 	}
 
@@ -118,6 +174,62 @@ func (s *Scheduler) Route(ctx context.Context, in *gen.RouteRequest) (*gen.Route
 		Token:           taskToken,
 		CertFingerprint: worker.CertFingerprint,
 	}, nil
+}
+
+// verifyTenantJWT runs the per-tenant validation chain described in
+// docs/multi-tenant.md: tenants[tenantID] → signature against that
+// tenant's JWKS → iss/aud match. tenantID comes from the
+// AuthRequest, not from a JWT claim — this is the property that
+// stops an IdP configured for tenant A from ever being asked to
+// validate something the client labeled as tenant B. The caller
+// MUST collapse all failure modes into one opaque rejection.
+func (s *Scheduler) verifyTenantJWT(tenantID, raw string) bool {
+	if tenantID == "" {
+		return false
+	}
+	ta, ok := s.tenantAuth[tenantID]
+	if !ok {
+		return false
+	}
+
+	token, err := jwt.Parse(raw, ta.keyfunc.Keyfunc)
+	if err != nil || !token.Valid {
+		return false
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return false
+	}
+	if iss, _ := claims["iss"].(string); iss != ta.issuer {
+		return false
+	}
+	// aud may be string or []string per RFC 7519. jwt/v5 surfaces it
+	// as either; check both shapes.
+	if !audienceMatches(claims["aud"], ta.audience) {
+		return false
+	}
+	return true
+}
+
+func audienceMatches(claim any, want string) bool {
+	switch v := claim.(type) {
+	case string:
+		return v == want
+	case []any:
+		for _, a := range v {
+			if s, ok := a.(string); ok && s == want {
+				return true
+			}
+		}
+	case []string:
+		for _, s := range v {
+			if s == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 const taskTokenTTL = 5 * time.Minute

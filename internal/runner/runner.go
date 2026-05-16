@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/aarani/hpcc/internal/cache"
 	"github.com/aarani/hpcc/internal/compiler"
 	"github.com/aarani/hpcc/internal/daemon/client"
 )
@@ -56,7 +57,10 @@ func Run(ctx *compiler.Context, args []string) error {
 	// hand off straight to the compiler.
 	var result *compiler.InvocationResult
 	if inv.Cacheable() {
-		result, err = ctx.Cache.Lookup(inv)
+		// Runner-only path has no tenant context — single developer's
+		// machine, no namespace neighbours. Pin to the local sentinel
+		// so on-disk layout matches the daemon/worker tenant shape.
+		result, err = ctx.Cache.Lookup(inv, cache.TenantLocal)
 		if err != nil || result == nil {
 			result, err = ctx.Compiler.Invoke(inv)
 			if err != nil {
@@ -78,7 +82,7 @@ func Run(ctx *compiler.Context, args []string) error {
 					}
 				}
 			}
-			ctx.Cache.Store(inv, result)
+			ctx.Cache.Store(inv, result, cache.TenantLocal)
 		}
 	} else {
 		result, err = ctx.Compiler.Invoke(inv)

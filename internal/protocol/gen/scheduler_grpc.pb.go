@@ -19,6 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	SchedulerService_GetTenantIdP_FullMethodName   = "/protocol.SchedulerService/GetTenantIdP"
 	SchedulerService_Authenticate_FullMethodName   = "/protocol.SchedulerService/Authenticate"
 	SchedulerService_Route_FullMethodName          = "/protocol.SchedulerService/Route"
 	SchedulerService_RegisterWorker_FullMethodName = "/protocol.SchedulerService/RegisterWorker"
@@ -29,6 +30,11 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type SchedulerServiceClient interface {
+	// GetTenantIdP is unauthenticated by design: the client only knows
+	// its tenant_id + scheduler URL from local config, and needs to
+	// discover where to OAuth before it can produce a JWT. See
+	// docs/multi-tenant.md "Identity discovery (client side)".
+	GetTenantIdP(ctx context.Context, in *GetTenantIdPRequest, opts ...grpc.CallOption) (*GetTenantIdPResponse, error)
 	Authenticate(ctx context.Context, in *AuthRequest, opts ...grpc.CallOption) (*AuthResponse, error)
 	Route(ctx context.Context, in *RouteRequest, opts ...grpc.CallOption) (*RouteResponse, error)
 	RegisterWorker(ctx context.Context, in *RegisterWorkerRequest, opts ...grpc.CallOption) (*RegisterWorkerResponse, error)
@@ -41,6 +47,16 @@ type schedulerServiceClient struct {
 
 func NewSchedulerServiceClient(cc grpc.ClientConnInterface) SchedulerServiceClient {
 	return &schedulerServiceClient{cc}
+}
+
+func (c *schedulerServiceClient) GetTenantIdP(ctx context.Context, in *GetTenantIdPRequest, opts ...grpc.CallOption) (*GetTenantIdPResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetTenantIdPResponse)
+	err := c.cc.Invoke(ctx, SchedulerService_GetTenantIdP_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *schedulerServiceClient) Authenticate(ctx context.Context, in *AuthRequest, opts ...grpc.CallOption) (*AuthResponse, error) {
@@ -87,6 +103,11 @@ func (c *schedulerServiceClient) Heartbeat(ctx context.Context, in *WorkerHeartb
 // All implementations must embed UnimplementedSchedulerServiceServer
 // for forward compatibility.
 type SchedulerServiceServer interface {
+	// GetTenantIdP is unauthenticated by design: the client only knows
+	// its tenant_id + scheduler URL from local config, and needs to
+	// discover where to OAuth before it can produce a JWT. See
+	// docs/multi-tenant.md "Identity discovery (client side)".
+	GetTenantIdP(context.Context, *GetTenantIdPRequest) (*GetTenantIdPResponse, error)
 	Authenticate(context.Context, *AuthRequest) (*AuthResponse, error)
 	Route(context.Context, *RouteRequest) (*RouteResponse, error)
 	RegisterWorker(context.Context, *RegisterWorkerRequest) (*RegisterWorkerResponse, error)
@@ -101,6 +122,9 @@ type SchedulerServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedSchedulerServiceServer struct{}
 
+func (UnimplementedSchedulerServiceServer) GetTenantIdP(context.Context, *GetTenantIdPRequest) (*GetTenantIdPResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetTenantIdP not implemented")
+}
 func (UnimplementedSchedulerServiceServer) Authenticate(context.Context, *AuthRequest) (*AuthResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Authenticate not implemented")
 }
@@ -132,6 +156,24 @@ func RegisterSchedulerServiceServer(s grpc.ServiceRegistrar, srv SchedulerServic
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&SchedulerService_ServiceDesc, srv)
+}
+
+func _SchedulerService_GetTenantIdP_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetTenantIdPRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SchedulerServiceServer).GetTenantIdP(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SchedulerService_GetTenantIdP_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SchedulerServiceServer).GetTenantIdP(ctx, req.(*GetTenantIdPRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _SchedulerService_Authenticate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -213,6 +255,10 @@ var SchedulerService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "protocol.SchedulerService",
 	HandlerType: (*SchedulerServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "GetTenantIdP",
+			Handler:    _SchedulerService_GetTenantIdP_Handler,
+		},
 		{
 			MethodName: "Authenticate",
 			Handler:    _SchedulerService_Authenticate_Handler,

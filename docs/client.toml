@@ -95,9 +95,10 @@ max_size = "10G"
 # ca_file = "/etc/hpcc/scheduler-ca.pem"  # optional; system trust store if empty
 #
 # [remote.oauth]
-# token_url     = "https://idp.example.com/oauth/token"
-# client_id     = "hpcc-client"
+# # Only per-user credentials here. token_url, client_id, audience,
+# # and scope all come from scheduler.GetTenantIdP(tenant_id) at
+# # session start, so ops can rotate the IdP for a tenant by editing
+# # the scheduler config alone — clients don't need to change.
 # client_secret = "..."
 # username      = "alice"
 # password      = "..."
-# scope         = "hpcc"

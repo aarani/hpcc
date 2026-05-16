@@ -129,7 +129,11 @@ Categories worth logging:
   client-claimed digest (cache-poison attempt — see
   [docs/cas.md](../cas.md) §"Trust"); `FindMissingBlobs` /
   `UploadBlobs` against a manifest the tenant isn't authorized
-  for; per-tenant upload quota tripped (once §4.5 wires it).
+  for; missing or wrong-tenant `scheduler_token` on a CAS
+  stream header (step 4 of [docs/multi-tenant.md](../multi-tenant.md)
+  rejects today with `codes.Unauthenticated` but doesn't yet
+  emit a record — that hook lands here); per-tenant upload quota
+  tripped (see §5.7 below).
 - **Image hardening events.** Tar-bomb caps tripped
   (`ErrTarTotalBytesExceeded` / `ErrTarEntryCountExceeded`);
   tar-path rejects (`..`, NUL, absolute-in-archive); hardlink
@@ -165,3 +169,41 @@ Surface:
 - LRU for converted rootfs blobs.
 - `hpcc clean --max-size 5G`, `hpcc clean --max-age 30d`.
 - Daemon runs periodic eviction in the background.
+
+### 5.7 Per-tenant CAS upload quota
+
+Carved out of phase 4 ([docs/multi-tenant.md](../multi-tenant.md)
+*Per-tenant quota — deferred*) because it's a fairness property,
+not a security one, and because its overrun event is a row in
+the §5.5 security event log — so it lands here once that log
+exists.
+
+Two new optional fields on each `[[tenant]]` entry in the
+scheduler config: `upload_bytes_per_window` (size, e.g.
+`"5GB"`) and `upload_window` (duration, e.g. `"1h"`). Unset
+means unlimited — single-tenant CI keeps working unchanged.
+
+The scheduler distributes the tenants table back to workers via
+the `HeartbeatResponse` (new `tenants` field on that message;
+worker rebuilds its quota map on every heartbeat — cheap,
+eventually consistent). The worker keeps an atomic per-tenant
+token bucket and debits at `UploadBlobs` commit time. On
+overrun it returns `codes.ResourceExhausted` with a
+`retry-after` metadata header carrying seconds until the next
+window reset. The daemon catches it, logs a one-shot yellow
+notice keyed by `(tenant_id, window_start)`, and falls back to
+local compile for the rest of the window — same client-side
+fallback shape as the §4.11 worker-unreachable path. The
+security event log gets a `cas-quota-tripped` record keyed by
+`tenant_id`.
+
+Open at land-time:
+
+- **Window shape.** Fixed window (reset at top of every
+  `upload_window` from worker startup) is dirt simple and bursty
+  at boundaries. Sliding window (last N seconds) is fairer but
+  costs a small ring buffer per tenant. Pick one explicitly when
+  the work lands.
+- **Worker-restart resets the bucket.** Acceptable since this is
+  best-effort fair-sharing, not a billing meter. If real billing
+  is ever wanted, push the meter to the scheduler.

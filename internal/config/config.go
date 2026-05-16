@@ -47,16 +47,15 @@ type SchedulerConfig struct {
 	CAFile string `toml:"ca_file"`
 }
 
-// OAuthConfig holds the bits needed to do an OAuth2 password grant
-// against the IdP that fronts the scheduler. Password grant is chosen
-// for headless usability — no browser redirect required.
+// OAuthConfig carries only the per-user credentials needed for the
+// OAuth2 password grant. Per-tenant fields (token_url, client_id,
+// scope) come from scheduler.GetTenantIdP at session start — ops can
+// rotate the IdP for a tenant by editing scheduler config alone, with
+// no client-side change. See docs/multi-tenant.md.
 type OAuthConfig struct {
-	TokenURL     string `toml:"token_url"`
-	ClientID     string `toml:"client_id"`
 	ClientSecret string `toml:"client_secret"`
 	Username     string `toml:"username"`
 	Password     string `toml:"password"`
-	Scope        string `toml:"scope"`
 }
 
 // CacheConfig describes a single cache backend. The Type field selects

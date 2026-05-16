@@ -6,7 +6,29 @@ option go_package = "./gen";
 
 import "enums.proto";
 
+message GetTenantIdPRequest {
+  string tenant_id = 1;
+}
+
+message GetTenantIdPResponse {
+  string issuer = 1;
+  string token_url = 2;
+  string audience = 3;
+  // OAuth client_id + scope for this tenant. Both live on the
+  // scheduler so ops can rotate them without re-flashing every
+  // client. Empty fields are omitted from the password-grant POST.
+  string client_id = 4;
+  string scope = 5;
+}
+
 message AuthRequest {
+  // tenant_id selects which tenant's IdP the scheduler validates the
+  // JWT against. Required for jwt_token; ignored for static_token
+  // (workers are tenant-agnostic at the auth layer). Carried in the
+  // request rather than as a JWT claim so that an IdP configured for
+  // tenant A is never asked to validate a token labeled as tenant B —
+  // see docs/multi-tenant.md "Threat model".
+  string tenant_id = 3;
   oneof token {
     string jwt_token = 1;
     string static_token = 2;

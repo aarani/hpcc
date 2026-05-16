@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/aarani/hpcc/internal/cache"
 	"github.com/aarani/hpcc/internal/compiler"
 	"github.com/aarani/hpcc/internal/config"
 	"github.com/aarani/hpcc/internal/daemon/client"
@@ -34,6 +35,16 @@ type DefaultDaemon struct {
 	AuthToken  string
 	dispatcher *dispatch.Dispatcher
 	compiles   singleflight.Group
+
+	// tenantID scopes this daemon's local cache namespace. When remote
+	// dispatch is configured, this comes from `[remote] tenant_id` so
+	// the daemon's local cache and the worker's remote cache use the
+	// same tenant prefix (intra-tenant dedup survives the daemon
+	// boundary). With remote disabled there's no tenant context, so
+	// the daemon falls back to cache.TenantLocal — the same sentinel
+	// the runner-only fast path uses. See docs/multi-tenant.md
+	// "Storage isolation".
+	tenantID string
 
 	// sideEffectNoticeOnce fires the first time we bypass cache+dispatch
 	// because the argv carries a flag that produces output files we
@@ -83,6 +94,10 @@ func NewDefaultDaemon() *DefaultDaemon {
 			d.dispatcher = dp
 			log.Printf("daemon: remote dispatch enabled (scheduler=%s)", cfg.Remote.Scheduler.URL)
 		}
+		d.tenantID = cfg.Remote.TenantID
+	}
+	if d.tenantID == "" {
+		d.tenantID = cache.TenantLocal
 	}
 	return d
 }
@@ -357,7 +372,7 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 
 	compile := func() (any, error) {
 		if locallyCacheable {
-			result, lookupErr := context.Cache.Lookup(inv)
+			result, lookupErr := context.Cache.Lookup(inv, d.tenantID)
 			if lookupErr == nil && result != nil {
 				log.Printf("compile: %s cache hit", inv.Output)
 				return result, nil
@@ -376,7 +391,7 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 			if remoteErr == nil {
 				log.Printf("compile: %s served remotely (exit=%d)", inv.Output, remoteResult.ExitCode)
 				if locallyCacheable {
-					_ = context.Cache.Store(inv, remoteResult)
+					_ = context.Cache.Store(inv, remoteResult, d.tenantID)
 				}
 				return remoteResult, nil
 			}
@@ -408,7 +423,7 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 			}
 		}
 		if locallyCacheable {
-			_ = context.Cache.Store(inv, result)
+			_ = context.Cache.Store(inv, result, d.tenantID)
 		}
 		return result, nil
 	}

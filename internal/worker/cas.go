@@ -61,7 +61,7 @@ func (w *Worker) ProbeCompileCache(ctx context.Context, req *gen.CompileProbe) (
 
 	cctx := w.compileContext(c, req.ImageDigest)
 
-	hit, err := cctx.Cache.Lookup(inv)
+	hit, err := cctx.Cache.Lookup(inv, req.TenantId)
 	if err != nil || hit == nil {
 		// Lookup errors are non-fatal — treat as miss. The client
 		// will fall through to the upload dance and the next
@@ -138,6 +138,12 @@ func (w *Worker) FindMissingBlobs(stream gen.WorkerService_FindMissingBlobsServe
 	if w.sourceStore == nil {
 		return status.Error(codes.FailedPrecondition, "worker has no disk cache configured; CAS mode unavailable")
 	}
+	// streamTenant pins this stream to the first header's tenant. A
+	// later header with a different tenant_id is a protocol violation
+	// — one client session belongs to one tenant. Rejecting the whole
+	// stream is the strict-but-simple read; we don't try to keep the
+	// good prefix.
+	var streamTenant string
 	for {
 		req, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -149,7 +155,18 @@ func (w *Worker) FindMissingBlobs(stream gen.WorkerService_FindMissingBlobsServe
 		if len(req.Digest) == 0 {
 			return status.Error(codes.InvalidArgument, "blob digest must not be empty")
 		}
-		has, err := w.sourceStore.Has(req.Digest)
+		if req.TenantId == "" {
+			return status.Error(codes.InvalidArgument, "tenant_id is required")
+		}
+		if err := w.validateSchedulerTokenForCAS(req.SchedulerToken, req.TenantId); err != nil {
+			return status.Errorf(codes.Unauthenticated, "scheduler token: %v", err)
+		}
+		if streamTenant == "" {
+			streamTenant = req.TenantId
+		} else if req.TenantId != streamTenant {
+			return status.Errorf(codes.InvalidArgument, "tenant_id changed mid-stream (was %q, now %q)", streamTenant, req.TenantId)
+		}
+		has, err := w.sourceStore.Namespace(req.TenantId).Has(req.Digest)
 		if err != nil {
 			return status.Errorf(codes.Internal, "source store has: %v", err)
 		}
@@ -201,6 +218,9 @@ func (w *Worker) UploadBlobs(stream gen.WorkerService_UploadBlobsServer) error {
 
 	result := &gen.UploadResult{}
 	var active *blobInProgress
+	// streamTenant pins this stream to the first header's tenant.
+	// See FindMissingBlobs for the rationale.
+	var streamTenant string
 
 	// commit finalizes the current blob (if any) into the result. On a
 	// hash match the bytes land in the source store; otherwise the
@@ -226,7 +246,8 @@ func (w *Worker) UploadBlobs(stream gen.WorkerService_UploadBlobsServer) error {
 		// Store under the recomputed digest — never the client-supplied
 		// one, even though they're equal here. Keeps the invariant
 		// "worker stores by hash it computed itself" textually obvious.
-		if err := w.sourceStore.Put(recomputed[:], blobData, active.buf.Bytes()); err != nil {
+		// Header rejected at receive time if tenant_id was missing.
+		if err := w.sourceStore.Namespace(active.header.TenantId).Put(recomputed[:], blobData, active.buf.Bytes()); err != nil {
 			return status.Errorf(codes.Internal, "store source blob: %v", err)
 		}
 		result.BlobsReceived++
@@ -261,6 +282,17 @@ func (w *Worker) UploadBlobs(stream gen.WorkerService_UploadBlobsServer) error {
 				// shipping malformed protobuf is a bug, not a
 				// content-level rejection.
 				return status.Error(codes.InvalidArgument, "blob header missing 32-byte digest")
+			}
+			if h.TenantId == "" {
+				return status.Error(codes.InvalidArgument, "blob header missing tenant_id")
+			}
+			if err := w.validateSchedulerTokenForCAS(h.SchedulerToken, h.TenantId); err != nil {
+				return status.Errorf(codes.Unauthenticated, "scheduler token: %v", err)
+			}
+			if streamTenant == "" {
+				streamTenant = h.TenantId
+			} else if h.TenantId != streamTenant {
+				return status.Errorf(codes.InvalidArgument, "tenant_id changed mid-stream (was %q, now %q)", streamTenant, h.TenantId)
 			}
 			active = &blobInProgress{header: h, hasher: blake3.New()}
 
