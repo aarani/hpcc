@@ -108,15 +108,31 @@ func translateExecPath(s, srcHost, outHost string) string {
 }
 
 // rewriteRoot replaces the FIRST occurrence of root in s with
-// replacement, but only when root sits on a path boundary (next char
-// is "/" or end-of-string). Stops after one match so that a CAS-mode
-// argv like "/src/src/main.c" maps to "<host>/src/main.c" (one
-// translation) rather than "<host><host>/main.c" (two). The leftmost
-// /src is always the in-container root marker; any subsequent /src
-// inside the path is a project-relative directory whose literal
-// bytes must survive the rewrite. One pass, no regex; mirrors
+// replacement, but only when root sits on a path boundary. Stops
+// after one match so that a CAS-mode argv like "/src/src/main.c"
+// maps to "<host>/src/main.c" (one translation) rather than
+// "<host><host>/main.c" (two). The leftmost /src is always the
+// in-container root marker; any subsequent /src inside the path is
+// a project-relative directory whose literal bytes must survive
+// the rewrite. One pass, no regex; mirrors
 // compiler.RewritePathPrefix's algorithm but kept local to avoid a
 // runtime → compiler dependency.
+//
+// Path-boundary character set:
+//
+//   - end-of-string (the path was the whole tail of the argv element).
+//   - "/" — standard POSIX separator (`-I/src/include`).
+//   - "=" — flag-payload delimiter for GNU's `-ffile-prefix-map=A=B`
+//     and similar (`-foo=/src=...`). Without this, the GNU
+//     reproducibility flag injection would emit `/src` literal
+//     into the compile environment where the in-container path
+//     never appears, and `.obj` paths would silently include the
+//     per-Exec staging directory.
+//
+// `=` deliberately excludes broader Sep-like characters (`,`, `:`)
+// because those routinely appear inside paths the compiler sees
+// (linker `-Wl,...` group separators, Windows drive colons), and
+// false-matching them would mangle valid argv elements.
 func rewriteRoot(s, root, replacement string) string {
 	if !strings.Contains(s, root) {
 		return s
@@ -127,7 +143,7 @@ func rewriteRoot(s, root, replacement string) string {
 	for i := 0; i < len(s); {
 		if !matched && strings.HasPrefix(s[i:], root) {
 			end := i + len(root)
-			if end == len(s) || s[end] == '/' {
+			if end == len(s) || isPathBoundary(s[end]) {
 				b.WriteString(replacement)
 				i = end
 				matched = true
@@ -138,4 +154,11 @@ func rewriteRoot(s, root, replacement string) string {
 		i++
 	}
 	return b.String()
+}
+
+// isPathBoundary reports whether c terminates a path prefix for the
+// purposes of rewriteRoot. See rewriteRoot's doc comment for the
+// rationale on the specific set.
+func isPathBoundary(c byte) bool {
+	return c == '/' || c == '='
 }

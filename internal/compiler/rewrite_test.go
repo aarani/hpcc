@@ -756,11 +756,16 @@ func TestInjectReproducibilityFlags_MSVC(t *testing.T) {
 	}
 }
 
-func TestInjectReproducibilityFlags_GNUUnchanged(t *testing.T) {
+func TestInjectReproducibilityFlags_GNU(t *testing.T) {
 	in := []string{"-c", "/src/foo.c", "-o", "/out/foo.o"}
 	got := InjectReproducibilityFlags(in, enum.GNUFamily, "/src")
-	if !reflect.DeepEqual(got, in) {
-		t.Errorf("GNU args should pass through unchanged until the translator handles `=` boundaries\n got = %v\nwant = %v", got, in)
+	want := []string{
+		"-c", "/src/foo.c", "-o", "/out/foo.o",
+		"-ffile-prefix-map=/src=.",
+		"-Werror=date-time",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("GNU injection mismatch\n got = %v\nwant = %v", got, want)
 	}
 }
 

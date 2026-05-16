@@ -111,33 +111,42 @@ func RewritePathPrefix(inv *Invocation, hostPrefix, vmPrefix string) *Invocation
 // InjectReproducibilityFlags appends compiler-family-specific flags
 // that make `.obj` / `.pdb` output bytes deterministic across Execs.
 // Without these the worker stages each compile under a per-Exec
-// subdirectory (`C:\src\<exec-id>\...`) and the compiler embeds that
-// path into its output — two Execs of the same source produce
-// byte-different outputs, defeating reproducibility audits and
-// content-addressed output caching.
+// subdirectory (`C:\src\<exec-id>\...` or `/src/<exec-id>/...`) and
+// the compiler embeds that path into its output — two Execs of the
+// same source produce byte-different outputs, defeating
+// reproducibility audits and content-addressed output caching.
 //
 // MSVC: `/d1trimfile:<srcRoot>` strips srcRoot from embedded source
 // paths in the `.obj`. `/PDBSourcePath:<srcRoot>` does the same for
-// the PDB symbol records. srcRoot is the platform-neutral
-// `/src` token here; the worker's runtime translator rewrites it to
-// the concrete per-Exec staging dir at Exec time, so by the time
-// cl.exe sees the flag the prefix is fully resolved.
+// the PDB symbol records.
 //
-// GNU / Clang: not auto-injected yet. The natural form would be
-// `-ffile-prefix-map=<srcRoot>=.`, but the runtime translator's
-// boundary check rejects `=` as not-a-path-separator so the `/src`
-// inside that flag wouldn't get rewritten to the per-Exec path —
-// the strip would target the wrong prefix. Tracked as still-open in
-// docs/plan/phase-4-distributed.md §4.1.1.
+// GNU / Clang: `-ffile-prefix-map=<srcRoot>=.` rewrites embedded
+// paths so `/src/<exec>/foo.c` becomes `./foo.c` in `.o` debug
+// info and `__FILE__` expansions. `-Werror=date-time` makes any
+// use of `__TIME__` / `__DATE__` a build error rather than baking
+// a wall-clock timestamp in.
+//
+// srcRoot is the platform-neutral `/src` token; the worker's runtime
+// translator (runtime.rewriteRoot) rewrites it to the concrete
+// per-Exec staging dir at Exec time, so by the time the compiler
+// sees the flag the prefix is fully resolved. Both `/` and `=` are
+// path boundaries the translator recognises, so the trailing `=.`
+// in the GNU form doesn't block the substitution.
 //
 // Append-only, never duplicates: MSVC accepts `/d1trimfile:` multiple
-// times and applies each prefix in order, so a user-supplied
-// `/d1trimfile:` for their project root composes cleanly with our
-// staging-dir strip.
+// times and applies each prefix in order; GCC processes multiple
+// `-ffile-prefix-map` left-to-right with each pair applying
+// independently. So a user-supplied prefix-map for their project
+// root composes cleanly with our staging-dir strip.
 func InjectReproducibilityFlags(args []string, family enum.Family, srcRoot string) []string {
 	switch family {
 	case enum.MSVCFamily:
 		return append(args, "/d1trimfile:"+srcRoot, "/PDBSourcePath:"+srcRoot)
+	case enum.GNUFamily:
+		return append(args,
+			"-ffile-prefix-map="+srcRoot+"=.",
+			"-Werror=date-time",
+		)
 	default:
 		return args
 	}
@@ -332,9 +341,13 @@ func rewriteOutputFlagGNU(args []string, newOut string) []string {
 }
 
 // rewritePrefix replaces every occurrence of host in s with vm, but only
-// where host sits on a path boundary — i.e. followed by "/" or the end
-// of the string. This is what stops "/home/alice/proj-other" from being
-// rewritten when host is "/home/alice/proj". One scan, no regex.
+// where host sits on a path boundary — i.e. followed by "/", "=", or
+// the end of the string. This is what stops "/home/alice/proj-other"
+// from being rewritten when host is "/home/alice/proj". The `=`
+// boundary covers GNU's flag-payload syntax (`-ffile-prefix-map=A=B`)
+// so a host path can be relocated inside that form too; the worker-
+// side runtime translator (runtime.rewriteRoot) keeps the same set
+// for symmetry. One scan, no regex.
 func rewritePrefix(s, host, vm string) string {
 	if !strings.Contains(s, host) {
 		return s
@@ -344,7 +357,7 @@ func rewritePrefix(s, host, vm string) string {
 	for i := 0; i < len(s); {
 		if strings.HasPrefix(s[i:], host) {
 			end := i + len(host)
-			if end == len(s) || s[end] == '/' {
+			if end == len(s) || s[end] == '/' || s[end] == '=' {
 				b.WriteString(vm)
 				i = end
 				continue
