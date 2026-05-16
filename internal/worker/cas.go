@@ -130,7 +130,7 @@ const maxSourceBlobBytes = 256 << 20 // 256 MiB
 //
 // The lookup is a single layer (local-disk Has). There is no
 // in-memory confirmed-set and no S3 probing — source blobs are
-// worker-local-ephemeral by design (docs/cas.md Step 3/4), so
+// worker-local-ephemeral by design (docs/plan/cas.md Step 3/4), so
 // nothing further to consult. If profiling later shows os.Stat
 // overhead dominating, an LRU in front of Has is the place to add
 // one.
@@ -209,7 +209,7 @@ type blobInProgress struct {
 // future Store.OpenWriter primitive.
 //
 // No S3 write-through: source blobs are worker-local-ephemeral
-// (docs/cas.md Step 4). The client is the source of truth and
+// (docs/plan/cas.md Step 4). The client is the source of truth and
 // re-uploads on cache miss.
 func (w *Worker) UploadBlobs(stream gen.WorkerService_UploadBlobsServer) error {
 	if w.sourceStore == nil {

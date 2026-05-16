@@ -57,7 +57,7 @@ Run dependency generation (`-M`/`-MM`) to discover the include closure. Hash
 without ever materializing preprocessed bytes. ccache's `depend_mode` is the
 reference. Wired up when `source_mode = "cas"` so the worker can compute the
 same cache key from a `CasDescriptor` without seeing preprocessed source. See
-`compiler.BuildManifest` and [docs/cas.md](../cas.md).
+`compiler.BuildManifest` and [docs/plan/cas.md](cas.md).
 
 In both modes, the cache key incorporates:
 - **Toolchain identity**:

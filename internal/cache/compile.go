@@ -64,7 +64,7 @@ type CompileCache struct {
 // tenantID is an explicit per-call parameter rather than a constructor
 // arg: one CompileCache instance backs every tenant on a shared
 // worker/daemon, but each Lookup/Store binds to one tenant for the
-// duration of that call. See docs/multi-tenant.md "Storage
+// duration of that call. See docs/plan/multi-tenant.md "Storage
 // isolation". Callers with no tenant context (the runner-only local
 // fast path) pass "local".
 type CompileCacheBackend interface {

@@ -128,7 +128,7 @@ const (
 	// Proto3 requires a zero-valued enumerator; UNSPECIFIED catches
 	// unset/legacy fields so they don't collide with a real mode.
 	SourceMode_SOURCE_MODE_UNSPECIFIED SourceMode = 0
-	// CAS-mode source staging (plan §4.5, docs/cas.md). Client ships a
+	// CAS-mode source staging (plan §4.5, docs/plan/cas.md). Client ships a
 	// CasDescriptor referencing content-addressed blobs that the worker
 	// materializes inside the VM. Re-opened from the originally-reserved
 	// tag 1; the prior `reserved 1` annotation is removed now that the

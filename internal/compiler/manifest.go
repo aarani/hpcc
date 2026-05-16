@@ -79,8 +79,8 @@ func normalizeManifestPath(p, projectRoot string) string {
 }
 
 // BlobRef names a single file in a source-closure manifest by path
-// and content digest. CAS-mode dispatch (plan/phase-4-distributed.md
-// §4.5 / cas.md) ships
+// and content digest. CAS-mode dispatch (docs/plan/phase-4-distributed.md
+// §4.5 / docs/plan/cas.md) ships
 // these to the worker; the worker materializes the closure inside the
 // VM by fetching each blob by digest and writing it to Path.
 type BlobRef struct {

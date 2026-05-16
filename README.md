@@ -94,7 +94,7 @@ multi-tenant, and on the audit trail.**
   the local cache-key algorithm, so client and worker compute
   matching keys without a second knob. `"preprocessed"` remains
   selectable for the inline-bytes fallback. See
-  [docs/cas.md](docs/cas.md).
+  [docs/plan/cas.md](docs/plan/cas.md).
 - **Auto-injected reproducibility flags** (`-Werror=date-time`,
   `-ffile-prefix-map`, `-frandom-seed`) plus pinned locale/timezone/hostname
   inside the VM. Byte-identical outputs by default, not by ceremony.
@@ -200,7 +200,7 @@ Firecracker driver under jailer, in-VM `hpcc-agent` as PID 1 over
 vsock, and an integration suite that boots a real toolchain rootfs
 and compiles end-to-end on a GitHub Actions runner. **Both source
 modes are wired:** CAS (the default — content-addressed manifests
-with probe-then-upload, design in [docs/cas.md](docs/cas.md)) and
+with probe-then-upload, design in [docs/plan/cas.md](docs/plan/cas.md)) and
 PREPROCESSED (selectable fallback that ships preprocessed bytes
 inline). See **Limitations** below for what's still in-flight.
 
@@ -248,7 +248,7 @@ follow-up.
   source store budget at the expense of every other tenant on
   that worker. Per-tenant IdP and storage-prefix isolation are
   both in place (see
-  [docs/multi-tenant.md](docs/multi-tenant.md)); the missing
+  [docs/plan/multi-tenant.md](docs/plan/multi-tenant.md)); the missing
   piece is a token bucket on `UploadBlobs` keyed by `tenant_id`
   plus the matching client-side fallback. Deferred to
   [phase-5-observability.md §5.7](docs/plan/phase-5-observability.md)

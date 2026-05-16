@@ -51,7 +51,7 @@ type SchedulerConfig struct {
 // OAuth2 password grant. Per-tenant fields (token_url, client_id,
 // scope) come from scheduler.GetTenantIdP at session start — ops can
 // rotate the IdP for a tenant by editing scheduler config alone, with
-// no client-side change. See docs/multi-tenant.md.
+// no client-side change. See docs/plan/multi-tenant.md.
 type OAuthConfig struct {
 	ClientSecret string `toml:"client_secret"`
 	Username     string `toml:"username"`

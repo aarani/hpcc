@@ -17,7 +17,7 @@
 #                    and ships only the blobs the worker is
 #                    missing. Required for workloads where
 #                    preprocessed output isn't self-contained
-#                    (e.g. GAS .S with .incbin). See docs/cas.md.
+#                    (e.g. GAS .S with .incbin). See docs/plan/cas.md.
 #   "preprocessed" — cache key runs the full preprocessor (gcc -E
 #                    / cl /E) and hashes the bytes. Slower per
 #                    lookup. Dispatch ships the preprocessed bytes

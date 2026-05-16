@@ -28,7 +28,7 @@ worker_token = "replace-with-a-long-random-string"
 # entry's JWKS, then confirms `iss` and `aud` match. `token_url` is
 # served back to clients via the unauthenticated GetTenantIdP RPC so
 # they don't hardcode it. At least one tenant is required. See
-# docs/multi-tenant.md.
+# docs/plan/multi-tenant.md.
 [[tenant]]
 id        = "acme"
 issuer    = "https://idp.acme.example/"

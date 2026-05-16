@@ -42,7 +42,7 @@ type DefaultDaemon struct {
 	// same tenant prefix (intra-tenant dedup survives the daemon
 	// boundary). With remote disabled there's no tenant context, so
 	// the daemon falls back to cache.TenantLocal — the same sentinel
-	// the runner-only fast path uses. See docs/multi-tenant.md
+	// the runner-only fast path uses. See docs/plan/multi-tenant.md
 	// "Storage isolation".
 	tenantID string
 

@@ -208,7 +208,7 @@ func TestCacheKey_manifestDigestShortCircuitMatchesCASSourceMode(t *testing.T) {
 // A previous draft of this file pinned the (intentional) collision
 // between a ManifestDigest-derived cache key and a PreprocessedDigest-
 // derived one when both fields held the same 32 bytes, flagged as an
-// open question in cas.md. Storage-layer namespacing (cache/compile/
+// open question in docs/plan/cas.md. Storage-layer namespacing (cache/compile/
 // vs cache/source/ vs cache/manifest/) makes that collision moot at
 // the layer that matters: even if the cache key bytes coincide, the
 // entries can't land in the same store directory. Removed rather

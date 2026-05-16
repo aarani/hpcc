@@ -42,7 +42,7 @@ message PreprocessedDescriptor {
 // worker re-verifies manifest_digest against the (path, blob.digest)
 // pairs in blobs, refuses on mismatch, then materializes each blob
 // inside the VM at its Path before invoking the compiler against
-// entry_path. See docs/cas.md for the trust model (client never
+// entry_path. See docs/plan/cas.md for the trust model (client never
 // writes to S3; worker re-hashes everything on receipt) and the
 // upload protocol (FindMissingBlobs + UploadBlobs on WorkerService).
 message CasDescriptor {
@@ -57,7 +57,7 @@ message BlobRef {
   uint64 size = 3;    // size in bytes; advisory, worker re-checks on fetch
 }
 
-// --- CAS upload protocol (docs/cas.md Step 2) ---
+// --- CAS upload protocol (docs/plan/cas.md Step 2) ---
 //
 // Client computes a Manifest locally, asks the worker which blobs it
 // doesn't already have (FindMissingBlobs), and streams the missing
@@ -69,7 +69,7 @@ message BlobRef {
 // result* for this TU already cached?". Hit returns the artifact and
 // the entire upload dance is skipped. This is what makes CAS mode
 // land cross-worker and cross-developer compile-result sharing
-// (assuming consistent path normalization — see Step 5a in cas.md).
+// (assuming consistent path normalization — see Step 5a in docs/plan/cas.md).
 // Mirrors Bazel's ActionCache.GetActionResult.
 
 message CompileProbe {
@@ -106,7 +106,7 @@ message BlobDigest {
   // refuses the stream if tenant_id, image_digest, or worker_id
   // don't match. Required on every header — repeated rather than
   // stream-init because gRPC bidi streams have no first-message
-  // contract enforced by the runtime. See docs/multi-tenant.md
+  // contract enforced by the runtime. See docs/plan/multi-tenant.md
   // "Worker enforcement".
   string scheduler_token = 4;
 }

@@ -1,7 +1,7 @@
 # Multi-Tenant Isolation — Design Sub-Plan
 
 Re-opens §4.5 / §4.8 / §4.13 of
-[plan/phase-4-distributed.md](plan/phase-4-distributed.md) and the
+[phase-4-distributed.md](phase-4-distributed.md) and the
 "CAS probe is cross-tenant disclosive" Limitations bullet in the
 README. The phase-4 doc treats `tenant_id` as a JWT-borne label
 threaded through routing, the container pool, and the audit row;
@@ -238,7 +238,7 @@ Per-tenant CAS upload quotas are a fairness property, not a
 security one. The Step-4 enforcement above prevents *cross*-tenant
 access; what's left is one tenant fairly sharing the worker's
 local source-store budget with other tenants. That work is
-phased into [plan/phase-5-observability.md](plan/phase-5-observability.md)
+phased into [phase-5-observability.md](phase-5-observability.md)
 since it lands alongside the security-event log it generates a
 record into. Sketch retained there: token bucket keyed by
 `tenant_id`, two new fields on the `[[tenant]]` table

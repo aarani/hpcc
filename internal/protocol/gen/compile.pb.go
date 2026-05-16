@@ -257,7 +257,7 @@ func (x *PreprocessedDescriptor) GetPreprocessedSource() []byte {
 // worker re-verifies manifest_digest against the (path, blob.digest)
 // pairs in blobs, refuses on mismatch, then materializes each blob
 // inside the VM at its Path before invoking the compiler against
-// entry_path. See docs/cas.md for the trust model (client never
+// entry_path. See docs/plan/cas.md for the trust model (client never
 // writes to S3; worker re-hashes everything on receipt) and the
 // upload protocol (FindMissingBlobs + UploadBlobs on WorkerService).
 type CasDescriptor struct {
@@ -592,7 +592,7 @@ type BlobDigest struct {
 	// refuses the stream if tenant_id, image_digest, or worker_id
 	// don't match. Required on every header — repeated rather than
 	// stream-init because gRPC bidi streams have no first-message
-	// contract enforced by the runtime. See docs/multi-tenant.md
+	// contract enforced by the runtime. See docs/plan/multi-tenant.md
 	// "Worker enforcement".
 	SchedulerToken string `protobuf:"bytes,4,opt,name=scheduler_token,json=schedulerToken,proto3" json:"scheduler_token,omitempty"`
 	unknownFields  protoimpl.UnknownFields

@@ -1,6 +1,6 @@
 # CAS Source Staging — Design Sub-Plan
 
-Re-opens §4.5 of [plan/phase-4-distributed.md](plan/phase-4-distributed.md).
+Re-opens §4.5 of [phase-4-distributed.md](phase-4-distributed.md).
 The original section is preserved
 unchanged as the historical record of why this was deferred; this file
 is the live design.
@@ -225,7 +225,7 @@ out). The probe is not a cache-write path; it cannot poison.
 **Content-addressed disclosure caveat.** As shipped, a client that
 knows another tenant's source closure can fetch that tenant's
 compile output via the probe — same property Bazel has. Closed in
-[docs/multi-tenant.md](multi-tenant.md) by promoting `tenant_id` to
+[docs/plan/multi-tenant.md](multi-tenant.md) by promoting `tenant_id` to
 a storage namespace prefix on the probe cache (and everywhere
 else), so tenant A probing with tenant B's manifest digest hits a
 different key and misses cleanly. Cross-developer sharing inside a
@@ -497,7 +497,7 @@ stderr explains why the cache/remote was bypassed for that compile.
   `UploadBlobs` stream saturating before the worker's compile pool
   does.
 - **Per-tenant write quota.** Designed end-to-end in
-  [docs/multi-tenant.md](multi-tenant.md) as part of the multi-
+  [docs/plan/multi-tenant.md](multi-tenant.md) as part of the multi-
   tenant isolation rollout — token bucket on bytes/window keyed by
   `tenant_id`, with hard-reject + client-side local fallback (vs.
   backpressure) so the build never blocks indefinitely. Quota
@@ -546,5 +546,5 @@ Shipped. All build-order steps have landed and CAS is the default
 Outstanding work tracked in **Open questions** above: per-tenant
 write quota (Step 4 hook unimplemented), the tenant-isolated
 content-addressed disclosure paranoid-knob (Step 2a caveat). Update
-§4.5 in [plan/phase-4-distributed.md](plan/phase-4-distributed.md)
+§4.5 in [phase-4-distributed.md](phase-4-distributed.md)
 to point here.

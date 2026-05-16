@@ -247,7 +247,7 @@ func HasUncapturedSideEffectFlag(args []string) bool {
 // dispatch fixes both: the manifest captures every file in the
 // closure, so the worker materializes .incbin'd content alongside
 // the .S itself and the assembler resolves the directive against
-// the staged copy. See docs/cas.md and Step 8.
+// the staged copy. See docs/plan/cas.md and Step 8.
 //
 // Local cache (Cacheable) still excludes assembly because its
 // cache key derives from preprocessed bytes (no .incbin coverage).

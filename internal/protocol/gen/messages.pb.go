@@ -151,7 +151,7 @@ type AuthRequest struct {
 	// (workers are tenant-agnostic at the auth layer). Carried in the
 	// request rather than as a JWT claim so that an IdP configured for
 	// tenant A is never asked to validate a token labeled as tenant B —
-	// see docs/multi-tenant.md "Threat model".
+	// see docs/plan/multi-tenant.md "Threat model".
 	TenantId string `protobuf:"bytes,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	// Types that are valid to be assigned to Token:
 	//
