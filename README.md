@@ -81,7 +81,7 @@ multi-tenant, and on the audit trail.**
 - **The container image digest *is* the toolchain identity.** No "hash the
   gcc binary" dance. 50 developers sharing one image produce one cache
   bucket; CI and laptops cannot silently diverge.
-- **CAS-mode dispatch** (Bazel/RBE-style, opt-in via
+- **CAS-mode dispatch** (Bazel/RBE-style, the default
   `source_mode = "cas"`): client builds a content-addressed manifest,
   probes the worker's compile cache by manifest digest (1 RPC, ~32
   bytes), and only streams missing source blobs on miss. Probe-hit is
@@ -90,7 +90,11 @@ multi-tenant, and on the audit trail.**
   checkouts at different absolute paths produce identical manifest
   digests. The worker re-hashes every uploaded blob with BLAKE3 and
   stores under the recomputed digest (a malicious client cannot
-  poison cache content). See [docs/cas.md](docs/cas.md).
+  poison cache content). The same `source_mode` field also picks
+  the local cache-key algorithm, so client and worker compute
+  matching keys without a second knob. `"preprocessed"` remains
+  selectable for the inline-bytes fallback. See
+  [docs/cas.md](docs/cas.md).
 - **Auto-injected reproducibility flags** (`-Werror=date-time`,
   `-ffile-prefix-map`, `-frandom-seed`) plus pinned locale/timezone/hostname
   inside the VM. Byte-identical outputs by default, not by ceremony.
@@ -180,10 +184,10 @@ on-wire format validated in CI via `unsquashfs` round-trip), raw
 Firecracker driver under jailer, in-VM `hpcc-agent` as PID 1 over
 vsock, and an integration suite that boots a real toolchain rootfs
 and compiles end-to-end on a GitHub Actions runner. **Both source
-modes are wired:** PREPROCESSED (the default, ships preprocessed
-bytes inline) and CAS (content-addressed manifests with
-probe-then-upload — design in [docs/cas.md](docs/cas.md)). See
-**Limitations** below for what's still in-flight.
+modes are wired:** CAS (the default — content-addressed manifests
+with probe-then-upload, design in [docs/cas.md](docs/cas.md)) and
+PREPROCESSED (selectable fallback that ships preprocessed bytes
+inline). See **Limitations** below for what's still in-flight.
 
 ### Phase 5 — Observability & Polish
 `hpcc inspect <hash>` and `hpcc explain <file>` with structured miss
