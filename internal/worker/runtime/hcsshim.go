@@ -185,6 +185,9 @@ func stagePauseMount(runDir, src string) (string, error) {
 	if err := out.Close(); err != nil {
 		return "", fmt.Errorf("close %q: %w", dst, err)
 	}
+	if err := grantContainerReadExecute(mountDir); err != nil {
+		return "", fmt.Errorf("grant container access on %q: %w", mountDir, err)
+	}
 	return mountDir, nil
 }
 
@@ -228,11 +231,13 @@ func (h *Hcsshim) Start(ctx context.Context, spec ContainerSpec) (Container, err
 	specOpts := []oci.SpecOpts{
 		oci.WithImageConfig(img),
 		oci.WithMounts([]specs.Mount{
-			// Read-only mount of the runtime-owned pause dir; its
+			// Bind mount of the runtime-owned pause dir; its
 			// pause.exe is the container's PID 1. cdimage on Windows
 			// doesn't inject a layer, so this mount is the only way
-			// pause.exe gets into the container.
-			{Source: h.pauseMountDir, Destination: guestPauseDir, Options: []string{"ro"}},
+			// pause.exe gets into the container. No "ro" option —
+			// some Windows mount paths interpret it as noexec, which
+			// blocks the entrypoint with ERROR_ACCESS_DENIED.
+			{Source: h.pauseMountDir, Destination: guestPauseDir},
 			{Source: hostSrcDir, Destination: guestSrcRoot},
 			{Source: hostOutDir, Destination: guestOutRoot},
 		}),
