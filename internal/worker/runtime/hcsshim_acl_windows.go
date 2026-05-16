@@ -35,3 +35,18 @@ func grantContainerReadExecute(path string) error {
 	}
 	return nil
 }
+
+// grantContainerModify is the read/write counterpart used for the per-
+// container src/out scratch dirs. The compile needs to read source
+// staged from the host (src) and write outputs back (out); both surface
+// through bind mounts that inherit the host ACL. Modify is enough —
+// the container shouldn't need to take ownership or change ACLs.
+// (OI)(CI) propagates to per-Exec subdirectories created later.
+func grantContainerModify(path string) error {
+	cmd := exec.Command("icacls", path, "/grant", "*S-1-1-0:(OI)(CI)M", "/T")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("icacls %s: %w (%s)", path, err, out)
+	}
+	return nil
+}
