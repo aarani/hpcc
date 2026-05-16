@@ -74,6 +74,129 @@ jobs:
         # the regular CI's `go test ./...` doesn't even compile them.
         run: go test -tags=integration -count=1 -v ./internal/worker/image/
 
+  windows-build:
+    name: Windows build & unit tests
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.26.3'
+
+      - name: Build
+        # The Windows side of the worker (runtime/hcsshim.go, the
+        # cdimage store, the pause binary) must compile and link
+        # against the Windows containerd/hcsshim deps without falling
+        # back to build tags. Catching that regression on every push
+        # is what this job exists for — the Linux build matrix can't
+        # see it.
+        run: go build ./...
+
+      - name: Unit tests
+        # Runs the runtime package's path-translation, isolation
+        # validation and copyTree tests on a Windows file system —
+        # those rules need to behave the same with backslashed paths
+        # the real runtime will see at Exec time. End-to-end
+        # containerd + runhcs coverage is in the separate
+        # `windows-runtime` job.
+        run: go test ./...
+
+  windows-runtime:
+    name: Hcsshim runtime e2e
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.26.3'
+
+      - name: Install containerd + runhcs shim
+        shell: pwsh
+        # The official Windows containerd release tarball ships
+        # containerd.exe, ctr.exe, and containerd-shim-runhcs-v1.exe
+        # under bin/; that's everything we need. The shim must sit
+        # alongside containerd on PATH or be discoverable at the
+        # shim path containerd embeds — extracting into
+        # C:\Program Files\containerd\bin satisfies both.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '1.7.27'
+          $url = "https://github.com/containerd/containerd/releases/download/v$version/containerd-$version-windows-amd64.tar.gz"
+          $tar = "$env:RUNNER_TEMP\containerd.tar.gz"
+          $install = 'C:\Program Files\containerd'
+          New-Item -Path $install -ItemType Directory -Force | Out-Null
+          Invoke-WebRequest -Uri $url -OutFile $tar -UseBasicParsing
+          tar.exe -xzf $tar -C $install
+          "$install\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & "$install\bin\containerd.exe" --version
+          & "$install\bin\containerd-shim-runhcs-v1.exe" --version
+
+      - name: Register and start containerd service
+        shell: pwsh
+        # --register-service writes a Windows service that runs
+        # containerd.exe under LocalSystem. The default config
+        # (snapshotter `windows`, runtime `io.containerd.runhcs.v1`,
+        # pipe at \\.\pipe\containerd-containerd) is exactly what
+        # the integration test expects, so we don't override it.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $install = 'C:\Program Files\containerd'
+          & "$install\bin\containerd.exe" --register-service
+          Start-Service containerd
+          # Wait for the named pipe to appear so the test doesn't
+          # race the service. WaitForSingleObject-on-pipe is the
+          # canonical pattern; PowerShell doesn't expose it, so we
+          # poll Test-Path which works against \\.\pipe paths.
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Get-Date) -lt $deadline) {
+            if (Test-Path \\.\pipe\containerd-containerd) { break }
+            Start-Sleep -Milliseconds 500
+          }
+          if (-not (Test-Path \\.\pipe\containerd-containerd)) {
+            Write-Error 'containerd pipe never appeared'
+            Get-Service containerd | Format-List *
+            exit 1
+          }
+          & "$install\bin\ctr.exe" version
+
+      - name: Build hpcc-pause.exe
+        shell: pwsh
+        # The pause/ go module is independent of the main module
+        # on purpose (kept tiny so the injected binary doesn't drag
+        # in the worker's deps). Build it standalone and surface the
+        # path to the integration test via HPCC_HCSSHIM_PAUSE.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = "$env:RUNNER_TEMP\hpcc-pause.exe"
+          Push-Location pause
+          go build -o $out .
+          Pop-Location
+          "HPCC_HCSSHIM_PAUSE=$out" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run hcsshim runtime integration test
+        # The integration tag flips the build-tagged Windows-only
+        # file into the test binary. Process isolation is selected
+        # by the test itself (GitHub-hosted windows-2022 runners
+        # don't expose nested virtualization, so Hyper-V isolation
+        # would fail to boot the utility VM).
+        #
+        # The timeout is the only ceiling on this test — the test
+        # body intentionally doesn't impose per-step timeouts so it
+        # can be retargeted at a larger toolchain image (an MSVC
+        # build image with Visual Studio installed is ~30 GB) by
+        # bumping this flag alone. The current nanoserver-only run
+        # finishes in a couple of minutes; 60m is the headroom for
+        # future heavier images and for cold-cache pulls on slow
+        # registry CDNs.
+        env:
+          HPCC_HCSSHIM_ADDRESS: \\.\pipe\containerd-containerd
+        timeout-minutes: 75
+        run: go test -tags=integration -count=1 -v -timeout=60m -run TestHcsshim_EndToEnd_Integration ./internal/worker/runtime/...
+
   firecracker-runtime:
     name: Firecracker runtime e2e
     runs-on: ubuntu-latest

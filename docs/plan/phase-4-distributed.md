@@ -25,8 +25,22 @@
   source end-to-end through the full vsock + agent pipeline.
 
 - **Open:**
-  - §4.1.1 Windows hcsshim path — runtime interface ready; backend
-    not implemented.
+  - §4.1.1 Windows hcsshim path — in flight. The
+    `runhcs-wcow-hypervisor` handler now boots through
+    `runtime.Hcsshim` against a real containerd daemon: per-tenant
+    container creation with optional Hyper-V isolation (selectable
+    via `runtime.hcsshim.isolation = "hyperv" | "process"`,
+    process-mode for CI without nested virtualization), pause-binary
+    PID 1 from the prepared `cdimage.Store` image, `Task.Exec`-based
+    compile dispatch, and per-Exec copy-in/copy-out staging at
+    `C:\src` / `C:\out`. Cross-compiles green on darwin and
+    windows/amd64; unit tests cover option validation, argv path
+    rewrites and the copyTree helper. **Still open**: an actual
+    containerd-on-windows integration job (the unit-test job in
+    `windows-build` only proves compile + path logic), VSMB mounts
+    in place of per-Exec copy, and validating the path-canonicalization
+    gotchas the §4.1.1 caveats list (MAX_PATH, UNC vs mapped drive,
+    directory junctions).
   - §4.11 VM-crash reaping with scheduler reroute — partial today
     (the runtime surfaces process exit, but the worker doesn't yet
     notify the scheduler to drop the dead VM from routing).

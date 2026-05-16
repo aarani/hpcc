@@ -45,11 +45,12 @@ type SchedulerLink struct {
 type RuntimeConfig struct {
 	// Handler selects the worker runtime backend.
 	//   "firecracker"             — raw Firecracker driver (Linux).
-	//   "runhcs-wcow-hypervisor"  — containerd + hcsshim Hyper-V (Windows). Not implemented yet.
+	//   "runhcs-wcow-hypervisor"  — containerd + hcsshim Hyper-V (Windows).
 	//   "really_really_dangerous" — host-exec; dev only.
 	Handler string `toml:"handler"`
 
 	Firecracker FirecrackerConfig `toml:"firecracker"`
+	Hcsshim     HcsshimConfig     `toml:"hcsshim"`
 }
 
 // FirecrackerConfig is the raw-Firecracker runtime's host-side knobs.
@@ -74,6 +75,40 @@ type FirecrackerConfig struct {
 	UID            int    `toml:"uid"`
 	GID            int    `toml:"gid"`
 	BootArgs       string `toml:"boot_args"`
+}
+
+// HcsshimConfig is the containerd + hcsshim runtime's host-side knobs.
+// Unused unless runtime.handler == "runhcs-wcow-hypervisor".
+//
+// Address is the containerd UDS / named-pipe address (Windows default:
+// "\\\\.\\pipe\\containerd-containerd"). Namespace is the containerd
+// namespace hpcc keeps its prepared images and containers under;
+// isolation between hpcc state and anything else on the host is
+// containerd-namespace-level. RunDir is hpcc's per-container scratch
+// root — each Start allocates <RunDir>/<container-id>/{src,out} as the
+// host backing for the per-Exec mounts the runtime injects at C:\src
+// and C:\out (§4.1.1, "stage source onto a local volume the container
+// mounts"). Runtime overrides the OCI runtime name containerd selects;
+// the default ("io.containerd.runhcs.v1") matches the Hyper-V-isolated
+// Windows containers shim. Snapshotter selects the containerd
+// snapshotter that materializes the prepared image's rootfs; the
+// default ("windows") is the standard WCOW snapshotter.
+//
+// Isolation selects the container isolation mode the runhcs shim
+// applies. The production value is "hyperv" — each container is a
+// separate Hyper-V utility VM, which is the kernel boundary the
+// regulated-enterprise story (§4.1) depends on. "process" runs the
+// container in a Windows Server silo on the host kernel; it loses the
+// security boundary and is only valid for environments that cannot
+// nest virtualization (GitHub Actions hosted runners, dev laptops
+// without Hyper-V, etc.). Empty falls back to "hyperv".
+type HcsshimConfig struct {
+	Address     string `toml:"address"`
+	Namespace   string `toml:"namespace"`
+	RunDir      string `toml:"run_dir"`
+	Runtime     string `toml:"runtime"`
+	Snapshotter string `toml:"snapshotter"`
+	Isolation   string `toml:"isolation"`
 }
 
 type VMConfig struct {
