@@ -57,10 +57,16 @@ const (
 // host-side backing dirs are per-container scratch under
 // HcsshimOptions.RunDir/<container-id>/{src,out}; per-Exec
 // subdirectories named after ExecID isolate concurrent compiles inside
-// one warm container.
+// one warm container. guestPauseDir is the directory the runtime
+// bind-mounts read-only into every container; the pause binary lives
+// at <guestPauseDir>\pause.exe and is the container's PID 1.
 const (
-	guestSrcRoot = `C:\src`
-	guestOutRoot = `C:\out`
+	guestSrcRoot   = `C:\src`
+	guestOutRoot   = `C:\out`
+	guestPauseDir  = `C:\.hpcc`
+	guestPauseExe  = `C:\.hpcc\pause.exe`
+	pauseFileName  = "pause.exe"
+	pauseMountSub  = ".hpcc-pause-mount"
 )
 
 // HcsshimOptions is the host-side configuration for the containerd +
@@ -83,6 +89,14 @@ type HcsshimOptions struct {
 	// else fails at NewHcsshim so a typo doesn't silently flip a worker
 	// out of Hyper-V mode.
 	Isolation string
+	// PauseHostPath is the absolute path of hpcc-pause.exe on the host.
+	// NewHcsshim copies the file into <RunDir>/.hpcc-pause-mount and
+	// every container gets that dir bind-mounted read-only at C:\.hpcc
+	// so the OCI spec entrypoint can point at C:\.hpcc\pause.exe.
+	// Required: cdimage on Windows registers a plain alias of the
+	// user's image (no layer injection), so the pause binary has no
+	// other way into the container.
+	PauseHostPath string
 }
 
 // Hcsshim is the containerd + hcsshim Runtime. It owns the
@@ -92,8 +106,9 @@ type HcsshimOptions struct {
 // invocation against the long-running pause binary the prepared image
 // runs as PID 1 (§4.2).
 type Hcsshim struct {
-	opts   HcsshimOptions
-	client *containerd.Client
+	opts          HcsshimOptions
+	client        *containerd.Client
+	pauseMountDir string
 }
 
 // NewHcsshim validates the configuration and dials containerd. Empty
@@ -126,11 +141,51 @@ func NewHcsshim(opts HcsshimOptions) (*Hcsshim, error) {
 		return nil, fmt.Errorf("hcsshim runtime: unknown isolation %q (want %q or %q)",
 			opts.Isolation, IsolationHyperV, IsolationProcess)
 	}
+	if opts.PauseHostPath == "" {
+		return nil, fmt.Errorf("hcsshim runtime: pause_host_path is required (host path to hpcc-pause.exe)")
+	}
+	pauseMountDir, err := stagePauseMount(opts.RunDir, opts.PauseHostPath)
+	if err != nil {
+		return nil, fmt.Errorf("hcsshim runtime: stage pause mount: %w", err)
+	}
 	cli, err := containerd.New(opts.Address, containerd.WithDefaultNamespace(opts.Namespace))
 	if err != nil {
 		return nil, fmt.Errorf("hcsshim runtime: dial containerd at %q: %w", opts.Address, err)
 	}
-	return &Hcsshim{opts: opts, client: cli}, nil
+	return &Hcsshim{opts: opts, client: cli, pauseMountDir: pauseMountDir}, nil
+}
+
+// stagePauseMount copies hpcc-pause.exe from the operator-supplied
+// PauseHostPath into a runtime-owned subdirectory under RunDir. Every
+// container the runtime starts bind-mounts that subdirectory read-only
+// at C:\.hpcc, so the OCI spec can name C:\.hpcc\pause.exe as its
+// entrypoint without the pause binary needing to be inside the user's
+// image. Done once at NewHcsshim because the source file shouldn't
+// change at runtime and per-container copies would burn disk.
+func stagePauseMount(runDir, src string) (string, error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return "", fmt.Errorf("open %q: %w", src, err)
+	}
+	defer in.Close()
+
+	mountDir := filepath.Join(runDir, pauseMountSub)
+	if err := os.MkdirAll(mountDir, 0o755); err != nil {
+		return "", fmt.Errorf("mkdir %q: %w", mountDir, err)
+	}
+	dst := filepath.Join(mountDir, pauseFileName)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		return "", fmt.Errorf("create %q: %w", dst, err)
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return "", fmt.Errorf("copy %q -> %q: %w", src, dst, err)
+	}
+	if err := out.Close(); err != nil {
+		return "", fmt.Errorf("close %q: %w", dst, err)
+	}
+	return mountDir, nil
 }
 
 func (h *Hcsshim) Close() error {
@@ -173,9 +228,19 @@ func (h *Hcsshim) Start(ctx context.Context, spec ContainerSpec) (Container, err
 	specOpts := []oci.SpecOpts{
 		oci.WithImageConfig(img),
 		oci.WithMounts([]specs.Mount{
+			// Read-only mount of the runtime-owned pause dir; its
+			// pause.exe is the container's PID 1. cdimage on Windows
+			// doesn't inject a layer, so this mount is the only way
+			// pause.exe gets into the container.
+			{Source: h.pauseMountDir, Destination: guestPauseDir, Options: []string{"ro"}},
 			{Source: hostSrcDir, Destination: guestSrcRoot},
 			{Source: hostOutDir, Destination: guestOutRoot},
 		}),
+		// Override the image's entrypoint to the pause binary so the
+		// container stays alive across Execs regardless of what the
+		// user image declares (nanoserver's default is cmd.exe, which
+		// would exit immediately under cio.NullIO).
+		oci.WithProcessArgs(guestPauseExe),
 	}
 	if h.opts.Isolation == IsolationHyperV {
 		// Process isolation runs in a Windows Server silo on the host

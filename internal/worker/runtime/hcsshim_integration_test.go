@@ -190,7 +190,8 @@ func TestHcsshim_EndToEnd_Integration(t *testing.T) {
 		// boot. The §4.1 security boundary is *not* what this test
 		// asserts — it asserts the wire (image → runhcs → Exec →
 		// copy-out) works end to end on Windows.
-		Isolation: IsolationProcess,
+		Isolation:     IsolationProcess,
+		PauseHostPath: pausePath,
 	})
 	if err != nil {
 		t.Fatalf("NewHcsshim: %v", err)
