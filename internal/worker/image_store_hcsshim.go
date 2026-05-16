@@ -39,5 +39,9 @@ func newHcsshimImageStore(cfg Config) (image.Store, error) {
 			LinuxArm64:   cfg.Image.PauseLinuxArm64,
 			WindowsAmd64: cfg.Image.PauseWindowsAmd64,
 		},
+		// Same snapshotter the runtime will ask its containers to
+		// fork off of. Empty = containerd's default, which is what
+		// the runtime also defaults to ("windows" on Windows).
+		Snapshotter: cfg.Runtime.Hcsshim.Snapshotter,
 	}, nil
 }

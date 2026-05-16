@@ -42,10 +42,18 @@ type PauseBinaries struct {
 
 // Store implements image.Store on top of containerd. The zero value is
 // not valid — callers must set Client; Pause must cover every platform
-// for which images are pulled.
+// for which images are pulled. Snapshotter pins the containerd
+// snapshotter that the base pull and the prepared-image unpack both
+// flow into (empty falls back to containerd's daemon default —
+// "overlayfs" on Linux, "windows" on Windows). Pinning matters
+// because the worker's runtime later creates a snapshot under that
+// same snapshotter; if the prepared image was unpacked elsewhere the
+// runtime gets "parent snapshot ... does not exist" at container
+// create time.
 type Store struct {
-	Pause  PauseBinaries
-	Client *containerd.Client
+	Pause       PauseBinaries
+	Client      *containerd.Client
+	Snapshotter string
 }
 
 func (s *Store) GetExistingImages(ctx context.Context) ([]string, error) {
@@ -73,7 +81,11 @@ func (s *Store) UntagImage(ctx context.Context, userDigest string) error {
 }
 
 func (s *Store) PullImage(ctx context.Context, imagePath string, expectedDigest string) error {
-	pull, err := s.Client.Pull(ctx, imagePath, containerd.WithPullUnpack)
+	pullOpts := []containerd.RemoteOpt{containerd.WithPullUnpack}
+	if s.Snapshotter != "" {
+		pullOpts = append(pullOpts, containerd.WithPullSnapshotter(s.Snapshotter))
+	}
+	pull, err := s.Client.Pull(ctx, imagePath, pullOpts...)
 	if err != nil {
 		return fmt.Errorf("pull %q: %w", imagePath, err)
 	}
@@ -244,6 +256,20 @@ func (s *Store) injectPause(ctx context.Context, base containerd.Image, userDige
 		if _, uerr := is.Update(ctx, rec); uerr != nil {
 			return fmt.Errorf("register prepared image (create=%v, update=%v)", err, uerr)
 		}
+	}
+
+	// 8. Materialize the prepared chain in the snapshotter. The base
+	// image was unpacked at pull time, so this is a one-layer apply
+	// (the pause layer on top of the existing base chain). Without
+	// this step the runtime's WithNewSnapshot fails with "parent
+	// snapshot does not exist", because the chain ID it computes
+	// from the prepared diff_ids has never been materialized.
+	prepared, err := s.Client.GetImage(ctx, rec.Name)
+	if err != nil {
+		return fmt.Errorf("re-fetch prepared image for unpack: %w", err)
+	}
+	if err := prepared.Unpack(ctx, s.Snapshotter); err != nil {
+		return fmt.Errorf("unpack prepared image into snapshotter %q: %w", s.Snapshotter, err)
 	}
 	return nil
 }
