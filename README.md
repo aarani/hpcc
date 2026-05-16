@@ -101,16 +101,19 @@ multi-tenant, and on the audit trail.**
 - **Per-job audit row** — `(image_digest, source_digest, flags, output_digest,
   tenant, worker, vm, duration, exit)` — reproducible from a single line.
   This is the table format regulated audit teams want to see.
-- **OAuth2 password-grant against any IdP.** The client exchanges
-  user credentials at the configured `token_url`, the scheduler
-  validates the resulting JWT and signs a short-lived
-  worker-routing token, and the client dials the worker with that
-  token over pinned TLS. Plug into corporate SSO (Okta, Keycloak,
-  Auth0, anything OAuth2-compliant) — no hpcc-specific identity
-  layer to provision, no shared secret on developer laptops. The
-  `tenant_id` carried in the JWT is the same identity that scopes
-  the worker, the per-job audit row, and (when wired) the
-  per-tenant upload quota.
+- **Per-tenant OAuth2 IdP.** Each tenant in the scheduler config
+  declares its own IdP (Okta, Keycloak, Auth0, anything
+  OAuth2-compliant) — token URL, JWKS, audience, client. The
+  client knows only its `tenant_id` + scheduler URL; an
+  unauthenticated `GetTenantIdP` RPC returns the OAuth endpoints
+  for that tenant so laptops never hardcode IdP coordinates.
+  Scheduler validates the password-grant JWT against the named
+  tenant's JWKS — an IdP configured for tenant A is never asked
+  to verify a token labeled as tenant B — then signs a short-lived
+  routing token tenant-, image-, and worker-scoped that the client
+  dials the worker with over pinned TLS. Same `tenant_id` scopes
+  the storage namespace, the per-job audit row, and (when wired)
+  the per-tenant upload quota.
 - **Structured miss explanations.** `hpcc explain <file>` names *which
   header* or *which flag* changed. Not a debug log you have to grep.
 - **Per-call zstd on the wire.** Preprocessed C++ compresses 5–10×; this is
@@ -240,17 +243,15 @@ follow-up.
   defeating cross-developer hit rates. Pin the image patch version
   (e.g. `gcc:13.2.0`) to match the host until §4 ships an automatic
   parity check.
-- **Single-IdP, single-namespace tenancy.** Today `tenant_id` is a
-  JWT label threaded through routing and audit, but the scheduler
-  validates against one IdP and every store keys by content digest
-  with no tenant prefix. Consequences: (a) one scheduler can't
-  serve multiple orgs' IdPs; (b) tenant A guessing tenant B's
-  manifest digest can fetch B's compile output via
-  `ProbeCompileCache` (same shape Bazel has); (c) no per-tenant
-  CAS upload quota, so multi-tenant CAS is unbounded. The fix is
-  designed end-to-end in [docs/multi-tenant.md](docs/multi-tenant.md)
-  — per-tenant IdP table, storage-path tenant prefix, per-tenant
-  quota — and lands as one feature. Multi-tenant deployments should
-  hold off until it ships.
+- **No per-tenant CAS upload quota.** Multi-tenant CAS is
+  unbounded — one tenant's noisy CI can monopolize a worker's
+  source store budget at the expense of every other tenant on
+  that worker. Per-tenant IdP and storage-prefix isolation are
+  both in place (see
+  [docs/multi-tenant.md](docs/multi-tenant.md)); the missing
+  piece is a token bucket on `UploadBlobs` keyed by `tenant_id`
+  plus the matching client-side fallback. Deferred to
+  [phase-5-observability.md §5.7](docs/plan/phase-5-observability.md)
+  because its overrun event is a security-event-log row.
 - **No `hpcc explain <file>`.** Structured cache-miss reasons are
   Phase 5.
