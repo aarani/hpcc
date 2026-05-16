@@ -139,9 +139,20 @@ type PoolConfig struct {
 // — containerd on Windows, hpcc's rootfs cache on Linux — and freeing
 // its blobs at the next GC). Empty disables eviction.
 type ImageConfig struct {
-	PauseLinuxAmd64   string   `toml:"pause_linux_amd64"`
-	PauseLinuxArm64   string   `toml:"pause_linux_arm64"`
-	PauseWindowsAmd64 string   `toml:"pause_windows_amd64"`
+	PauseLinuxAmd64   string `toml:"pause_linux_amd64"`
+	PauseLinuxArm64   string `toml:"pause_linux_arm64"`
+	PauseWindowsAmd64 string `toml:"pause_windows_amd64"`
+	// AgentWindowsAmd64 is the host path to hpcc-agent.exe used when
+	// runtime.handler = runhcs-wcow-hypervisor AND
+	// runtime.hcsshim.isolation = "hyperv". The agent is bind-mounted
+	// into the container alongside pause.exe (under C:\.hpcc) and
+	// becomes the OCI entrypoint, so the host can stream compile
+	// inputs/outputs over an HvSocket gRPC channel instead of
+	// copyTree-ing every Exec. Required only for the Hyper-V isolated
+	// path; process-isolation containers stick with pause.exe + the
+	// Task.Exec copy-in/copy-out flow (see HcsshimOptions.Isolation
+	// for the why).
+	AgentWindowsAmd64 string   `toml:"agent_windows_amd64"`
 	AdvertisedDigests []string `toml:"advertised_digests"`
 	IdleTimeout       string   `toml:"idle_timeout"` // e.g. "24h"; empty disables eviction
 }

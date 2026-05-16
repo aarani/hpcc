@@ -177,6 +177,7 @@ func NewWorker(cfg Config) (*Worker, error) {
 			Snapshotter:   cfg.Runtime.Hcsshim.Snapshotter,
 			Isolation:     cfg.Runtime.Hcsshim.Isolation,
 			PauseHostPath: cfg.Image.PauseWindowsAmd64,
+			AgentHostPath: cfg.Image.AgentWindowsAmd64,
 		},
 	})
 	if err != nil {

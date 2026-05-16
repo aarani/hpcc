@@ -16,6 +16,7 @@ import (
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/oci"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"google.golang.org/grpc"
 
 	"github.com/aarani/hpcc/internal/protocol/gen"
 	"github.com/aarani/hpcc/internal/worker/image/cdimage"
@@ -61,12 +62,15 @@ const (
 // bind-mounts read-only into every container; the pause binary lives
 // at <guestPauseDir>\pause.exe and is the container's PID 1.
 const (
-	guestSrcRoot   = `C:\src`
-	guestOutRoot   = `C:\out`
-	guestPauseDir  = `C:\.hpcc`
-	guestPauseExe  = `C:\.hpcc\pause.exe`
-	pauseFileName  = "pause.exe"
-	pauseMountSub  = ".hpcc-pause-mount"
+	guestSrcRoot  = `C:\src`
+	guestOutRoot  = `C:\out`
+	guestPauseDir = `C:\.hpcc`
+	guestPauseExe = `C:\.hpcc\pause.exe`
+	guestAgentExe = `C:\.hpcc\agent.exe`
+	pauseFileName = "pause.exe"
+	pauseMountSub = ".hpcc-pause-mount"
+	agentFileName = "agent.exe"
+	agentMountSub = ".hpcc-agent-mount"
 )
 
 // HcsshimOptions is the host-side configuration for the containerd +
@@ -89,14 +93,22 @@ type HcsshimOptions struct {
 	// else fails at NewHcsshim so a typo doesn't silently flip a worker
 	// out of Hyper-V mode.
 	Isolation string
-	// PauseHostPath is the absolute path of hpcc-pause.exe on the host.
-	// NewHcsshim copies the file into <RunDir>/.hpcc-pause-mount and
-	// every container gets that dir bind-mounted read-only at C:\.hpcc
-	// so the OCI spec entrypoint can point at C:\.hpcc\pause.exe.
-	// Required: cdimage on Windows registers a plain alias of the
-	// user's image (no layer injection), so the pause binary has no
-	// other way into the container.
+	// PauseHostPath is the absolute path of hpcc-pause.exe on the
+	// host. The runtime copies the file into the per-runtime mount
+	// dir at NewHcsshim time. Every process-isolated container gets
+	// that dir bind-mounted read-only at C:\.hpcc with pause.exe as
+	// its entrypoint — the §4.1.1 process-isolation path keeps
+	// Task.Exec + copyTree for staging because there's no partition
+	// boundary to stream across.
 	PauseHostPath string
+	// AgentHostPath is the absolute path of hpcc-agent.exe on the
+	// host. Same staging treatment as PauseHostPath, but bind-mounted
+	// into Hyper-V isolated containers as their entrypoint. The agent
+	// listens on HvSocket and the runtime dials it post-Start to
+	// drive compiles via the bidi-streaming AgentService.Exec instead
+	// of Task.Exec + per-Exec file copy — see plan §4.1.1 "Why not
+	// VSMB" for the rationale. Required when Isolation == hyperv.
+	AgentHostPath string
 }
 
 // Hcsshim is the containerd + hcsshim Runtime. It owns the
@@ -109,6 +121,7 @@ type Hcsshim struct {
 	opts          HcsshimOptions
 	client        *containerd.Client
 	pauseMountDir string
+	agentMountDir string // empty when Isolation != hyperv
 }
 
 // NewHcsshim validates the configuration and dials containerd. Empty
@@ -144,36 +157,62 @@ func NewHcsshim(opts HcsshimOptions) (*Hcsshim, error) {
 	if opts.PauseHostPath == "" {
 		return nil, fmt.Errorf("hcsshim runtime: pause_host_path is required (host path to hpcc-pause.exe)")
 	}
-	pauseMountDir, err := stagePauseMount(opts.RunDir, opts.PauseHostPath)
+	pauseMountDir, err := stageEntrypointMount(opts.RunDir, pauseMountSub, pauseFileName, opts.PauseHostPath)
 	if err != nil {
 		return nil, fmt.Errorf("hcsshim runtime: stage pause mount: %w", err)
+	}
+	var agentMountDir string
+	if opts.Isolation == IsolationHyperV {
+		// Agent is only used under Hyper-V isolation; process
+		// isolation keeps the pause + Task.Exec path. Require it
+		// explicitly so a hyperv-configured worker fails at startup
+		// rather than at the first Compile.
+		if opts.AgentHostPath == "" {
+			return nil, fmt.Errorf("hcsshim runtime: agent_host_path is required for Hyper-V isolation (host path to hpcc-agent.exe)")
+		}
+		agentMountDir, err = stageEntrypointMount(opts.RunDir, agentMountSub, agentFileName, opts.AgentHostPath)
+		if err != nil {
+			return nil, fmt.Errorf("hcsshim runtime: stage agent mount: %w", err)
+		}
 	}
 	cli, err := containerd.New(opts.Address, containerd.WithDefaultNamespace(opts.Namespace))
 	if err != nil {
 		return nil, fmt.Errorf("hcsshim runtime: dial containerd at %q: %w", opts.Address, err)
 	}
-	return &Hcsshim{opts: opts, client: cli, pauseMountDir: pauseMountDir}, nil
+	return &Hcsshim{
+		opts:          opts,
+		client:        cli,
+		pauseMountDir: pauseMountDir,
+		agentMountDir: agentMountDir,
+	}, nil
 }
 
-// stagePauseMount copies hpcc-pause.exe from the operator-supplied
-// PauseHostPath into a runtime-owned subdirectory under RunDir. Every
-// container the runtime starts bind-mounts that subdirectory read-only
-// at C:\.hpcc, so the OCI spec can name C:\.hpcc\pause.exe as its
-// entrypoint without the pause binary needing to be inside the user's
-// image. Done once at NewHcsshim because the source file shouldn't
-// change at runtime and per-container copies would burn disk.
-func stagePauseMount(runDir, src string) (string, error) {
+// stageEntrypointMount copies one host binary (pause.exe or
+// agent.exe) into a runtime-owned subdirectory under RunDir and
+// returns the staged directory path. Every container the runtime
+// starts bind-mounts that subdirectory read-only at C:\.hpcc, so
+// the OCI spec can name C:\.hpcc\<binary> as its entrypoint
+// without the binary needing to be inside the user's image. Done
+// once at NewHcsshim because the source file shouldn't change at
+// runtime and per-container copies would burn disk.
+//
+// The ACL grant fires after the copy so the bind-mount is readable
+// + executable by the in-container ContainerUser SID; the runner
+// account's restrictive temp-dir ACL otherwise inherits onto the
+// staged file and the entrypoint dies with ERROR_ACCESS_DENIED at
+// hcs::System::CreateProcess.
+func stageEntrypointMount(runDir, sub, binName, src string) (string, error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return "", fmt.Errorf("open %q: %w", src, err)
 	}
 	defer in.Close()
 
-	mountDir := filepath.Join(runDir, pauseMountSub)
+	mountDir := filepath.Join(runDir, sub)
 	if err := os.MkdirAll(mountDir, 0o755); err != nil {
 		return "", fmt.Errorf("mkdir %q: %w", mountDir, err)
 	}
-	dst := filepath.Join(mountDir, pauseFileName)
+	dst := filepath.Join(mountDir, binName)
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 	if err != nil {
 		return "", fmt.Errorf("create %q: %w", dst, err)
@@ -198,14 +237,25 @@ func (h *Hcsshim) Close() error {
 	return h.client.Close()
 }
 
-// Start creates a per-tenant Hyper-V utility VM under containerd. The
-// flow mirrors the Linux/Firecracker path but the heavy lifting (image
-// snapshot, VM boot, pause binary as PID 1) is delegated to
-// runhcs.v1: hpcc resolves the prepared image cdimage.Store registered
-// at `prepared.hpcc.local/img:<digest>`, creates a containerd
-// container with WithImageConfig + WithWindowsHyperV plus the per-
-// container src/out VSMB mounts, then NewTask + Start the pause
-// binary so the VM stays warm across compiles.
+// Start creates a per-tenant container under containerd, branched by
+// isolation mode:
+//
+//   - Hyper-V isolation: the container is a fresh utility VM with
+//     hpcc-agent.exe as PID 1. The host bind-mounts only the agent
+//     dir (no C:\src / C:\out) and dials the agent over HvSocket
+//     after Task.Start; subsequent Exec calls stream inputs/outputs
+//     through the agent's bidi-gRPC RPC, no host-disk staging.
+//   - Process isolation: the container runs in a Windows Server
+//     silo on the host kernel with pause.exe as PID 1; per-Exec
+//     compiles dispatch as Task.Exec calls under that pause and use
+//     copyTree to stage src and capture out. Hyper-V provides no
+//     security boundary in this mode, so there's no point in
+//     paying the gRPC streaming cost either — this is the CI / dev
+//     path on hosts that can't nest virtualization.
+//
+// The branch is decided here; everything downstream
+// (hcsshimContainer.Exec, .Stop) checks the agent connection's
+// presence to pick the right path.
 func (h *Hcsshim) Start(ctx context.Context, spec ContainerSpec) (Container, error) {
 	if spec.ID == "" {
 		return nil, fmt.Errorf("hcsshim: ContainerSpec.ID is required")
@@ -216,48 +266,34 @@ func (h *Hcsshim) Start(ctx context.Context, spec ContainerSpec) (Container, err
 
 	ctx = namespaces.WithNamespace(ctx, h.opts.Namespace)
 
-	hostSrcDir, hostOutDir, hostScratchDir, err := h.prepareScratchDirs(spec.ID)
-	if err != nil {
-		return nil, fmt.Errorf("hcsshim: prepare scratch dirs: %w", err)
-	}
-
 	imgName := cdimage.PreparedImageName(spec.ImageDigest)
 	img, err := h.client.GetImage(ctx, imgName)
 	if err != nil {
-		_ = os.RemoveAll(hostScratchDir)
 		return nil, fmt.Errorf("hcsshim: resolve prepared image %q: %w", imgName, err)
 	}
 
+	useAgent := h.opts.Isolation == IsolationHyperV
+
+	var hostSrcDir, hostOutDir, hostScratchDir string
+	if !useAgent {
+		hostSrcDir, hostOutDir, hostScratchDir, err = h.prepareScratchDirs(spec.ID)
+		if err != nil {
+			return nil, fmt.Errorf("hcsshim: prepare scratch dirs: %w", err)
+		}
+	}
+
+	mounts, entrypoint := h.containerMountsAndEntrypoint(hostSrcDir, hostOutDir)
 	specOpts := []oci.SpecOpts{
 		oci.WithImageConfig(img),
-		oci.WithMounts([]specs.Mount{
-			// Read-only bind mount of the runtime-owned pause dir.
-			// pause.exe is shared by every container the runtime
-			// starts and lives across container lifetimes (staged
-			// once in NewHcsshim, mounted into every container);
-			// letting a tenant compile write to it would let one
-			// tenant poison the entrypoint future tenants run as
-			// PID 1. Defence in depth: the file ACL already grants
-			// Everyone RX only (no write), but the "ro" mount option
-			// also blocks writes if a future runhcs version honours
-			// it.
-			//
-			// "ro" was suspected of triggering CreateProcess Access
-			// Denied earlier, but the real cause was the ACL on the
-			// staged file having no entry for ContainerUser. With
-			// grantContainerReadExecute in place that's resolved, so
-			// "ro" can come back.
-			{Source: h.pauseMountDir, Destination: guestPauseDir, Options: []string{"ro"}},
-			{Source: hostSrcDir, Destination: guestSrcRoot},
-			{Source: hostOutDir, Destination: guestOutRoot},
-		}),
-		// Override the image's entrypoint to the pause binary so the
-		// container stays alive across Execs regardless of what the
-		// user image declares (nanoserver's default is cmd.exe, which
-		// would exit immediately under cio.NullIO).
-		oci.WithProcessArgs(guestPauseExe),
+		oci.WithMounts(mounts),
+		// Override the image's entrypoint to either pause.exe or
+		// agent.exe so the container stays alive across Execs
+		// regardless of what the user image declares (nanoserver's
+		// default is cmd.exe, which would exit immediately under
+		// cio.NullIO).
+		oci.WithProcessArgs(entrypoint),
 	}
-	if h.opts.Isolation == IsolationHyperV {
+	if useAgent {
 		// Process isolation runs in a Windows Server silo on the host
 		// kernel — no Windows.HyperV section, which is exactly the
 		// signal the runhcs shim uses to skip uVM allocation. Setting
@@ -285,26 +321,31 @@ func (h *Hcsshim) Start(ctx context.Context, spec ContainerSpec) (Container, err
 			"hpcc.dev/container-id": spec.ID,
 		}),
 	}
+	cleanupScratch := func() {
+		if hostScratchDir != "" {
+			_ = os.RemoveAll(hostScratchDir)
+		}
+	}
 	cont, err := h.client.NewContainer(ctx, spec.ID, containerOpts...)
 	if err != nil {
-		_ = os.RemoveAll(hostScratchDir)
+		cleanupScratch()
 		return nil, fmt.Errorf("hcsshim: create container %s: %w", spec.ID, err)
 	}
 
 	task, err := cont.NewTask(ctx, cio.NullIO)
 	if err != nil {
 		_ = cont.Delete(ctx, containerd.WithSnapshotCleanup)
-		_ = os.RemoveAll(hostScratchDir)
+		cleanupScratch()
 		return nil, fmt.Errorf("hcsshim: create task: %w", err)
 	}
 	if err := task.Start(ctx); err != nil {
 		_, _ = task.Delete(ctx)
 		_ = cont.Delete(ctx, containerd.WithSnapshotCleanup)
-		_ = os.RemoveAll(hostScratchDir)
+		cleanupScratch()
 		return nil, fmt.Errorf("hcsshim: start task: %w", err)
 	}
 
-	return &hcsshimContainer{
+	hc := &hcsshimContainer{
 		owner:          h,
 		spec:           spec,
 		container:      cont,
@@ -312,7 +353,47 @@ func (h *Hcsshim) Start(ctx context.Context, spec ContainerSpec) (Container, err
 		hostSrcDir:     hostSrcDir,
 		hostOutDir:     hostOutDir,
 		hostScratchDir: hostScratchDir,
-	}, nil
+	}
+	if useAgent {
+		conn, err := h.dialContainerAgent(ctx, spec.ID)
+		if err != nil {
+			_ = task.Kill(ctx, syscall.SIGKILL)
+			_, _ = task.Delete(ctx)
+			_ = cont.Delete(ctx, containerd.WithSnapshotCleanup)
+			return nil, fmt.Errorf("hcsshim: dial agent: %w", err)
+		}
+		hc.agentConn = conn
+	}
+	return hc, nil
+}
+
+// containerMountsAndEntrypoint picks the bind-mount set and the OCI
+// process entrypoint for the active isolation mode. Process isolation
+// needs C:\src + C:\out host-side staging (copyTree-based Exec) plus
+// the pause-binary mount; Hyper-V isolation just needs the agent
+// mount because the agent streams files in-band over HvSocket.
+func (h *Hcsshim) containerMountsAndEntrypoint(srcDir, outDir string) ([]specs.Mount, string) {
+	if h.opts.Isolation == IsolationHyperV {
+		return []specs.Mount{
+			// Read-only bind mount of the runtime-owned agent dir.
+			// agent.exe is shared by every Hyper-V container the
+			// runtime starts and lives across container lifetimes
+			// (staged once in NewHcsshim, mounted into every
+			// container); letting a tenant compile write to it
+			// would let one tenant poison the entrypoint future
+			// tenants run as PID 1. Defence in depth: the file ACL
+			// already grants Everyone RX only (no write), but "ro"
+			// blocks writes too if a future runhcs version honours
+			// it.
+			{Source: h.agentMountDir, Destination: guestPauseDir, Options: []string{"ro"}},
+		}, guestAgentExe
+	}
+	return []specs.Mount{
+		// Same read-only argument applies to the pause dir.
+		{Source: h.pauseMountDir, Destination: guestPauseDir, Options: []string{"ro"}},
+		{Source: srcDir, Destination: guestSrcRoot},
+		{Source: outDir, Destination: guestOutRoot},
+	}, guestPauseExe
 }
 
 // prepareScratchDirs lays out the per-container host scratch root
@@ -340,16 +421,27 @@ func (h *Hcsshim) prepareScratchDirs(id string) (src, out, scratch string, err e
 	return src, out, scratch, nil
 }
 
-// hcsshimContainer is one running per-tenant Hyper-V utility VM under
-// containerd. The task field is the pause binary (PID 1 inside the
-// container) — every compiler invocation dispatches as a Task.Exec
-// child of that pause.
+// hcsshimContainer is one running per-tenant container under
+// containerd. Under Hyper-V isolation the task is hpcc-agent.exe
+// (PID 1 of the utility VM) and agentConn is the gRPC connection
+// to that agent — Exec calls flow through it. Under process
+// isolation the task is pause.exe and agentConn is nil; Exec calls
+// dispatch as Task.Exec children of pause with host-side
+// copyTree-based file staging through hostSrcDir / hostOutDir.
 type hcsshimContainer struct {
 	owner *Hcsshim
 	spec  ContainerSpec
 
-	container      containerd.Container
-	task           containerd.Task
+	container containerd.Container
+	task      containerd.Task
+
+	// agentConn is non-nil iff Isolation == hyperv. Its presence is
+	// what Exec / Stop branch on.
+	agentConn *grpc.ClientConn
+
+	// hostSrcDir / hostOutDir / hostScratchDir are non-empty only
+	// in process-isolation mode (Hyper-V mode streams files via the
+	// agent and needs no host-disk staging).
 	hostSrcDir     string
 	hostOutDir     string
 	hostScratchDir string
@@ -368,21 +460,21 @@ func (c *hcsshimContainer) ImageDigest() string { return c.spec.ImageDigest }
 // pool's health-check on next dispatch, not modelled here.
 func (c *hcsshimContainer) State() gen.VMState { return gen.VMState_RUNNING }
 
-// Exec runs one compiler invocation inside the warm utility VM. The
-// host-side flow is:
+// Exec runs one compiler invocation. Branched by whether the
+// container was started with an agent gRPC connection:
 //
-//  1. Allocate per-Exec staging dirs under the container's src/out
-//     scratch roots and copy req.SrcHostPath into the src side.
-//  2. Translate /src and /out roots in argv/cwd to C:\src\<ExecID> and
-//     C:\out\<ExecID> so the in-container paths match where the
-//     mounts surface.
-//  3. Task.Exec the translated argv, streaming stdout/stderr to the
-//     caller's writers.
-//  4. Copy the out-side staging dir back to req.OutHostPath and tear
-//     both staging dirs down.
+//   - agentConn != nil (Hyper-V isolation): the host streams the
+//     compile as one AgentService.Exec bidi RPC — header + every
+//     file under req.SrcHostPath as InputFile chunks, then drains
+//     stdio + result + OutputFile frames back. No per-Exec host
+//     scratch dirs, no copyTree.
+//   - agentConn == nil (process isolation): per-Exec staging dirs
+//     under the container's src/out scratch roots, copyTree to
+//     populate src, Task.Exec the translated argv, copyTree to
+//     drain outputs back to req.OutHostPath.
 //
-// Cleanup runs in defer so a mid-stream cancellation or an Exec error
-// doesn't leak per-Exec scratch.
+// Both paths run with the same ExecRequest contract; only the
+// transport differs.
 func (c *hcsshimContainer) Exec(ctx context.Context, req ExecRequest) (ExecResult, error) {
 	if c.task == nil {
 		return ExecResult{ExitCode: -1}, fmt.Errorf("hcsshim: container has no running task")
@@ -392,6 +484,10 @@ func (c *hcsshimContainer) Exec(ctx context.Context, req ExecRequest) (ExecResul
 	}
 	if len(req.Argv) == 0 {
 		return ExecResult{ExitCode: -1}, fmt.Errorf("hcsshim: ExecRequest.Argv must be non-empty")
+	}
+
+	if c.agentConn != nil {
+		return c.execViaAgentTransport(ctx, req)
 	}
 
 	ctx = namespaces.WithNamespace(ctx, c.owner.opts.Namespace)
@@ -471,6 +567,28 @@ func (c *hcsshimContainer) Exec(ctx context.Context, req ExecRequest) (ExecResul
 	}
 }
 
+// execViaAgentTransport drives a compile through the agent's gRPC
+// channel instead of Task.Exec + host-side copyTree. argv is shipped
+// as-is — the agent's in-VM translator (server.go) handles the
+// /src → C:\hpcc\src\<ExecID> rewrite at runCompiler time, just like
+// the host-side translator does in process-isolation mode.
+func (c *hcsshimContainer) execViaAgentTransport(ctx context.Context, req ExecRequest) (ExecResult, error) {
+	result, err := execViaAgent(ctx, c.agentConn, AgentExecRequest{
+		ExecID:      req.ExecID,
+		Argv:        req.Argv,
+		Env:         req.Env,
+		Cwd:         req.Cwd,
+		SrcHostPath: req.SrcHostPath,
+		OutHostPath: req.OutHostPath,
+		Stdout:      req.Stdout,
+		Stderr:      req.Stderr,
+	})
+	if err != nil {
+		return ExecResult{ExitCode: -1}, fmt.Errorf("hcsshim: agent exec: %w", err)
+	}
+	return ExecResult{ExitCode: int(result.ExitCode)}, nil
+}
+
 // Stop reaps the warm VM. We always try to delete the task and
 // container, even if either step fails, so a wedged shim can't pin a
 // container record alongside a half-dead snapshot. Idempotent — repeat
@@ -487,6 +605,16 @@ func (c *hcsshimContainer) Stop(ctx context.Context) error {
 	ctx = namespaces.WithNamespace(ctx, c.owner.opts.Namespace)
 
 	var errs []error
+	if c.agentConn != nil {
+		// Close before killing the task: the agent is the task's
+		// PID 1, so a pending Exec call would error mid-stream
+		// anyway when the agent exits — closing first surfaces a
+		// clean "EOF" rather than a transport-level reset.
+		if err := c.agentConn.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("agentConn.Close: %w", err))
+		}
+		c.agentConn = nil
+	}
 	if c.task != nil {
 		killCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		_ = c.task.Kill(killCtx, syscall.SIGKILL)
