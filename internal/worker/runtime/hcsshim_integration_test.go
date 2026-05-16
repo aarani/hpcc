@@ -167,6 +167,11 @@ func TestHcsshim_EndToEnd_Integration(t *testing.T) {
 	store := &cdimage.Store{
 		Client: cli,
 		Pause:  cdimage.PauseBinaries{WindowsAmd64: pausePath},
+		// Must match the snapshotter the runtime below will create
+		// its container snapshot under; otherwise the runhcs shim
+		// can't find the parent chain. defaultHcsshimSnapshotter is
+		// "windows".
+		Snapshotter: defaultHcsshimSnapshotter,
 	}
 	if err := store.PullImage(ctx, pinnedRef, manifestDigest.String()); err != nil {
 		t.Fatalf("cdimage PullImage: %v", err)

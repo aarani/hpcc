@@ -92,16 +92,14 @@ jobs:
         # back to build tags. Catching that regression on every push
         # is what this job exists for — the Linux build matrix can't
         # see it.
+        #
+        # No test step on purpose: the package-level unit tests run
+        # on Linux in the `build` job, and several test files in this
+        # repo predate Windows support (Linux-only path strings,
+        # `/bin/echo`, syscall.Stat_t, etc.). End-to-end Windows
+        # coverage is the `windows-runtime` job below, which
+        # exercises the runhcs path against a real containerd.
         run: go build ./...
-
-      - name: Unit tests
-        # Runs the runtime package's path-translation, isolation
-        # validation and copyTree tests on a Windows file system —
-        # those rules need to behave the same with backslashed paths
-        # the real runtime will see at Exec time. End-to-end
-        # containerd + runhcs coverage is in the separate
-        # `windows-runtime` job.
-        run: go test ./...
 
   windows-runtime:
     name: Hcsshim runtime e2e
