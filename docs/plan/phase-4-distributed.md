@@ -31,16 +31,19 @@
     container creation with optional Hyper-V isolation (selectable
     via `runtime.hcsshim.isolation = "hyperv" | "process"`,
     process-mode for CI without nested virtualization), pause-binary
-    PID 1 from the prepared `cdimage.Store` image, `Task.Exec`-based
-    compile dispatch, and per-Exec copy-in/copy-out staging at
-    `C:\src` / `C:\out`. Cross-compiles green on darwin and
-    windows/amd64; unit tests cover option validation, argv path
-    rewrites and the copyTree helper. **Still open**: an actual
-    containerd-on-windows integration job (the unit-test job in
-    `windows-build` only proves compile + path logic), VSMB mounts
-    in place of per-Exec copy, and validating the path-canonicalization
-    gotchas the §4.1.1 caveats list (MAX_PATH, UNC vs mapped drive,
-    directory junctions).
+    PID 1 via a runtime-managed bind mount at `C:\.hpcc` (no OCI
+    layer injection, see "Why we don't inject pause as a Windows
+    OCI layer" below), `Task.Exec`-based compile dispatch, and
+    per-Exec copy-in/copy-out staging at `C:\src` / `C:\out`.
+    Cross-compiles green on darwin and windows/amd64; unit tests
+    cover option validation, argv path rewrites and the copyTree
+    helper. **Still open**: an actual containerd-on-windows
+    integration job (the unit-test job in `windows-build` only
+    proves compile + path logic), an hpcc-agent over HvSocket so
+    we can drop the per-Exec copy without falling back to VSMB
+    (see "Why not VSMB" below), and validating the
+    path-canonicalization gotchas the §4.1.1 caveats list
+    (MAX_PATH, UNC vs mapped drive, directory junctions).
   - §4.11 VM-crash reaping with scheduler reroute — partial today
     (the runtime surfaces process exit, but the worker doesn't yet
     notify the scheduler to drop the dead VM from routing).
@@ -181,12 +184,67 @@ affect v1 or the parser):
 - **Source mounting into Hyper-V-isolated containers.** Hyper-V containers
   can't bind-mount host paths the way Linux containers do; SMB-into-container
   has identity/auth quirks (virtual accounts can't authenticate to shares).
-  Likely shape: stage source onto a local volume the container mounts, with a
-  stable in-container path (e.g. `C:\src`) decoupled from the host path.
-  `--isolation=process` would sidestep this but loses the Hyper-V boundary
-  the bank case demands.
+  Current shape: under `--isolation=process` (CI / dev-without-nested-virt
+  only) the silo bind-mounts of `C:\src` and `C:\out` work directly. Under
+  `--isolation=hyperv` we plan to use an `hpcc-agent`-over-HvSocket file
+  transport — see "Why not VSMB" below.
 - **Symlinks vs directory junctions.** Different semantics; pick a
   resolve-or-don't policy and stick to it for cache-key path canonicalization.
+
+#### Why not VSMB (no SMB across the boundary)
+
+The default Microsoft-blessed way to share host directories into a
+Hyper-V-isolated container is **VSMB** — the same SMB protocol that
+parses messages from untrusted-ish peers in a kernel-mode SMB server
+component. SMB has eaten EternalBlue, the periodic Patch-Tuesday SMB
+RCE, and a long tail of CVEs spanning two decades; putting an
+unauthenticated message parser on the privileged side of a "this is
+the boundary auditors recognise" partition rebuilds in software the
+very threat model the kernel + KVM/Hyper-V boundary is meant to
+deny. A regulated security review that recognises the partition
+boundary will not recognise an SMB parser stapled across it.
+
+The Linux side already avoids this: every host↔guest payload rides
+one vsock device terminated by `hpcc-agent` (§4.4.1). The Windows
+side will mirror that: a Windows build of `hpcc-agent` listening on
+HvSocket (the Hyper-V analogue of vsock), bind-mounted into every
+container the way `pause.exe` is now. The wire is a small protobuf
+schema we own — `Exec`, `Put`, `Get` — not an industry-standard
+filesystem protocol with two decades of CVEs.
+
+Process-isolation containers (CI, dev) keep using silo bind mounts
+because there's no partition boundary to cross; the §4.1 security
+claim is also already void in that mode, so VSMB doesn't enter the
+picture.
+
+#### Why we don't inject pause.exe as a Windows OCI layer
+
+The cleaner-looking design would be: prepare a per-image variant
+where `cdimage.Store` stacks a one-file OCI layer containing
+`pause.exe` on top of the user image and registers the result as the
+prepared image. That's exactly what cdimage does on Linux.
+
+It doesn't work on Windows. `hcsshim.ImportLayer` (which the
+`windows` snapshotter dispatches to for every non-base layer)
+expects PAX-tagged tar entries with backup-stream security
+descriptors, Windows file-attribute records, and the legacy
+`Hives/`/`UtilityVM/` scaffolding — a synthesised one-binary layer
+with plain `archive/tar` entries fails apply with
+`ERROR_PATH_NOT_FOUND` before the first file lands.
+
+Instead: on Windows the prepared image record is a label-only alias
+of the base manifest (same target descriptor, just registered under
+`prepared.hpcc.local/img:<digest>` with the user-digest label).
+`pause.exe` is staged once at `NewHcsshim` time under
+`<RunDir>\.hpcc-pause-mount\pause.exe` and bind-mounted read-only at
+`C:\.hpcc` into every container; the OCI spec overrides
+`Process.Args` to point at `C:\.hpcc\pause.exe`. Same end state as
+the Linux layer approach (pause is PID 1, image content is
+unchanged) without the legacy-tar-format trust surface.
+
+The same machinery is what `hpcc-agent.exe` will use when the
+HvSocket transport (above) lands — same staging dir, same mount,
+same entrypoint pivot.
 
 ### 4.2 VM Lifecycle: One VM per Tenant Session, Not per Job
 

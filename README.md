@@ -78,6 +78,17 @@ multi-tenant, and on the audit trail.**
 - **The VM has no NIC.** There is no exfiltration argument to have, because
   there is no network device. Full stop. The host↔guest channel is one
   vsock device carrying a single bidirectional gRPC stream.
+- **No SMB across the partition boundary** (Windows side). The
+  default Microsoft-blessed way to share host paths into a
+  Hyper-V-isolated container is VSMB — same SMB protocol family
+  that's absorbed EternalBlue and a two-decade tail of kernel-mode
+  RCEs. Stapling that across a boundary whose entire pitch is
+  "auditors recognise this kernel+VM line" rebuilds the threat
+  model in software. The Windows runtime mirrors the Linux side
+  instead: `hpcc-agent` over HvSocket (the Hyper-V analogue of
+  vsock) with a small protobuf wire we own (`Exec`, `Put`, `Get`)
+  — not an industry-standard filesystem protocol with a
+  CVE-of-the-month history.
 - **The container image digest *is* the toolchain identity.** No "hash the
   gcc binary" dance. 50 developers sharing one image produce one cache
   bucket; CI and laptops cannot silently diverge.
