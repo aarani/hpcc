@@ -12,7 +12,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v7.34.1
-// source: agent/agent.proto
+// source: agent.proto
 
 package agent
 
@@ -61,11 +61,11 @@ func (x StdioChunk_Stream) String() string {
 }
 
 func (StdioChunk_Stream) Descriptor() protoreflect.EnumDescriptor {
-	return file_agent_agent_proto_enumTypes[0].Descriptor()
+	return file_agent_proto_enumTypes[0].Descriptor()
 }
 
 func (StdioChunk_Stream) Type() protoreflect.EnumType {
-	return &file_agent_agent_proto_enumTypes[0]
+	return &file_agent_proto_enumTypes[0]
 }
 
 func (x StdioChunk_Stream) Number() protoreflect.EnumNumber {
@@ -74,7 +74,7 @@ func (x StdioChunk_Stream) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use StdioChunk_Stream.Descriptor instead.
 func (StdioChunk_Stream) EnumDescriptor() ([]byte, []int) {
-	return file_agent_agent_proto_rawDescGZIP(), []int{4, 0}
+	return file_agent_proto_rawDescGZIP(), []int{4, 0}
 }
 
 // ExecClientFrame is one of: an ExecHeader (sent first, exactly
@@ -95,7 +95,7 @@ type ExecClientFrame struct {
 
 func (x *ExecClientFrame) Reset() {
 	*x = ExecClientFrame{}
-	mi := &file_agent_agent_proto_msgTypes[0]
+	mi := &file_agent_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -107,7 +107,7 @@ func (x *ExecClientFrame) String() string {
 func (*ExecClientFrame) ProtoMessage() {}
 
 func (x *ExecClientFrame) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_agent_proto_msgTypes[0]
+	mi := &file_agent_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -120,7 +120,7 @@ func (x *ExecClientFrame) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecClientFrame.ProtoReflect.Descriptor instead.
 func (*ExecClientFrame) Descriptor() ([]byte, []int) {
-	return file_agent_agent_proto_rawDescGZIP(), []int{0}
+	return file_agent_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *ExecClientFrame) GetFrame() isExecClientFrame_Frame {
@@ -188,7 +188,7 @@ type ExecHeader struct {
 
 func (x *ExecHeader) Reset() {
 	*x = ExecHeader{}
-	mi := &file_agent_agent_proto_msgTypes[1]
+	mi := &file_agent_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -200,7 +200,7 @@ func (x *ExecHeader) String() string {
 func (*ExecHeader) ProtoMessage() {}
 
 func (x *ExecHeader) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_agent_proto_msgTypes[1]
+	mi := &file_agent_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -213,7 +213,7 @@ func (x *ExecHeader) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecHeader.ProtoReflect.Descriptor instead.
 func (*ExecHeader) Descriptor() ([]byte, []int) {
-	return file_agent_agent_proto_rawDescGZIP(), []int{1}
+	return file_agent_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *ExecHeader) GetExecId() string {
@@ -266,7 +266,7 @@ type InputFile struct {
 
 func (x *InputFile) Reset() {
 	*x = InputFile{}
-	mi := &file_agent_agent_proto_msgTypes[2]
+	mi := &file_agent_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -278,7 +278,7 @@ func (x *InputFile) String() string {
 func (*InputFile) ProtoMessage() {}
 
 func (x *InputFile) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_agent_proto_msgTypes[2]
+	mi := &file_agent_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -291,7 +291,7 @@ func (x *InputFile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InputFile.ProtoReflect.Descriptor instead.
 func (*InputFile) Descriptor() ([]byte, []int) {
-	return file_agent_agent_proto_rawDescGZIP(), []int{2}
+	return file_agent_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *InputFile) GetPath() string {
@@ -333,7 +333,7 @@ type ExecServerFrame struct {
 
 func (x *ExecServerFrame) Reset() {
 	*x = ExecServerFrame{}
-	mi := &file_agent_agent_proto_msgTypes[3]
+	mi := &file_agent_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -345,7 +345,7 @@ func (x *ExecServerFrame) String() string {
 func (*ExecServerFrame) ProtoMessage() {}
 
 func (x *ExecServerFrame) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_agent_proto_msgTypes[3]
+	mi := &file_agent_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -358,7 +358,7 @@ func (x *ExecServerFrame) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecServerFrame.ProtoReflect.Descriptor instead.
 func (*ExecServerFrame) Descriptor() ([]byte, []int) {
-	return file_agent_agent_proto_rawDescGZIP(), []int{3}
+	return file_agent_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ExecServerFrame) GetFrame() isExecServerFrame_Frame {
@@ -427,7 +427,7 @@ type StdioChunk struct {
 
 func (x *StdioChunk) Reset() {
 	*x = StdioChunk{}
-	mi := &file_agent_agent_proto_msgTypes[4]
+	mi := &file_agent_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -439,7 +439,7 @@ func (x *StdioChunk) String() string {
 func (*StdioChunk) ProtoMessage() {}
 
 func (x *StdioChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_agent_proto_msgTypes[4]
+	mi := &file_agent_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -452,7 +452,7 @@ func (x *StdioChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StdioChunk.ProtoReflect.Descriptor instead.
 func (*StdioChunk) Descriptor() ([]byte, []int) {
-	return file_agent_agent_proto_rawDescGZIP(), []int{4}
+	return file_agent_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *StdioChunk) GetStream() StdioChunk_Stream {
@@ -480,7 +480,7 @@ type ExecResult struct {
 
 func (x *ExecResult) Reset() {
 	*x = ExecResult{}
-	mi := &file_agent_agent_proto_msgTypes[5]
+	mi := &file_agent_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -492,7 +492,7 @@ func (x *ExecResult) String() string {
 func (*ExecResult) ProtoMessage() {}
 
 func (x *ExecResult) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_agent_proto_msgTypes[5]
+	mi := &file_agent_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -505,7 +505,7 @@ func (x *ExecResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecResult.ProtoReflect.Descriptor instead.
 func (*ExecResult) Descriptor() ([]byte, []int) {
-	return file_agent_agent_proto_rawDescGZIP(), []int{5}
+	return file_agent_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ExecResult) GetExitCode() int32 {
@@ -526,7 +526,7 @@ type OutputFile struct {
 
 func (x *OutputFile) Reset() {
 	*x = OutputFile{}
-	mi := &file_agent_agent_proto_msgTypes[6]
+	mi := &file_agent_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -538,7 +538,7 @@ func (x *OutputFile) String() string {
 func (*OutputFile) ProtoMessage() {}
 
 func (x *OutputFile) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_agent_proto_msgTypes[6]
+	mi := &file_agent_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -551,7 +551,7 @@ func (x *OutputFile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OutputFile.ProtoReflect.Descriptor instead.
 func (*OutputFile) Descriptor() ([]byte, []int) {
-	return file_agent_agent_proto_rawDescGZIP(), []int{6}
+	return file_agent_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *OutputFile) GetPath() string {
@@ -575,11 +575,11 @@ func (x *OutputFile) GetEof() bool {
 	return false
 }
 
-var File_agent_agent_proto protoreflect.FileDescriptor
+var File_agent_proto protoreflect.FileDescriptor
 
-const file_agent_agent_proto_rawDesc = "" +
+const file_agent_proto_rawDesc = "" +
 	"\n" +
-	"\x11agent/agent.proto\x12\rhpcc.agent.v1\"\x81\x01\n" +
+	"\vagent.proto\x12\rhpcc.agent.v1\"\x81\x01\n" +
 	"\x0fExecClientFrame\x123\n" +
 	"\x06header\x18\x01 \x01(\v2\x19.hpcc.agent.v1.ExecHeaderH\x00R\x06header\x120\n" +
 	"\x05input\x18\x02 \x01(\v2\x18.hpcc.agent.v1.InputFileH\x00R\x05inputB\a\n" +
@@ -621,20 +621,20 @@ const file_agent_agent_proto_rawDesc = "" +
 	"\x04Exec\x12\x1e.hpcc.agent.v1.ExecClientFrame\x1a\x1e.hpcc.agent.v1.ExecServerFrame(\x010\x01B*Z(github.com/aarani/hpcc/proto/agent;agentb\x06proto3"
 
 var (
-	file_agent_agent_proto_rawDescOnce sync.Once
-	file_agent_agent_proto_rawDescData []byte
+	file_agent_proto_rawDescOnce sync.Once
+	file_agent_proto_rawDescData []byte
 )
 
-func file_agent_agent_proto_rawDescGZIP() []byte {
-	file_agent_agent_proto_rawDescOnce.Do(func() {
-		file_agent_agent_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_agent_agent_proto_rawDesc), len(file_agent_agent_proto_rawDesc)))
+func file_agent_proto_rawDescGZIP() []byte {
+	file_agent_proto_rawDescOnce.Do(func() {
+		file_agent_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_agent_proto_rawDesc), len(file_agent_proto_rawDesc)))
 	})
-	return file_agent_agent_proto_rawDescData
+	return file_agent_proto_rawDescData
 }
 
-var file_agent_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_agent_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
-var file_agent_agent_proto_goTypes = []any{
+var file_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_agent_proto_goTypes = []any{
 	(StdioChunk_Stream)(0),  // 0: hpcc.agent.v1.StdioChunk.Stream
 	(*ExecClientFrame)(nil), // 1: hpcc.agent.v1.ExecClientFrame
 	(*ExecHeader)(nil),      // 2: hpcc.agent.v1.ExecHeader
@@ -644,7 +644,7 @@ var file_agent_agent_proto_goTypes = []any{
 	(*ExecResult)(nil),      // 6: hpcc.agent.v1.ExecResult
 	(*OutputFile)(nil),      // 7: hpcc.agent.v1.OutputFile
 }
-var file_agent_agent_proto_depIdxs = []int32{
+var file_agent_proto_depIdxs = []int32{
 	2, // 0: hpcc.agent.v1.ExecClientFrame.header:type_name -> hpcc.agent.v1.ExecHeader
 	3, // 1: hpcc.agent.v1.ExecClientFrame.input:type_name -> hpcc.agent.v1.InputFile
 	5, // 2: hpcc.agent.v1.ExecServerFrame.stdio:type_name -> hpcc.agent.v1.StdioChunk
@@ -660,16 +660,16 @@ var file_agent_agent_proto_depIdxs = []int32{
 	0, // [0:6] is the sub-list for field type_name
 }
 
-func init() { file_agent_agent_proto_init() }
-func file_agent_agent_proto_init() {
-	if File_agent_agent_proto != nil {
+func init() { file_agent_proto_init() }
+func file_agent_proto_init() {
+	if File_agent_proto != nil {
 		return
 	}
-	file_agent_agent_proto_msgTypes[0].OneofWrappers = []any{
+	file_agent_proto_msgTypes[0].OneofWrappers = []any{
 		(*ExecClientFrame_Header)(nil),
 		(*ExecClientFrame_Input)(nil),
 	}
-	file_agent_agent_proto_msgTypes[3].OneofWrappers = []any{
+	file_agent_proto_msgTypes[3].OneofWrappers = []any{
 		(*ExecServerFrame_Stdio)(nil),
 		(*ExecServerFrame_Result)(nil),
 		(*ExecServerFrame_Output)(nil),
@@ -678,18 +678,18 @@ func file_agent_agent_proto_init() {
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agent_agent_proto_rawDesc), len(file_agent_agent_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agent_proto_rawDesc), len(file_agent_proto_rawDesc)),
 			NumEnums:      1,
 			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_agent_agent_proto_goTypes,
-		DependencyIndexes: file_agent_agent_proto_depIdxs,
-		EnumInfos:         file_agent_agent_proto_enumTypes,
-		MessageInfos:      file_agent_agent_proto_msgTypes,
+		GoTypes:           file_agent_proto_goTypes,
+		DependencyIndexes: file_agent_proto_depIdxs,
+		EnumInfos:         file_agent_proto_enumTypes,
+		MessageInfos:      file_agent_proto_msgTypes,
 	}.Build()
-	File_agent_agent_proto = out.File
-	file_agent_agent_proto_goTypes = nil
-	file_agent_agent_proto_depIdxs = nil
+	File_agent_proto = out.File
+	file_agent_proto_goTypes = nil
+	file_agent_proto_depIdxs = nil
 }
