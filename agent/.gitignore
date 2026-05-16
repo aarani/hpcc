@@ -1,0 +1,9 @@
+# Build artefacts. The `agent` binary is built into a known output
+# location by the Makefile (or into a container's `/.hpcc/agent`
+# during image preparation), never committed. The Windows
+# cross-build with `go build ./...` (no -o) drops `agent.exe`
+# here; the Makefile target writes `hpcc-agent.exe`.
+agent
+agent.exe
+hpcc-agent
+hpcc-agent.exe

@@ -231,11 +231,47 @@ boundary will not recognise an SMB parser stapled across it.
 
 The Linux side already avoids this: every host↔guest payload rides
 one vsock device terminated by `hpcc-agent` (§4.4.1). The Windows
-side will mirror that: a Windows build of `hpcc-agent` listening on
-HvSocket (the Hyper-V analogue of vsock), bind-mounted into every
-container the way `pause.exe` is now. The wire is a small protobuf
-schema we own — `Exec`, `Put`, `Get` — not an industry-standard
-filesystem protocol with two decades of CVEs.
+side mirrors that: a Windows build of `hpcc-agent` listens on
+HvSocket (the Hyper-V analogue of vsock) and gets bind-mounted into
+every container the way `pause.exe` is. The wire is the existing
+`AgentService.Exec` bidi-stream from `proto/agent/agent.proto` —
+header + input-file chunks one way, stdio + result + output-file
+chunks back — not an industry-standard filesystem protocol with two
+decades of CVEs.
+
+**Status:** both sides of the transport are built.
+
+*In-VM agent:* the Windows agent binary builds (`make
+build-agent-windows`). The cross-platform server logic is shared
+with the Linux build; only the listener differs (vsock vs. HvSocket
+via `github.com/Microsoft/go-winio`'s `ListenHvsock` +
+`VsockServiceID(17727)` so both transports share the same numeric
+"port"). Init drops to mkdir'ing `C:\hpcc\src` / `C:\hpcc\out`
+because HCS already wires the container's kernel filesystems.
+
+*Host-side client:* `internal/worker/runtime/agent.go` carries
+`execViaAgent` — a cross-platform helper that opens the Exec
+bidi-stream, ships an ExecHeader + every regular file under
+`SrcHostPath` as InputFile chunks, half-closes, then drains
+stdio / result / OutputFile frames back out, writing outputs under
+`OutHostPath` and forwarding stdio to caller writers.
+`internal/worker/runtime/agent_dial_windows.go` carries
+`dialAgentHvsock` — the Windows-only HvSocket dialer that takes a
+utility VM GUID and returns a `*grpc.ClientConn`. Unit tests
+exercise the helper against an in-process gRPC server so the
+protocol shape is covered without nested-virt access.
+
+*Still open:* the hcsshim runtime needs to (a) stage
+`hpcc-agent.exe` alongside `pause.exe`, (b) override the container
+entrypoint to the agent rather than pause when isolation is
+Hyper-V, (c) look up the utility VM's GUID from the
+`containerd.Container` handle (hcsshim-internals call), (d) call
+`dialAgentHvsock` after container Start and store the connection
+on the container, (e) replace the Task.Exec + copyTree path in
+`Container.Exec` with `execViaAgent`. (c)–(e) need nested
+virtualization to end-to-end-test, which GitHub-hosted runners
+don't expose; landing the full integration will need a self-hosted
+Windows runner or local repro on a Hyper-V host.
 
 Process-isolation containers (CI, dev) keep using silo bind mounts
 because there's no partition boundary to cross; the §4.1 security
