@@ -177,7 +177,15 @@ affect v1 or the parser):
   the same string in the hasher, or two developers compiling the same source
   via different mounts produce different keys. Couple with `/d1trimfile:` and
   `/PDBSourcePath:` (MSVC equivalents of `-ffile-prefix-map`) so embedded
-  paths in objects/PDBs don't poison the hash.
+  paths in objects/PDBs don't poison the hash. **Partly shipped**:
+  `normalizeManifestPath` now strips `\\?\` (and `\\?\UNC\`) extended-length
+  prefixes before relativizing, and emits project-relative paths with forward
+  slashes so a Linux and a Windows client compiling the same `.hpcc`-rooted
+  project produce identical manifest digests. **Still open**: UNC↔mapped-drive
+  resolution (needs runtime lookup of share mappings), case-folding (Windows is
+  case-insensitive; Linux/macOS aren't), and the MSVC `/d1trimfile:` /
+  `/PDBSourcePath:` auto-injection so embedded paths in `.obj` / `.pdb`
+  files don't poison the hash.
 - **MAX_PATH (260) limit.** Monorepo builds blow past this routinely. Workers
   need `LongPathsEnabled` registry, and the worker may rewrite paths to
   `\\?\` form before invoking `cl.exe`.

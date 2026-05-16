@@ -258,7 +258,11 @@ func TestFindProjectRoot_noMarkerReturnsEmpty(t *testing.T) {
 func TestNormalizeManifestPath_relativizesUnderRoot(t *testing.T) {
 	root := "/home/alice/proj"
 	got := normalizeManifestPath("/home/alice/proj/src/main.c", root)
-	want := filepath.Join("src", "main.c")
+	// Project-relative paths are emitted with forward slashes on
+	// every platform so a Linux client and a Windows client
+	// compiling the same project produce identical manifest digests
+	// (see normalizeManifestPath's doc comment).
+	want := "src/main.c"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -276,6 +280,27 @@ func TestNormalizeManifestPath_emptyRootIsNoOp(t *testing.T) {
 	got := normalizeManifestPath("/home/alice/proj/src/main.c", "")
 	if got != "/home/alice/proj/src/main.c" {
 		t.Errorf("got %q, want input unchanged", got)
+	}
+}
+
+func TestStripExtendedLengthPrefix(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"no prefix", `C:\proj\src\foo.cpp`, `C:\proj\src\foo.cpp`},
+		{"basic prefix", `\\?\C:\proj\src\foo.cpp`, `C:\proj\src\foo.cpp`},
+		{"UNC prefix", `\\?\UNC\fs\share\foo.cpp`, `\\fs\share\foo.cpp`},
+		{"posix path unaffected", `/usr/include/stdio.h`, `/usr/include/stdio.h`},
+		{"raw UNC unaffected", `\\fs\share\foo.cpp`, `\\fs\share\foo.cpp`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stripExtendedLengthPrefix(tc.in); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
