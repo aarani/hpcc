@@ -25,9 +25,6 @@
   source end-to-end through the full vsock + agent pipeline.
 
 - **Open:**
-  - §4.2 snapshot/restore — today the pool just keeps warm VMs in RAM
-    on idle; cold-restart on resume. Driving Firecracker directly
-    means snapshot/restore is on the table; not yet wired.
   - §4.1.1 Windows hcsshim path — runtime interface ready; backend
     not implemented.
   - §4.11 VM-crash reaping with scheduler reroute — partial today
@@ -117,12 +114,17 @@ the boundary, not who orchestrates it.
 
 Items that were downgraded under firecracker-containerd come back:
 
-- **Snapshot/restore for VM warm-up.** Driving Firecracker directly puts the
-  §4.2 "snapshot-on-idle, ~10ms restore" approach back on the table instead
-  of the "warm in RAM, cold-boot on resume" fallback.
 - **Tighter control over kernel + boot config.** No shim opinions to fight.
 - **One fewer moving part on the worker host** — no containerd daemon, no
   shim, no devmapper pool to babysit on Linux.
+
+Snapshot/restore was on the candidate list here too, but the warm-VM
+pool already lands compiles into a running guest with zero boot tax —
+Firecracker's cold boot is ~125 ms, the session timeout is hours, and
+the steady-state cost of a snapshotted-on-idle restore vs. a fresh
+boot is rounding noise against the compile itself. The warm pool plus
+hard session timeout is the production answer; snapshot/restore is
+deferred indefinitely.
 
 ### 4.1.1 Worker Runtime Abstraction (Linux vs. Windows)
 
@@ -184,16 +186,19 @@ build with thousands of invocations. Instead:
 - **Per-compile work** is dispatched as one Exec into the running VM —
   Linux via the in-VM agent's bidi gRPC stream over vsock, Windows via
   containerd `Task.Exec`. No shell required in the user's image.
-- **Idle timeout** (e.g. 5–15 min) → snapshot the VM and unload it from
-  memory; ~10ms restore on next demand. Driving Firecracker directly
-  makes this practical (under firecracker-containerd it had been
-  downgraded to "warm in RAM, cold-boot on resume" because the
-  snapshot/restore story was rough). The pool today implements the
-  warm-in-RAM half; snapshot/restore is open follow-up.
-- **LRU eviction** of warm/snapshotted VMs under memory or disk pressure.
-- **Hard session timeout** (e.g. shift change, N hours) → blow the VM away,
-  discard the snapshot. Long-lived per-tenant state accumulates and someone
-  will eventually ask what's in it. Already enforced by `PooledRuntime`
+- **Idle timeout** (e.g. 5–15 min) → tear the VM down. The pool keeps
+  the VM warm in RAM until the timer fires, then frees memory; the
+  next demand from that tenant cold-boots a fresh VM (~125 ms, hidden
+  by build setup time on any non-trivial build). Snapshot/restore was
+  on the table when driving Firecracker directly came back into scope;
+  in practice the warm-pool window covers the active-build case at
+  zero latency tax, and outside that window Firecracker boots fast
+  enough that snapshot/restore isn't worth its operational surface.
+  Deferred indefinitely.
+- **LRU eviction** of warm VMs under memory pressure.
+- **Hard session timeout** (e.g. shift change, N hours) → blow the VM
+  away. Long-lived per-tenant state accumulates and someone will
+  eventually ask what's in it. Already enforced by `PooledRuntime`
   via `vm.session_timeout`.
 
 ### 4.3 Container Image as the Build Environment
@@ -460,6 +465,11 @@ specific deployment topology, and the trust story for "client
 filesystem appears in the worker's VM" was hard to defend in a
 multi-tenant setup.)
 
+The cross-tenant probe disclosure and the missing per-tenant
+upload quota called out in this section's history are addressed
+together by promoting `tenant_id` to a storage namespace boundary
+— design in [docs/multi-tenant.md](../multi-tenant.md).
+
 ### 4.6 Build-System Compatibility (CMake/ninja/make)
 
 CMake configure runs on the **driving machine**, not in the VM. By the time
@@ -536,6 +546,12 @@ This keeps the scheduler off the data path. It handles ~1 KB route
 lookups, not multi-MB artifact transfers. A single scheduler can serve
 thousands of concurrent compiles without becoming a bottleneck.
 
+The single-IdP assumption baked into this section is lifted in
+[docs/multi-tenant.md](../multi-tenant.md): the scheduler holds a
+per-tenant IdP table, exposes an unauthenticated `GetTenantIdP`
+discovery RPC, and validates each incoming JWT against the
+tenant-claimed IdP's JWKS.
+
 ### 4.9 Worker
 
 - `hpcc worker --scheduler <addr>` — connects to the scheduler, drives
@@ -544,8 +560,8 @@ thousands of concurrent compiles without becoming a bottleneck.
     Firecracker VMM lifecycle, and the host-side end of the agent
     gRPC stream.
   - **Windows**: containerd + hcsshim with Hyper-V isolation (follow-up).
-- Maintains per-tenant VMs, snapshots on idle timeout (Linux, follow-up),
-  evicts under memory pressure.
+- Maintains per-tenant VMs, tears them down on idle timeout, evicts
+  under memory pressure.
 - Receives `Compile` RPCs **directly from client daemons** (not via the
   scheduler). For each job, sends an Exec into the right per-tenant VM
   with a fully-resolved argv; captures stdio + exit code via the agent
@@ -729,5 +745,5 @@ any pipeline change.
 
 A 16-core machine effectively compiles with `-j64` by distributing to
 3 other machines in the cluster. Each tenant's compiles run in their own
-Firecracker VM (driven directly by hpcc), reused across the build,
-snapshotted on idle timeout, with no network access from inside the VM.
+Firecracker VM (driven directly by hpcc), reused across the build, torn
+down on idle, with no network access from inside the VM.

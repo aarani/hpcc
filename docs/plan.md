@@ -51,3 +51,8 @@ Related sub-plans:
   alongside the default PREPROCESSED. Probe-then-upload, `.hpcc`
   project marker for cross-developer hits, paranoid-mode-friendly
   trust boundary, `.S`/`.incbin` support.
+- [Multi-tenant isolation](multi-tenant.md) — promoting `tenant_id`
+  from a JWT label to a namespace boundary: per-tenant IdP at the
+  scheduler, per-tenant storage prefixes on every store, per-tenant
+  upload quota on `UploadBlobs`. Closes the §4.5 cross-tenant probe
+  disclosure by construction.

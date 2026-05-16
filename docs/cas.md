@@ -222,12 +222,14 @@ a wasted probe (miss → client proceeds to upload dance → worker
 materializes for real and computes the *real* cache_key on the way
 out). The probe is not a cache-write path; it cannot poison.
 
-**Content-addressed disclosure caveat.** A client that knows another
-tenant's source closure can fetch that tenant's compile output via
-the probe — same property Bazel has. Mitigation if desired: a
-paranoid-extra config knob that mixes `tenant_id` into the cache
-key. Off by default (kills cross-developer sharing); separate
-follow-up, not part of this rollout.
+**Content-addressed disclosure caveat.** As shipped, a client that
+knows another tenant's source closure can fetch that tenant's
+compile output via the probe — same property Bazel has. Closed in
+[docs/multi-tenant.md](multi-tenant.md) by promoting `tenant_id` to
+a storage namespace prefix on the probe cache (and everywhere
+else), so tenant A probing with tenant B's manifest digest hits a
+different key and misses cleanly. Cross-developer sharing inside a
+tenant is preserved.
 
 ### Step 3 — Worker-side lookup (single-layer)
 
@@ -494,12 +496,14 @@ stderr explains why the cache/remote was bypassed for that compile.
   of parallel streams. Revisit if profiling shows the single
   `UploadBlobs` stream saturating before the worker's compile pool
   does.
-- **Per-tenant write quota.** Not yet implemented. The Step 4
-  design calls for a token bucket on bytes/sec and bytes/window
-  keyed by `tenant_id`, with hard-reject + client-side local
-  fallback (vs. backpressure) so the build never blocks
-  indefinitely. Deferred until a multi-tenant deployment actually
-  needs it; single-tenant CI use is unbounded today.
+- **Per-tenant write quota.** Designed end-to-end in
+  [docs/multi-tenant.md](multi-tenant.md) as part of the multi-
+  tenant isolation rollout — token bucket on bytes/window keyed by
+  `tenant_id`, with hard-reject + client-side local fallback (vs.
+  backpressure) so the build never blocks indefinitely. Quota
+  parameters live in the scheduler tenants table and are pushed to
+  workers via the existing heartbeat channel. Not yet wired;
+  single-tenant CI use is unbounded today.
 
 ## What this does *not* change
 

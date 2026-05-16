@@ -162,6 +162,6 @@ Surface:
 
 - LRU with max size (default 10GB) for local cache.
 - Watermark-gated eviction for S3 cache (§3.5) — already implemented.
-- LRU for converted rootfs blobs and VM snapshots.
+- LRU for converted rootfs blobs.
 - `hpcc clean --max-size 5G`, `hpcc clean --max-age 30d`.
 - Daemon runs periodic eviction in the background.

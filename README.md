@@ -70,7 +70,7 @@ multi-tenant, and on the audit trail.**
   for something whose value proposition is "this lives in regulated
   environments for years," depending on unmaintained orchestration is the
   wrong direction). Separate kernel, KVM boundary; the VM stays warm across
-  compiles, snapshotted on idle timeout. **gVisor was considered and
+  compiles in a per-tenant pool, torn down on idle. **gVisor was considered and
   rejected:** it's a userspace kernel intercepting syscalls, not the
   kernel+KVM boundary a regulated security review actually recognises. No
   competing OSS distributed compiler ships hardware-virtualised
@@ -204,8 +204,8 @@ inline). See **Limitations** below for what's still in-flight.
 ### Phase 5 — Observability & Polish
 `hpcc inspect <hash>` and `hpcc explain <file>` with structured miss
 reasons. Prometheus endpoints on daemon, scheduler, worker. TOML config
-resolved via `os.UserConfigDir()`. LRU eviction for cache, rootfs blobs,
-and VM snapshots.
+resolved via `os.UserConfigDir()`. LRU eviction for cache and rootfs
+blobs.
 
 ---
 
@@ -234,25 +234,23 @@ follow-up.
   entry shape can't represent.
 - **No Windows backend yet.** Linux/Firecracker only; the hcsshim
   Hyper-V container runtime is planned (§4.1.1).
-- **No VM snapshot/restore yet.** The pool keeps warm VMs in RAM;
-  idle eviction frees memory but loses state (§4.2).
 - **Toolchain parity between local and FC is manual.** Local mode
   runs the host's gcc; FC mode runs the OCI image's gcc. Different
   versions silently produce different `.o` for the same cache key,
   defeating cross-developer hit rates. Pin the image patch version
   (e.g. `gcc:13.2.0`) to match the host until §4 ships an automatic
   parity check.
-- **No per-tenant CAS upload quota.** §4.5 / [docs/cas.md](docs/cas.md)
-  Step 4 calls for a token bucket on bytes/sec + bytes/window keyed
-  by `tenant_id`, with hard-reject + client-side local fallback. Not
-  wired yet; single-tenant CI use is unbounded. Multi-tenant
-  deployments should hold off until this lands.
-- **CAS probe is cross-tenant disclosive.** §4.5 / [docs/cas.md](docs/cas.md)
-  Step 2a: a tenant that knows another tenant's source closure can
-  fetch that tenant's compile output via `ProbeCompileCache` — same
-  property Bazel has. The fix (mix `tenant_id` into the cache key
-  via a paranoid-extra knob) is designed but unimplemented; off by
-  default because it kills cross-developer sharing. Enable only if
-  the threat model needs it.
+- **Single-IdP, single-namespace tenancy.** Today `tenant_id` is a
+  JWT label threaded through routing and audit, but the scheduler
+  validates against one IdP and every store keys by content digest
+  with no tenant prefix. Consequences: (a) one scheduler can't
+  serve multiple orgs' IdPs; (b) tenant A guessing tenant B's
+  manifest digest can fetch B's compile output via
+  `ProbeCompileCache` (same shape Bazel has); (c) no per-tenant
+  CAS upload quota, so multi-tenant CAS is unbounded. The fix is
+  designed end-to-end in [docs/multi-tenant.md](docs/multi-tenant.md)
+  — per-tenant IdP table, storage-path tenant prefix, per-tenant
+  quota — and lands as one feature. Multi-tenant deployments should
+  hold off until it ships.
 - **No `hpcc explain <file>`.** Structured cache-miss reasons are
   Phase 5.
