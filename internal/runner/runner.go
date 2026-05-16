@@ -6,6 +6,7 @@ package runner
 
 import (
 	"os"
+	"path/filepath"
 
 	"github.com/aarani/hpcc/internal/compiler"
 	"github.com/aarani/hpcc/internal/daemon/client"
@@ -61,6 +62,22 @@ func Run(ctx *compiler.Context, args []string) error {
 			if err != nil {
 				return err
 			}
+			// Capture the user's -Wp,-MMD,<path> / -MF <path> .d
+			// outputs the compiler just wrote so the cache stores
+			// them and warm hits can replay them. Without this,
+			// warm rebuilds after `make clean` get the .o back but
+			// no .d, and tools that re-read the .d (kernel fixdep,
+			// ninja's depfile parser) fail. Same shape as the
+			// daemon path in internal/daemon/daemon.go.
+			if extras := compiler.CollectDepEmissionExtras(inv); extras != nil {
+				if result.Extras == nil {
+					result.Extras = extras
+				} else {
+					for k, v := range extras {
+						result.Extras[k] = v
+					}
+				}
+			}
 			ctx.Cache.Store(inv, result)
 		}
 	} else {
@@ -72,6 +89,20 @@ func Run(ctx *compiler.Context, args []string) error {
 
 	if (inv.Output != "") && (result.Output != nil) {
 		os.WriteFile(inv.Output, result.Output, 0644)
+	}
+
+	// Materialise side-effect outputs (.d files etc.) under inv.Cwd.
+	// Runs on cache-hit and cache-miss results alike: on a hit the
+	// extras come back from the cache blob, on a miss they came from
+	// the compiler invocation above. Either way, the user's build
+	// rules expect to find the .d file on disk after this returns.
+	for path, bytes := range result.Extras {
+		full := path
+		if !filepath.IsAbs(path) && inv.Cwd != "" {
+			full = filepath.Join(inv.Cwd, path)
+		}
+		_ = os.MkdirAll(filepath.Dir(full), 0o755)
+		_ = os.WriteFile(full, bytes, 0o644)
 	}
 
 	if result.Stdout != nil {
