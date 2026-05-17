@@ -67,9 +67,20 @@ Make it easy to understand what hpcc is doing and why.
   cross-binary `hpcc.security_events_total{component,event,tenant_id}`
   registered into `logging.Security` via a hook in
   `internal/logging` so every existing call site fires a counter
-  without touching the call site. Observable gauges (active
-  containers, registered workers, cache size) are left for a
-  follow-up.
+  without touching the call site.
+- **Done — §5.1 observable gauges:** `internal/metrics/gauges.go`
+  exposes `RegisterDaemonInflight` /
+  `RegisterWorkerInflight` / `RegisterWorkerContainers` /
+  `RegisterSchedulerWorkers`; each binary's main() hands in a
+  snapshot callback right after `metrics.Init`. The callbacks read
+  from `DefaultDaemon.Inflight()` (atomic counter bumped in
+  `handleRequest`), `Worker.Inflight()` (existing `inflight`
+  atomic exposed for the gauge), `PooledRuntime.EntriesByTenant()`
+  (new snapshot of pool entries bucketed by tenant_id), and
+  `Scheduler.RegisteredWorkers()` (sync.Map range). Cache-bytes
+  gauges (local disk, rootfs) are still open — they need a cheap
+  size-snapshot path on the store backends to avoid scanning on
+  every scrape.
 
 ### 5.1 Stats & Metrics
 
@@ -87,10 +98,11 @@ daemon question.
   size, active VMs, compilation time saved. *Not yet wired to the
   metrics surface — `stats` still reads on-disk cache state.*
 - Per-build summary printed at build end. *Open.*
-- Observable gauges (active containers, registered workers,
-  cache size, in-flight compiles). *Open* — the counter surface
-  is in place; gauges need observer callbacks on the worker pool
-  and scheduler state.
+- Observable gauges shipped for in-flight compiles (daemon +
+  worker), active container pool entries by tenant (worker), and
+  registered worker count (scheduler). Cache-bytes gauges (local
+  disk, rootfs) are still open — they need a cheap size-snapshot
+  path on the store backends to avoid scanning on every scrape.
 
 ### 5.2 Cache Inspection
 

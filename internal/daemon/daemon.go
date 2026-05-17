@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -56,6 +57,12 @@ type DefaultDaemon struct {
 	// using -save-temps on every TU doesn't spam the log — the user
 	// reads it once on the first such compile and knows.
 	sideEffectNoticeOnce sync.Once
+
+	// inflight counts compile requests currently being handled.
+	// Bumped at the top of handleRequest and decremented on return;
+	// surfaced via the hpcc.daemon.inflight_compiles observable
+	// gauge. Atomic so the metrics callback never takes a lock.
+	inflight atomic.Int32
 }
 
 // sideEffectBypassNotice is the one-time message the daemon prepends
@@ -285,6 +292,9 @@ func resolveRelativePaths(args []string, cwd string) []string {
 }
 
 func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *sync.Mutex) {
+	d.inflight.Add(1)
+	defer d.inflight.Add(-1)
+
 	compileRequest := gen.CompileRequest{}
 
 	if err := proto.Unmarshal(bytes, &compileRequest); err != nil {
@@ -545,6 +555,10 @@ func redWarning(err error) []byte {
 	const red = "\033[31m"
 	return []byte(red + "hpcc: remote dispatch failed (" + err.Error() + "); compiled locally" + reset + "\n")
 }
+
+// Inflight returns the current count of compile requests being
+// handled. Exposed for the metrics observable gauge.
+func (d *DefaultDaemon) Inflight() int32 { return d.inflight.Load() }
 
 func (d *DefaultDaemon) Run(force bool) error {
 	if existing := client.Load(); !force && existing != nil {

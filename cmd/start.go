@@ -64,7 +64,11 @@ daemon without manually cleaning up that file.`,
 			_ = metricsResult.Shutdown(shutdownCtx)
 		}()
 
-		return daemon.NewDefaultDaemon().Run(isForceStart)
+		d := daemon.NewDefaultDaemon()
+		if err := metrics.RegisterDaemonInflight(d.Inflight); err != nil {
+			return err
+		}
+		return d.Run(isForceStart)
 	},
 }
 

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -221,6 +222,30 @@ func (p *PooledRuntime) Close() error {
 		}
 	}
 	return p.inner.Close()
+}
+
+// EntriesByTenant returns the current count of live container entries
+// keyed by tenant_id. Snapshot; safe to call concurrently with Start /
+// Close. Exposed for the worker's active-containers observable gauge.
+//
+// "Live entries" includes both currently-borrowed (refs > 0) and idle
+// pooled-but-warm containers — the gauge's audience is "how many VMs
+// is this worker actually holding open for this tenant," not "how
+// many Exec calls are running."
+func (p *PooledRuntime) EntriesByTenant() map[string]int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make(map[string]int, len(p.entries))
+	for key, list := range p.entries {
+		// poolKey is "tenant_id|image_digest"; split once and bucket
+		// by tenant so the gauge stays bounded cardinality.
+		tenant := key
+		if i := strings.IndexByte(key, '|'); i >= 0 {
+			tenant = key[:i]
+		}
+		out[tenant] += len(list)
+	}
+	return out
 }
 
 // outstandingLocked reports whether any entry still has refs > 0.
