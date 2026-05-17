@@ -2,6 +2,39 @@
 
 Make it easy to understand what hpcc is doing and why.
 
+**Progress so far:**
+
+- **Done — process-wide structured logging:** every binary (daemon,
+  scheduler, worker, agent, bench/fcstack) is on `go.uber.org/zap`
+  through `internal/logging` (and a mirror inside the agent module,
+  which can't import `internal/`). `HPCC_LOG_LEVEL` and
+  `HPCC_LOG_FORMAT` env vars pick level and console-vs-JSON output;
+  default is info/console to stderr.
+- **Done — §5.5 security-event channel (structured-log half):**
+  `logging.Security(event, msg, fields...)` at every misbehaving-
+  client validation site across daemon auth, worker `Compile` /
+  `ProbeCompileCache` / `FindMissingBlobs` / `UploadBlobs`, scheduler
+  `Authenticate` / `Route` / `RegisterWorker` / `Heartbeat`, and
+  agent `Exec`. Each entry carries `category=security`,
+  `severity=critical`, an `event=<kebab-case>` tag, `rpc=<method>`,
+  and the tenant / worker / image identifiers in context; JWT-
+  validation events also attach the unverified claims payload under
+  `jwt_claims_unverified` for forensics without ever logging the raw
+  bearer token. Prometheus counters and the durable-sidecar half of
+  §5.5 are still open.
+- **Done — §5.8 OTel tracing on the worker compile pipeline:**
+  `internal/tracing` boots an OTLP/gRPC exporter when
+  `OTEL_EXPORTER_OTLP_ENDPOINT` is set (no-op otherwise);
+  `otelgrpc.NewServerHandler` is installed on the worker gRPC
+  server so each inbound RPC gets a root span with the upstream
+  `traceparent` honoured. `Worker.Compile` emits child spans for
+  `verify_manifest`, `ensure_image`, `stage_source`,
+  `runtime_start`, `cache_lookup`, `invoke`, `collect_extras`, and
+  `cache_store`, with per-phase attributes (image digest, vCPU
+  count, cache_hit, exit_code, duration_ms) so a slow or failing
+  compile shows the failing phase directly in the trace UI. Daemon,
+  scheduler, and agent tracing are follow-ups under §5.8.
+
 ### 5.1 Stats & Metrics
 
 - `hpcc stats` — hit rate (local/remote/distributed), miss reasons, cache
@@ -88,6 +121,10 @@ file  = "..."
 
 ### 5.5 Security Event Log
 
+**Status:** structured-log half shipped (see "Progress so far"
+above). Prometheus counters and the durable-sidecar sink remain
+open.
+
 The §4.12 audit trail is the *success* table — one row per
 completed compile, reproducible by digest. The security event log
 is its complement: one record per *rejected* or *anomalous*
@@ -146,21 +183,30 @@ Categories worth logging:
 
 Surface:
 
-- **Structured log** to the same writer the rest of the
-  component uses, with `level = "warn"` or `"error"` depending
-  on severity. Auth failures and CAS abuse default to `warn` (a
-  single occurrence is a misconfigured client; a flood is
-  something else); wire violations and tar-bomb caps default to
-  `error` (no client should ever produce one).
+- **Structured log** (shipped via `logging.Security` in
+  `internal/logging`): zap-format entries at ERROR level —
+  bumped from the original `warn`/`error` split — every event
+  carries `category=security`, `severity=critical`,
+  `event=<kebab-case identifier>` (e.g. `worker-token-invalid`,
+  `agent-path-traversal`, `worker-manifest-digest-mismatch`),
+  `rpc=<method>`, plus the tenant / worker / image / remote-addr
+  context known at the call site. JWT-validation events attach
+  the unverified claims under `jwt_claims_unverified` for
+  forensics; raw token bytes are never logged. Field-name
+  reconciliation against this section's original sketch:
+  `category` collapses what the sketch called `component+kind`,
+  `event` is the row's stable group-by key, the
+  per-call identifiers stand in for `actor` / `request_id` until
+  a real request-ID propagation lands.
 - **Prometheus counters** labelled by `(component, kind,
-  tenant_id)` so dashboards can alert on rate. `tenant_id` is
-  bounded cardinality in any realistic deployment; if it isn't,
-  drop it from the label set and keep the structured-log version
-  for forensics.
-- **Durable sidecar.** Same sink as the §4.12 audit trail —
-  whichever durable target the operator wires up should receive
-  both streams so an investigator doesn't have to join across
-  systems.
+  tenant_id)` so dashboards can alert on rate — **not yet
+  shipped**. `tenant_id` is bounded cardinality in any realistic
+  deployment; if it isn't, drop it from the label set and keep
+  the structured-log version for forensics.
+- **Durable sidecar** — **not yet shipped.** Same sink as the
+  §4.12 audit trail — whichever durable target the operator
+  wires up should receive both streams so an investigator doesn't
+  have to join across systems.
 
 ### 5.6 Eviction
 
@@ -207,3 +253,72 @@ Open at land-time:
 - **Worker-restart resets the bucket.** Acceptable since this is
   best-effort fair-sharing, not a billing meter. If real billing
   is ever wanted, push the meter to the scheduler.
+
+### 5.8 Distributed Tracing (OpenTelemetry)
+
+**Status:** worker compile path shipped (see "Progress so far"
+above). Daemon, scheduler, and agent are follow-ups.
+
+The §5.1 Prometheus surface tells you *that* something is slow;
+distributed tracing tells you *which phase of which compile* is
+slow — and propagates the trace across the client → scheduler →
+worker → agent hops so a P95 regression isn't a guessing game
+across four log files.
+
+Wire: OTel SDK + OTLP/gRPC exporter, activated only when
+`OTEL_EXPORTER_OTLP_ENDPOINT` (or the trace-specific variant) is
+set. Without it, `internal/tracing.Init` returns a no-op shutdown
+and the global tracer stays noop — instrumentation in the rest of
+the codebase compiles and runs but emits nothing, so unconfigured
+deployments don't need a collector. W3C `traceparent` + baggage
+propagators are installed unconditionally so an incoming
+`traceparent` header is honoured even when this process isn't
+exporting.
+
+gRPC servers install `otelgrpc.NewServerHandler()` as a
+`StatsHandler`, which auto-creates a root span per inbound RPC
+and extracts the upstream `traceparent`. Per-phase child spans
+are opened by hand inside the RPC handler so trace UIs render
+the actual hot phases (image pull vs cold runtime start vs
+in-VM compile) rather than a single opaque RPC bar.
+
+Phase coverage today:
+
+- **Worker `Compile`** — `verify_manifest` (CAS only),
+  `ensure_image`, `stage_source`, `runtime_start`, `cache_lookup`,
+  `invoke`, `collect_extras`, `cache_store`. Attributes:
+  `hpcc.tenant_id`, `hpcc.image_digest`, `hpcc.source_mode`,
+  `hpcc.container_id`, `hpcc.vm.vcpus`, `hpcc.cache_hit`,
+  `hpcc.exit_code`, `hpcc.duration_ms`, `hpcc.output_bytes`,
+  `hpcc.extra_count`. Errors are recorded via
+  `span.RecordError` + `Error` status so a failing compile shows
+  the failing phase highlighted in the trace UI.
+
+Follow-ups:
+
+- **Worker CAS RPCs** (`ProbeCompileCache`, `FindMissingBlobs`,
+  `UploadBlobs`) — root spans land via otelgrpc but per-blob /
+  per-frame child spans are not wired yet. Worth a span per blob
+  on the upload commit path so a slow CAS upload narrows to
+  "which blob" instantly.
+- **Scheduler RPCs** (`Authenticate`, `Route`, `RegisterWorker`,
+  `Heartbeat`) — otelgrpc is one-line to add and ties scheduler
+  routing decisions into the same trace as the compile they
+  served.
+- **Daemon → worker dispatch** — the daemon's
+  [`dispatch.Dispatcher`](../../internal/daemon/dispatch/) opens a
+  gRPC client connection but doesn't yet install
+  `otelgrpc.NewClientHandler()`. Once it does, a client compile
+  produces one connected trace across daemon → scheduler →
+  worker (and on into the agent once §4.4.1 picks up the
+  propagator). Until then the worker spans stand alone.
+- **Agent in-VM `Exec`** — the host-side runtime calls
+  `Container.Exec`; threading the trace context into the agent
+  requires plumbing a `traceparent` field through
+  `proto/agent/agent.proto`'s `ExecHeader`. Cheap on the wire,
+  defer until daemon-side propagation lands.
+- **Sampling.** Default is `AlwaysSample` (i.e. whatever the SDK
+  defaults to). Production with high RPS will want
+  `ParentBased(TraceIDRatioBased(0.01))` or similar — wire via
+  the standard `OTEL_TRACES_SAMPLER` env var when this becomes a
+  problem; no code changes needed.
