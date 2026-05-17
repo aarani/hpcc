@@ -73,21 +73,29 @@ Make it easy to understand what hpcc is doing and why.
   under `$os.UserCacheDir/hpcc/explain/` (LRU eviction at 10k
   records, atomic rename on Put). The daemon writes one record on
   every compile attempt — hit, miss, bypass, error — carrying
-  hex-SHA-256 sub-hashes of the inputs the cache key was built
-  from: compiler identity (from `Compiler.Identity()`), canonical
-  flags (from the new `compiler.CacheKeyFlagsBytes` accessor — same
-  bytes the cache key consumes), source content, per-header content
-  (paths parsed out of the `.d` file the compile produced, either
-  on disk locally or shipped back as an extra by the worker), and
-  the dispatcher's image digest when remote. The diff against the
-  prior record is computed at write time (the daemon has both in
-  hand) and embedded into the new record's `diffs` field, so the
-  CLI is a pure read. `hpcc explain <source>` renders the latest
-  outcome and the named change list:
-  `compiler` / `flags` / `source` / `header <path>` / `image`.
-  MSVC per-header attribution waits on capturing the
-  `/showIncludes` stream into the record; output-path lookup
-  (`hpcc explain foo.o`) waits on a second index.
+  hex sub-hashes of the inputs the cache key was built from:
+  compiler identity (from `Compiler.Identity()`),
+  canonical flags (from the new `compiler.CacheKeyFlagsBytes`
+  accessor — same bytes the cache key consumes), source content,
+  per-header content (paths and BLAKE3-256 digests pulled
+  straight from the CAS source-closure manifest the daemon already
+  builds for cache-key computation — same source as the wire-side
+  manifest, so MSVC and gcc/clang share one code path and the
+  user's `-MMD` flag stops mattering), and the dispatcher's image
+  digest when remote. The new `compiler.CacheKeyWithManifest` /
+  `ComputeHashWithManifest` accessors return the manifest along
+  with the key so the daemon avoids a second `BuildManifest` pass
+  just for explain. Records also carry a
+  `header_hash_algo` field so the diff engine handles a future
+  algorithm change without producing meaningless cross-algo
+  content diffs. The diff against the prior record is computed at
+  write time (the daemon has both in hand) and embedded into the
+  new record's `diffs` field, so the CLI is a pure read. `hpcc
+  explain <source>` renders the latest outcome and the named
+  change list: `compiler` / `flags` / `source` / `header <path>`
+  / `image`. Output-path lookup (`hpcc explain foo.o`) and
+  worker-direct compiles (no daemon in the path) remain open
+  follow-ups.
 - **Done — §5.1 observable gauges:** `internal/metrics/gauges.go`
   exposes `RegisterDaemonInflight` /
   `RegisterWorkerInflight` / `RegisterWorkerContainers` /
@@ -152,17 +160,21 @@ Categories surfaced today:
   changed
 
 Still open:
-- MSVC per-header attribution. gcc / clang dep emission lands in
-  `.d` files the daemon already collects; MSVC writes the same
-  data to stderr via `/showIncludes`, which the daemon doesn't
-  capture today.
 - Output-path lookup (`hpcc explain foo.o`). Source path only in
   the MVP — adding it needs a second index file mapping output →
   source.
-- Worker-only compiles. Compiles that never traversed the daemon
-  (e.g. CI calling the wrapper without a running daemon) leave
-  no explain record. A worker-side explain feed merged into the
-  daemon view is a follow-up.
+- Worker-direct compiles (no daemon in the path). Today only the
+  daemon writes records; a wrapper invocation with no running
+  daemon, or a worker-side compile that bypasses daemon dispatch,
+  leaves no entry. CAS-mode dispatched compiles via the daemon do
+  get header attribution from the manifest (the daemon builds the
+  same manifest the dispatcher would).
+- Local-mode (non-CAS) compiles without `-MMD`. PREPROCESSED-mode
+  daemons and the worker's ManifestDigest short-circuit don't
+  build a manifest, so explain falls back to no header tracking
+  for those paths. Calling `Compiler.FindDependencies` ourselves
+  would close the gap but adds a per-compile preprocessor pass —
+  opt-in via config, not on by default.
 
 ### 5.4 Configuration
 

@@ -74,7 +74,8 @@ type Record struct {
 	CompilerIdentityHash string            `json:"compiler_identity_hash,omitempty"`
 	FlagsHash            string            `json:"flags_hash,omitempty"`
 	SourceContentHash    string            `json:"source_content_hash,omitempty"`
-	HeaderHashes         map[string]string `json:"header_hashes,omitempty"` // header path → sha256
+	HeaderHashes         map[string]string `json:"header_hashes,omitempty"` // header path → hex digest under HeaderHashAlgo
+	HeaderHashAlgo       string            `json:"header_hash_algo,omitempty"` // "blake3" (from manifest) | "sha256" (recomputed) | "" (no headers)
 	ImageDigest          string            `json:"image_digest,omitempty"`
 
 	// Human-readable context for `hpcc explain`'s output.
@@ -145,6 +146,12 @@ func (r *Record) CompareTo(prior *Record) []Diff {
 	}
 	// Header diffs: walk both maps so added/removed entries show up
 	// alongside changed ones. Sort the union for deterministic order.
+	// Skip per-content compares when the hash algorithm changed
+	// across records (e.g. the writer switched from .d-file SHA-256
+	// to manifest-derived BLAKE3) — the strings aren't comparable.
+	// Added / removed paths still surface; only "changed" diffs are
+	// suppressed in that case so the user can still see scope churn.
+	algoMatch := r.HeaderHashAlgo == prior.HeaderHashAlgo
 	seen := map[string]struct{}{}
 	for p := range r.HeaderHashes {
 		seen[p] = struct{}{}
@@ -161,7 +168,7 @@ func (r *Record) CompareTo(prior *Record) []Diff {
 		now, hadNow := r.HeaderHashes[p]
 		then, hadThen := prior.HeaderHashes[p]
 		switch {
-		case hadNow && hadThen && now != then:
+		case hadNow && hadThen && algoMatch && now != then:
 			out = append(out, Diff{Kind: DiffHeader, Path: p, Before: then, After: now})
 		case hadNow && !hadThen:
 			out = append(out, Diff{Kind: DiffHeader, Path: p, After: now})

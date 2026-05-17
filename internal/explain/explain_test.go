@@ -49,6 +49,44 @@ func TestCompareToNamesChangedFields(t *testing.T) {
 	}
 }
 
+// TestCompareToSuppressesContentDiffWhenAlgoChanges: when the prior
+// record was written under one header-hash algorithm and the new
+// record under another (e.g. old .d-file SHA-256 vs new manifest
+// BLAKE3), the digest strings aren't comparable. Suppress
+// "header changed" content diffs in that case; still surface
+// added / removed paths.
+func TestCompareToSuppressesContentDiffWhenAlgoChanges(t *testing.T) {
+	prior := &Record{
+		HeaderHashAlgo: "sha256",
+		HeaderHashes: map[string]string{
+			"foo.h": "sha256-aaa",
+			"bar.h": "sha256-bbb",
+		},
+	}
+	now := &Record{
+		HeaderHashAlgo: "blake3",
+		HeaderHashes: map[string]string{
+			"foo.h": "blake3-xxx", // would be "changed" but algos differ
+			"baz.h": "blake3-yyy", // genuinely added
+		},
+	}
+	diffs := now.CompareTo(prior)
+
+	// Expect: bar.h removed, baz.h added. NO "foo.h changed" entry
+	// because the cross-algo content compare is meaningless.
+	if len(diffs) != 2 {
+		t.Fatalf("expected 2 diffs (removed + added), got %d: %+v", len(diffs), diffs)
+	}
+	for _, d := range diffs {
+		if d.Kind != DiffHeader {
+			t.Fatalf("unexpected diff kind %q in %+v", d.Kind, d)
+		}
+		if d.Path == "foo.h" {
+			t.Fatalf("foo.h should be suppressed under algo mismatch: %+v", d)
+		}
+	}
+}
+
 func TestCompareToNilPriorReturnsNil(t *testing.T) {
 	r := &Record{FlagsHash: "x"}
 	if diffs := r.CompareTo(nil); diffs != nil {

@@ -328,8 +328,22 @@ func (inv *Invocation) isProbeInvocation() bool {
 // Each chunk written to the hasher is length-prefixed so concatenation
 // can't collide ("ab"+"c" hashes differently from "a"+"bc").
 func (inv *Invocation) CacheKey(ctx *Context) ([]byte, error) {
+	key, _, err := inv.CacheKeyWithManifest(ctx)
+	return key, err
+}
+
+// CacheKeyWithManifest is CacheKey, but also returns the source-closure
+// Manifest when one was built locally as part of cache-key computation
+// (i.e. the CAS-default branch). The returned manifest is nil for
+// every other path: the worker's ManifestDigest / PreprocessedDigest
+// short-circuits, and the PREPROCESSED-mode local path.
+//
+// Surfaced for callers (today: the daemon's `hpcc explain` recorder)
+// that want the per-file digests the manifest already has, without
+// paying a second BuildManifest pass.
+func (inv *Invocation) CacheKeyWithManifest(ctx *Context) ([]byte, *Manifest, error) {
 	if len(inv.Inputs) == 0 {
-		return nil, fmt.Errorf("no input files in invocation")
+		return nil, nil, fmt.Errorf("no input files in invocation")
 	}
 
 	var compilerIdentity []byte
@@ -338,7 +352,7 @@ func (inv *Invocation) CacheKey(ctx *Context) ([]byte, error) {
 	} else {
 		id, err := ctx.Compiler.Identity()
 		if err != nil {
-			return nil, fmt.Errorf("get compiler identity: %w", err)
+			return nil, nil, fmt.Errorf("get compiler identity: %w", err)
 		}
 		compilerIdentity = id
 	}
@@ -350,6 +364,8 @@ func (inv *Invocation) CacheKey(ctx *Context) ([]byte, error) {
 		digest.Write(lenbuf[:])
 		digest.Write(data)
 	}
+
+	var manifest *Manifest
 
 	switch {
 	case inv.ManifestDigest != nil:
@@ -368,10 +384,10 @@ func (inv *Invocation) CacheKey(ctx *Context) ([]byte, error) {
 	case ctx.Config.SourceMode == enum.SourceModePreprocessed:
 		res, err := ctx.Compiler.Preprocess(inv)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if res.ExitCode != 0 {
-			return nil, fmt.Errorf("preprocessor exit %d: %s", res.ExitCode, res.Stderr)
+			return nil, nil, fmt.Errorf("preprocessor exit %d: %s", res.ExitCode, res.Stderr)
 		}
 		// Source bytes are already digested into res.Digest; reuse it
 		// instead of re-hashing the whole preprocessed source.
@@ -386,15 +402,16 @@ func (inv *Invocation) CacheKey(ctx *Context) ([]byte, error) {
 		// from a request carrying the same (path, content) pairs.
 		m, err := BuildManifest(inv, ctx)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		writeChunk(m.Digest[:])
+		manifest = m
 	}
 
 	writeChunk(compilerIdentity)
 	writeChunk(cacheKeyFlags(inv))
 
-	return digest.Sum(nil), nil
+	return digest.Sum(nil), manifest, nil
 }
 
 // ComputeHash runs the preprocessor and returns a hex-encoded BLAKE3-256
@@ -402,11 +419,22 @@ func (inv *Invocation) CacheKey(ctx *Context) ([]byte, error) {
 // preprocessing (PreprocessResult.Digest) so this is a single pass over the
 // bytes, not two.
 func (inv *Invocation) ComputeHash(ctx *Context) (string, error) {
-	res, err := inv.CacheKey(ctx)
+	res, _, err := inv.CacheKeyWithManifest(ctx)
 	if err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(res), nil
+}
+
+// ComputeHashWithManifest is ComputeHash plus the source-closure
+// Manifest built during cache-key computation, or nil when none was
+// built (worker shortcut paths, PREPROCESSED-mode local path).
+func (inv *Invocation) ComputeHashWithManifest(ctx *Context) (string, *Manifest, error) {
+	res, m, err := inv.CacheKeyWithManifest(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	return hex.EncodeToString(res), m, nil
 }
 
 // InvocationResult is the captured output of a single compile run. It is

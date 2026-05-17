@@ -397,7 +397,12 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 			return
 		}
 		metrics.DaemonCompile(context_pkgContext(), metrics.ResultBypass, time.Since(bypassStart))
-		d.recordExplain(context, inv, "", explain.OutcomeBypass, result, "")
+		// Bypass path: no cache key, no manifest, no image. Header
+		// list will be empty — bypass invocations don't go through
+		// the cache-key plumbing that produces a manifest, and the
+		// argv shape that triggers bypass (link, multi-input, stdin)
+		// is rarely worth header attribution anyway.
+		d.recordExplain(context, inv, "", explain.OutcomeBypass, nil, "")
 		// One-shot user-visible warning when the bypass is due to an
 		// uncaptured-side-effect flag specifically (not the other
 		// non-dispatchable cases like stdin / multi-input / link,
@@ -416,8 +421,9 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 
 	var hash string
 	var hashErr error
+	var manifest *compiler.Manifest
 	if locallyCacheable {
-		hash, hashErr = inv.ComputeHash(context)
+		hash, manifest, hashErr = inv.ComputeHashWithManifest(context)
 	}
 
 	// outcome is the path the inner compile() actually took. Captured
@@ -526,7 +532,7 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 	default:
 		explainOutcome = explain.OutcomeLocalInvoke
 	}
-	d.recordExplain(context, inv, hash, explainOutcome, result, imgDigest)
+	d.recordExplain(context, inv, hash, explainOutcome, manifest, imgDigest)
 
 	d.writeCompileResult(conn, writeMu, inv, result)
 }
