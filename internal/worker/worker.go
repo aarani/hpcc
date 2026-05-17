@@ -247,13 +247,9 @@ func buildImageStore(cfg Config) (image.Store, error) {
 	switch cfg.Runtime.Handler {
 	case runtime.HandlerHcsshim:
 		return newHcsshimImageStore(cfg)
+	case runtime.HandlerFirecracker:
+		return newFirecrackerImageStore(cfg)
 	default:
-		// Linux Firecracker uses rootfs.Store but resolves prepared
-		// rootfs files directly by path inside the Firecracker driver
-		// today, not via the image.Store contract. Wiring rootfs.Store
-		// into Worker.ImageStore is tracked separately; until then the
-		// Firecracker path stays at the pre-Windows behaviour where
-		// the worker treats every advertised digest as locally present.
 		return nil, nil
 	}
 }

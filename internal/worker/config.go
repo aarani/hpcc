@@ -153,7 +153,16 @@ type ImageConfig struct {
 	// path; process-isolation containers stick with pause.exe + the
 	// Task.Exec copy-in/copy-out flow (see HcsshimOptions.Isolation
 	// for the why).
-	AgentWindowsAmd64 string   `toml:"agent_windows_amd64"`
+	AgentWindowsAmd64 string `toml:"agent_windows_amd64"`
+	// AgentLinuxAmd64 / AgentLinuxArm64 are the host paths to the
+	// per-arch hpcc-agent binaries the rootfs.Store injects at
+	// /.hpcc/agent inside each prepared squashfs image. Required when
+	// runtime.handler = firecracker — one path per arch the worker
+	// will pull images for. Empty for an arch the worker never pulls
+	// for is fine; PullImage fails fast at request time rather than
+	// at startup.
+	AgentLinuxAmd64   string   `toml:"agent_linux_amd64"`
+	AgentLinuxArm64   string   `toml:"agent_linux_arm64"`
 	AdvertisedDigests []string `toml:"advertised_digests"`
 	IdleTimeout       string   `toml:"idle_timeout"` // e.g. "24h"; empty disables eviction
 }
