@@ -164,7 +164,7 @@ Full plan in [docs/plan.md](docs/plan.md).
 | [Phase 2](docs/plan/phase-2-daemon.md) | Daemon Architecture | Done |
 | [Phase 3](docs/plan/phase-3-remote-cache.md) | Remote Cache (S3) | Done |
 | [Phase 4](docs/plan/phase-4-distributed.md) | Distributed Compilation in Per-Tenant Firecracker VMs | Done |
-| [Phase 5](docs/plan/phase-5-observability.md) | Observability & Polish | Not started |
+| [Phase 5](docs/plan/phase-5-observability.md) | Observability & Polish | In progress |
 
 ### Phase 1 — Core Compiler Wrapping ✅
 Two-grammar (GNU + MSVC) spec-table parser, compiler detection from
@@ -251,6 +251,24 @@ cache hits, and auto-injects family-aware reproducibility flags
 reasons. Prometheus endpoints on daemon, scheduler, worker. TOML config
 resolved via `os.UserConfigDir()`. LRU eviction for cache and rootfs
 blobs.
+
+**What shipped so far:** every binary is on `go.uber.org/zap` through
+`internal/logging`; `HPCC_LOG_LEVEL` / `HPCC_LOG_FORMAT` pick level
+and console-vs-JSON output. The §5.5 security-event channel is wired
+— `logging.Security` fires at every misbehaving-client validation
+site (daemon auth, worker `Compile` + CAS RPCs, scheduler auth/route/
+heartbeat, agent `Exec`) with `category=security`, `severity=critical`,
+and a kebab-case `event` tag a log pipeline can filter and alert on.
+JWT-validation events also attach the unverified claims for forensics
+under `jwt_claims_unverified`; the raw bearer token is never logged.
+OpenTelemetry tracing is wired on the worker behind the standard
+`OTEL_EXPORTER_OTLP_ENDPOINT` env var (no-op without it); `Worker.Compile`
+emits per-phase child spans (`verify_manifest`, `ensure_image`,
+`stage_source`, `runtime_start`, `cache_lookup`, `invoke`,
+`collect_extras`, `cache_store`) so a slow or failing compile shows
+the failing phase directly in Jaeger / Tempo / SigNoz. Prometheus
+counters, durable security-event sidecar, daemon/scheduler/agent
+tracing, and `hpcc explain <file>` are the remaining Phase-5 work.
 
 ---
 
