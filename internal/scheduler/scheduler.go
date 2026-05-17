@@ -12,6 +12,7 @@ import (
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/aarani/hpcc/internal/logging"
+	"github.com/aarani/hpcc/internal/metrics"
 	"github.com/aarani/hpcc/internal/protocol/gen"
 	"github.com/golang-jwt/jwt/v5"
 	"go.uber.org/zap"
@@ -136,6 +137,7 @@ func (s *Scheduler) Authenticate(ctx context.Context, in *gen.AuthRequest) (*gen
 				zap.String("tenant_id", in.TenantId),
 				logging.JWTClaims(t.JwtToken),
 			)
+			metrics.SchedulerAuth(ctx, metrics.ResultAuthFailed)
 			return &gen.AuthResponse{Success: false}, nil
 		}
 
@@ -144,6 +146,7 @@ func (s *Scheduler) Authenticate(ctx context.Context, in *gen.AuthRequest) (*gen
 		// downstream Route calls can reject session_token-for-A used
 		// against tenant_id=B.
 		s.userSessions.Store(sessionToken, in.TenantId)
+		metrics.SchedulerAuth(ctx, metrics.ResultOK)
 		return &gen.AuthResponse{Success: true, SessionToken: sessionToken}, nil
 
 	case *gen.AuthRequest_StaticToken:
@@ -155,11 +158,13 @@ func (s *Scheduler) Authenticate(ctx context.Context, in *gen.AuthRequest) (*gen
 				zap.String("rpc", "Authenticate"),
 				zap.String("auth_method", "static_token"),
 			)
+			metrics.SchedulerAuth(ctx, metrics.ResultAuthFailed)
 			return &gen.AuthResponse{Success: false}, nil
 		}
 
 		sessionToken := rand.Text()
 		s.workerSessions.Store(sessionToken, true)
+		metrics.SchedulerAuth(ctx, metrics.ResultOK)
 		return &gen.AuthResponse{
 			Success:          true,
 			SessionToken:     sessionToken,
@@ -171,6 +176,7 @@ func (s *Scheduler) Authenticate(ctx context.Context, in *gen.AuthRequest) (*gen
 			"scheduler Authenticate rejected: unknown token type",
 			zap.String("rpc", "Authenticate"),
 		)
+		metrics.SchedulerAuth(ctx, metrics.ResultAuthFailed)
 		return &gen.AuthResponse{Success: false}, nil
 	}
 }
@@ -183,6 +189,7 @@ func (s *Scheduler) Route(ctx context.Context, in *gen.RouteRequest) (*gen.Route
 			zap.String("rpc", "Route"),
 			zap.String("tenant_id", in.TenantId),
 		)
+		metrics.SchedulerRoute(ctx, in.TenantId, metrics.ResultAuthFailed)
 		return nil, fmt.Errorf("unauthenticated")
 	}
 	sessTenant, _ := sessVal.(string)
@@ -195,19 +202,23 @@ func (s *Scheduler) Route(ctx context.Context, in *gen.RouteRequest) (*gen.Route
 			zap.String("session_tenant_id", sessTenant),
 			zap.String("request_tenant_id", in.TenantId),
 		)
+		metrics.SchedulerRoute(ctx, in.TenantId, metrics.ResultAuthFailed)
 		return nil, fmt.Errorf("unauthenticated")
 	}
 
 	worker, err := s.pickWorker(in.TenantId, in.ImageDigest)
 	if err != nil {
+		metrics.SchedulerRoute(ctx, in.TenantId, metrics.ResultNoWorker)
 		return nil, err
 	}
 
 	taskToken, err := s.signTaskToken(in.TenantId, in.ImageDigest, worker.WorkerID)
 	if err != nil {
+		metrics.SchedulerRoute(ctx, in.TenantId, metrics.ResultError)
 		return nil, fmt.Errorf("sign task token: %w", err)
 	}
 
+	metrics.SchedulerRoute(ctx, in.TenantId, metrics.ResultOK)
 	return &gen.RouteResponse{
 		WorkerAddress:   worker.PublicAddr,
 		Token:           taskToken,
@@ -364,6 +375,7 @@ func (s *Scheduler) Heartbeat(ctx context.Context, in *gen.WorkerHeartbeat) (*ge
 			zap.String("rpc", "Heartbeat"),
 			zap.String("worker_id", in.WorkerId),
 		)
+		metrics.SchedulerHeartbeat(ctx, metrics.ResultAuthFailed)
 		return nil, fmt.Errorf("unauthenticated")
 	}
 
@@ -374,6 +386,7 @@ func (s *Scheduler) Heartbeat(ctx context.Context, in *gen.WorkerHeartbeat) (*ge
 			zap.Any("session_worker_id", workerID),
 			zap.String("request_worker_id", in.WorkerId),
 		)
+		metrics.SchedulerHeartbeat(ctx, metrics.ResultAuthFailed)
 		return nil, fmt.Errorf("session does not match worker ID")
 	}
 
@@ -384,10 +397,12 @@ func (s *Scheduler) Heartbeat(ctx context.Context, in *gen.WorkerHeartbeat) (*ge
 			zap.String("rpc", "Heartbeat"),
 			zap.String("worker_id", in.WorkerId),
 		)
+		metrics.SchedulerHeartbeat(ctx, metrics.ResultError)
 		return nil, fmt.Errorf("worker %q not registered", in.WorkerId)
 	}
 
 	state := val.(*WorkerState)
 	state.applyHeartbeat(in)
+	metrics.SchedulerHeartbeat(ctx, metrics.ResultOK)
 	return &gen.HeartbeatResponse{}, nil
 }

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 	"golang.org/x/sync/singleflight"
@@ -25,6 +26,7 @@ import (
 	"github.com/aarani/hpcc/internal/daemon/dispatch"
 	"github.com/aarani/hpcc/internal/enum"
 	"github.com/aarani/hpcc/internal/logging"
+	"github.com/aarani/hpcc/internal/metrics"
 	"github.com/aarani/hpcc/internal/runner"
 	"google.golang.org/protobuf/proto"
 
@@ -352,12 +354,15 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 		inv.DispatchableUnderCAS()
 
 	if !locallyCacheable && !casDispatchable {
+		bypassStart := time.Now()
 		result, invokeErr := context.Compiler.Invoke(inv)
 		if invokeErr != nil {
+			metrics.DaemonCompile(context_pkgContext(), metrics.ResultError, time.Since(bypassStart))
 			zap.S().Errorf("compile: %v", invokeErr)
 			d.writeErrorResponse(conn, writeMu, fmt.Sprintf("compile: %v", invokeErr), 1)
 			return
 		}
+		metrics.DaemonCompile(context_pkgContext(), metrics.ResultBypass, time.Since(bypassStart))
 		// One-shot user-visible warning when the bypass is due to an
 		// uncaptured-side-effect flag specifically (not the other
 		// non-dispatchable cases like stdin / multi-input / link,
@@ -380,11 +385,21 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 		hash, hashErr = inv.ComputeHash(context)
 	}
 
+	// outcome is the path the inner compile() actually took. Captured
+	// so the outer record-on-return below can label the metric with
+	// what served the request: cache, worker, or local invoke.
+	outcome := metrics.ResultError
+	compileStart := time.Now()
+	defer func() {
+		metrics.DaemonCompile(context_pkgContext(), outcome, time.Since(compileStart))
+	}()
+
 	compile := func() (any, error) {
 		if locallyCacheable {
 			result, lookupErr := context.Cache.Lookup(inv, d.tenantID)
 			if lookupErr == nil && result != nil {
 				zap.S().Infof("compile: %s cache hit", inv.Output)
+				outcome = metrics.ResultLocalHit
 				return result, nil
 			}
 			zap.S().Infof("compile: %s cache miss, invoking compiler", inv.Output)
@@ -403,6 +418,7 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 				if locallyCacheable {
 					_ = context.Cache.Store(inv, remoteResult, d.tenantID)
 				}
+				outcome = metrics.ResultRemote
 				return remoteResult, nil
 			}
 			zap.S().Infof("compile: %s remote dispatch failed: %v (falling back to local)", inv.Output, remoteErr)
@@ -435,6 +451,7 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 		if locallyCacheable {
 			_ = context.Cache.Store(inv, result, d.tenantID)
 		}
+		outcome = metrics.ResultLocalInvoke
 		return result, nil
 	}
 

@@ -4,7 +4,11 @@ Copyright © 2026 Afshin Arani <afshin@arani.dev>
 package cmd
 
 import (
+	"context"
+	"time"
+
 	"github.com/aarani/hpcc/internal/daemon"
+	"github.com/aarani/hpcc/internal/metrics"
 	"github.com/spf13/cobra"
 )
 
@@ -41,6 +45,24 @@ daemon without manually cleaning up that file.`,
 		if err != nil {
 			isForceStart = false
 		}
+
+		// Daemons run on client machines that typically can't be
+		// scraped, so metrics export here is gated entirely on the
+		// standard OTEL env vars — no /metrics listener. Without a
+		// configured OTLP endpoint Init returns a working noop
+		// MeterProvider so call-site Add()/Record() pays nothing.
+		metrics.SetComponent("daemon")
+		metricsResult, err := metrics.Init(context.Background(), metrics.Options{
+			ServiceName: "hpcc-daemon",
+		})
+		if err != nil {
+			return err
+		}
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = metricsResult.Shutdown(shutdownCtx)
+		}()
 
 		return daemon.NewDefaultDaemon().Run(isForceStart)
 	},

@@ -11,12 +11,13 @@ import (
 )
 
 type Config struct {
-	Listen   string    `toml:"listen"`
-	TLS      TLSConfig `toml:"tls"`
-	Auth     Auth      `toml:"auth"`
-	Tenants  []Tenant  `toml:"tenant"`
-	Routing  Routing   `toml:"routing"`
-	Paranoid bool      `toml:"paranoid"`
+	Listen        string    `toml:"listen"`
+	MetricsListen string    `toml:"metrics_listen"` // optional: HTTP /metrics scrape addr (e.g. ":9191"). Empty disables.
+	TLS           TLSConfig `toml:"tls"`
+	Auth          Auth      `toml:"auth"`
+	Tenants       []Tenant  `toml:"tenant"`
+	Routing       Routing   `toml:"routing"`
+	Paranoid      bool      `toml:"paranoid"`
 }
 
 type TLSConfig struct {

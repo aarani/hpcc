@@ -261,14 +261,27 @@ heartbeat, agent `Exec`) with `category=security`, `severity=critical`,
 and a kebab-case `event` tag a log pipeline can filter and alert on.
 JWT-validation events also attach the unverified claims for forensics
 under `jwt_claims_unverified`; the raw bearer token is never logged.
-OpenTelemetry tracing is wired on the worker behind the standard
-`OTEL_EXPORTER_OTLP_ENDPOINT` env var (no-op without it); `Worker.Compile`
+OpenTelemetry tracing covers both server-side hops: `Worker.Compile`
 emits per-phase child spans (`verify_manifest`, `ensure_image`,
 `stage_source`, `runtime_start`, `cache_lookup`, `invoke`,
-`collect_extras`, `cache_store`) so a slow or failing compile shows
-the failing phase directly in Jaeger / Tempo / SigNoz. Prometheus
-counters, durable security-event sidecar, daemon/scheduler/agent
-tracing, and `hpcc explain <file>` are the remaining Phase-5 work.
+`collect_extras`, `cache_store`); the scheduler installs
+`otelgrpc.NewServerHandler` so `Authenticate` / `Route` /
+`RegisterWorker` / `Heartbeat` each become root spans; and
+`ExecHeader` carries `traceparent` / `tracestate` so the in-VM agent
+can stamp the trace ID onto its log records for cross-system
+correlation. Both run behind the standard
+`OTEL_EXPORTER_OTLP_ENDPOINT` env var (no-op without it). The §5.1
+Prometheus / OTel metrics surface is live: `internal/metrics` wraps
+the OTel metrics SDK with an always-on Prometheus reader on
+scheduler and worker (new `metrics_listen` TOML field; separate
+HTTP listener) and an OTLP push exporter on every binary including
+the daemon (gated on the standard OTLP env vars, so dev laptops
+stay quiet). Counters shipped: per-binary compile/auth/route/
+heartbeat/CAS, plus a cross-binary `hpcc.security_events_total`
+that's wired into `logging.Security` so every existing call site
+emits a sample without touching the call site. Observable gauges,
+durable security-event sidecar, daemon/agent tracing, and `hpcc
+explain <file>` are the remaining Phase-5 work.
 
 ---
 

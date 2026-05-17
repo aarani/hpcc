@@ -9,6 +9,13 @@
 # gRPC listen address.
 listen = ":9091"
 
+# Optional HTTP listen address for the Prometheus /metrics endpoint
+# (Phase 5 §5.1). Empty disables the scrape listener; OTLP metric
+# push still works regardless via the standard
+# OTEL_EXPORTER_OTLP_ENDPOINT env var. Keep this on a separate port
+# from `listen` — it's plain HTTP, not TLS.
+metrics_listen = ":9191"
+
 # TLS for the gRPC server. Both clients and workers dial scheduler over
 # TLS; the CA must be reachable on their side (or pinned via ca_file in
 # their respective configs).

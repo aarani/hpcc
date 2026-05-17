@@ -4,12 +4,19 @@ Copyright © 2026 Afshin Arani <afshin@arani.dev>
 package cmd
 
 import (
+	"context"
 	"crypto/tls"
 	"net"
+	"os/signal"
+	"syscall"
+	"time"
 
+	"github.com/aarani/hpcc/internal/metrics"
 	"github.com/aarani/hpcc/internal/protocol/gen"
 	"github.com/aarani/hpcc/internal/scheduler"
+	"github.com/aarani/hpcc/internal/tracing"
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -63,7 +70,42 @@ Requires TLS (cert_file, key_file) and at least one auth method
 			return err
 		}
 
-		srv := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsCfg)))
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+
+		metrics.SetComponent("scheduler")
+		metricsResult, err := metrics.Init(ctx, metrics.Options{
+			ServiceName:      "hpcc-scheduler",
+			PrometheusReader: cfg.MetricsListen != "",
+		})
+		if err != nil {
+			return err
+		}
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = metricsResult.Shutdown(shutdownCtx)
+		}()
+
+		// Tracing is a no-op unless OTEL_EXPORTER_OTLP_ENDPOINT (or the
+		// trace-specific variant) is set. otelgrpc's stats handler
+		// creates a root span per inbound RPC so scheduler routing
+		// decisions appear alongside the worker spans the client
+		// dialled separately.
+		tracingShutdown, err := tracing.Init(ctx, "hpcc-scheduler")
+		if err != nil {
+			return err
+		}
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tracingShutdown(shutdownCtx)
+		}()
+
+		srv := grpc.NewServer(
+			grpc.Creds(credentials.NewTLS(tlsCfg)),
+			grpc.StatsHandler(otelgrpc.NewServerHandler()),
+		)
 		gen.RegisterSchedulerServiceServer(srv, s)
 
 		lis, err := net.Listen("tcp", cfg.Listen)
@@ -71,8 +113,27 @@ Requires TLS (cert_file, key_file) and at least one auth method
 			return err
 		}
 
-		zap.S().Infof("scheduler listening on %s", lis.Addr())
-		return srv.Serve(lis)
+		errCh := make(chan error, 2)
+		go func() {
+			zap.S().Infof("scheduler listening on %s", lis.Addr())
+			errCh <- srv.Serve(lis)
+		}()
+		if cfg.MetricsListen != "" {
+			go func() {
+				zap.S().Infof("scheduler /metrics on %s", cfg.MetricsListen)
+				errCh <- metrics.ServePrometheus(ctx, cfg.MetricsListen, metricsResult.PromHandler)
+			}()
+		}
+
+		select {
+		case err := <-errCh:
+			srv.GracefulStop()
+			return err
+		case <-ctx.Done():
+			zap.S().Infof("scheduler: shutting down")
+			srv.GracefulStop()
+			return nil
+		}
 	},
 }
 

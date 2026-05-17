@@ -362,13 +362,16 @@ func (c *firecrackerContainer) Exec(ctx context.Context, req ExecRequest) (ExecR
 		cwd = inSrc
 	}
 
+	tp, ts := injectAgentTraceContext(ctx)
 	if err := stream.Send(&agentpb.ExecClientFrame{
 		Frame: &agentpb.ExecClientFrame_Header{
 			Header: &agentpb.ExecHeader{
-				ExecId: req.ExecID,
-				Argv:   argv,
-				Env:    req.Env,
-				Cwd:    cwd,
+				ExecId:      req.ExecID,
+				Argv:        argv,
+				Env:         req.Env,
+				Cwd:         cwd,
+				Traceparent: tp,
+				Tracestate:  ts,
 			},
 		},
 	}); err != nil {

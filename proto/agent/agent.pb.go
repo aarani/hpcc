@@ -181,7 +181,20 @@ type ExecHeader struct {
 	// Output paths the agent should read back from
 	// /run/hpcc/out/<exec_id>/ once the compiler exits, and stream as
 	// OutputFile frames. Paths are relative to that staging dir.
-	Outputs       []string `protobuf:"bytes,5,rep,name=outputs,proto3" json:"outputs,omitempty"`
+	Outputs []string `protobuf:"bytes,5,rep,name=outputs,proto3" json:"outputs,omitempty"`
+	// W3C `traceparent` header value carrying the worker-side span
+	// context that opened this Exec. The agent uses it as the parent
+	// span for any in-VM spans it emits (the compiler exec, side-effect
+	// file reads). Empty when the worker isn't exporting traces — agent
+	// just falls back to a fresh root span (and exports nothing if its
+	// own OTel env isn't set either).
+	//
+	// Standard textmap propagator carries `traceparent` (and optionally
+	// `tracestate`) as separate keys; we keep both on the wire so a
+	// future agent-side propagator chain that wants tracestate doesn't
+	// need another proto roll.
+	Traceparent   string `protobuf:"bytes,6,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
+	Tracestate    string `protobuf:"bytes,7,opt,name=tracestate,proto3" json:"tracestate,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -249,6 +262,20 @@ func (x *ExecHeader) GetOutputs() []string {
 		return x.Outputs
 	}
 	return nil
+}
+
+func (x *ExecHeader) GetTraceparent() string {
+	if x != nil {
+		return x.Traceparent
+	}
+	return ""
+}
+
+func (x *ExecHeader) GetTracestate() string {
+	if x != nil {
+		return x.Tracestate
+	}
+	return ""
 }
 
 // InputFile is one chunk of one input file. The agent writes chunks
@@ -583,14 +610,18 @@ const file_agent_proto_rawDesc = "" +
 	"\x0fExecClientFrame\x123\n" +
 	"\x06header\x18\x01 \x01(\v2\x19.hpcc.agent.v1.ExecHeaderH\x00R\x06header\x120\n" +
 	"\x05input\x18\x02 \x01(\v2\x18.hpcc.agent.v1.InputFileH\x00R\x05inputB\a\n" +
-	"\x05frame\"w\n" +
+	"\x05frame\"\xb9\x01\n" +
 	"\n" +
 	"ExecHeader\x12\x17\n" +
 	"\aexec_id\x18\x01 \x01(\tR\x06execId\x12\x12\n" +
 	"\x04argv\x18\x02 \x03(\tR\x04argv\x12\x10\n" +
 	"\x03env\x18\x03 \x03(\tR\x03env\x12\x10\n" +
 	"\x03cwd\x18\x04 \x01(\tR\x03cwd\x12\x18\n" +
-	"\aoutputs\x18\x05 \x03(\tR\aoutputs\"G\n" +
+	"\aoutputs\x18\x05 \x03(\tR\aoutputs\x12 \n" +
+	"\vtraceparent\x18\x06 \x01(\tR\vtraceparent\x12\x1e\n" +
+	"\n" +
+	"tracestate\x18\a \x01(\tR\n" +
+	"tracestate\"G\n" +
 	"\tInputFile\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x14\n" +
 	"\x05chunk\x18\x02 \x01(\fR\x05chunk\x12\x10\n" +

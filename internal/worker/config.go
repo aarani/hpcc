@@ -13,10 +13,11 @@ import (
 )
 
 type Config struct {
-	Listen     string        `toml:"listen"`      // gRPC listen addr for incoming Compile RPCs
-	WorkerID   string        `toml:"worker_id"`   // empty → auto-generate at startup
-	PublicAddr string        `toml:"public_addr"` // address advertised to the scheduler; clients dial this
-	Paranoid   bool          `toml:"paranoid"`    // mirror of scheduler-side paranoid mode (§4.13)
+	Listen     string        `toml:"listen"`         // gRPC listen addr for incoming Compile RPCs
+	MetricsListen string     `toml:"metrics_listen"` // optional: HTTP /metrics scrape addr (e.g. ":9192"). Empty disables.
+	WorkerID   string        `toml:"worker_id"`      // empty → auto-generate at startup
+	PublicAddr string        `toml:"public_addr"`    // address advertised to the scheduler; clients dial this
+	Paranoid   bool          `toml:"paranoid"`       // mirror of scheduler-side paranoid mode (§4.13)
 	TLS        TLSConfig     `toml:"tls"`
 	Scheduler  SchedulerLink `toml:"scheduler"`
 	Runtime    RuntimeConfig `toml:"runtime"`

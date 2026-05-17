@@ -8,10 +8,23 @@ import (
 	"os"
 	"path/filepath"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/grpc"
 
 	agentpb "github.com/aarani/hpcc/proto/agent"
 )
+
+// injectAgentTraceContext extracts the current trace context from ctx
+// into the W3C `traceparent` / `tracestate` strings carried on
+// ExecHeader. Both empty when the worker isn't exporting traces — the
+// agent then opens a fresh root span (or noop, if its own SDK is
+// unconfigured).
+func injectAgentTraceContext(ctx context.Context) (traceparent, tracestate string) {
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	return carrier["traceparent"], carrier["tracestate"]
+}
 
 // agentInputChunkSize bounds one ExecClientFrame.input.chunk. Matches
 // the agent's output side (server.go: outputChunkSize) so a streamed
@@ -81,13 +94,16 @@ func execViaAgent(ctx context.Context, conn *grpc.ClientConn, req AgentExecReque
 		return nil, fmt.Errorf("open Exec stream: %w", err)
 	}
 
+	tp, ts := injectAgentTraceContext(ctx)
 	if err := stream.Send(&agentpb.ExecClientFrame{
 		Frame: &agentpb.ExecClientFrame_Header{
 			Header: &agentpb.ExecHeader{
-				ExecId: req.ExecID,
-				Argv:   req.Argv,
-				Env:    req.Env,
-				Cwd:    req.Cwd,
+				ExecId:      req.ExecID,
+				Argv:        req.Argv,
+				Env:         req.Env,
+				Cwd:         req.Cwd,
+				Traceparent: tp,
+				Tracestate:  ts,
 			},
 		},
 	}); err != nil {
