@@ -163,7 +163,7 @@ Full plan in [docs/plan.md](docs/plan.md).
 | [Phase 1](docs/plan/phase-1-compiler-wrapping.md) | Core Compiler Wrapping | Done |
 | [Phase 2](docs/plan/phase-2-daemon.md) | Daemon Architecture | Done |
 | [Phase 3](docs/plan/phase-3-remote-cache.md) | Remote Cache (S3) | Done |
-| [Phase 4](docs/plan/phase-4-distributed.md) | Distributed Compilation in Per-Tenant Firecracker VMs | In progress |
+| [Phase 4](docs/plan/phase-4-distributed.md) | Distributed Compilation in Per-Tenant Firecracker VMs | Done |
 | [Phase 5](docs/plan/phase-5-observability.md) | Observability & Polish | Not started |
 
 ### Phase 1 — Core Compiler Wrapping ✅
@@ -190,7 +190,7 @@ is opt-in via `auto_create = true` for local MinIO setups; production
 deployments leave it false. Standard AWS credential chain; no hpcc-specific
 auth layer.
 
-### Phase 4 — Distributed Compilation in Per-Tenant VMs
+### Phase 4 — Distributed Compilation in Per-Tenant VMs ✅
 The differentiated phase. Raw Firecracker microVMs on Linux and
 Hyper-V isolated containers on Windows, both driven directly by
 hpcc behind a single `Runtime` interface. One long-running
@@ -212,9 +212,9 @@ routing token, and dials the worker directly with per-call zstd,
 that scheduler-signed token, and cancellation. Per-job audit log. See
 [docs/plan/phase-4-distributed.md](docs/plan/phase-4-distributed.md)
 for the full design and the **Limitations** section below for
-what's still in flight.
+known gaps.
 
-**Phase 4 status (today):**
+**What shipped:**
 
 *Linux/Firecracker:* end-to-end remote-compile path landed and
 CI-tested — route-only scheduler, worker `Compile` RPC, per-tenant
@@ -244,8 +244,7 @@ inline). Path normalization handles `\\?\` extended-length prefixes,
 rejects UNC up front, case-folds in the digest for cross-platform
 cache hits, and auto-injects family-aware reproducibility flags
 (GCC `-ffile-prefix-map`/`-Werror=date-time`, MSVC `/d1trimfile:` /
-`/PDBSourcePath:`). See **Limitations** below for what's still
-in-flight.
+`/PDBSourcePath:`). See **Limitations** below for known gaps.
 
 ### Phase 5 — Observability & Polish
 `hpcc inspect <hash>` and `hpcc explain <file>` with structured miss

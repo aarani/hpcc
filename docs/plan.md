@@ -20,7 +20,7 @@ authoritative chronology.
 | [Phase 1](plan/phase-1-compiler-wrapping.md) | Core Compiler Wrapping | Done |
 | [Phase 2](plan/phase-2-daemon.md) | Daemon Architecture | Done |
 | [Phase 3](plan/phase-3-remote-cache.md) | Remote Cache | Done |
-| [Phase 4](plan/phase-4-distributed.md) | Distributed Compilation in Per-Tenant VMs | In progress |
+| [Phase 4](plan/phase-4-distributed.md) | Distributed Compilation in Per-Tenant VMs | Done |
 | [Phase 5](plan/phase-5-observability.md) | Observability & Polish | Not started |
 
 ---

@@ -59,16 +59,16 @@
   trust surface, and the residual tar-bomb size/entry caps now fire
   in the streaming reader.
 
-- **Open:**
-  - §4.11 VM-crash reaping with scheduler reroute — partial today
-    (the runtime surfaces process exit, but the worker doesn't yet
-    notify the scheduler to drop the dead VM from routing).
-  - Per-tenant `UploadBlobs` quota — carved into phase 5 §5.7
-    because its overrun event is a security-event-log row, not a
-    runtime concern.
-  - Toolchain parity check (local host's compiler vs. the OCI
-    image's) — currently operator's responsibility to pin the
-    image patch version against the host.
+**Phase 4 is closed.** Two items punt forward rather than block:
+
+- Per-tenant `UploadBlobs` quota — moved to phase 5 §5.7. Its
+  overrun event is a security-event-log row, not a runtime
+  concern, so it lands with the rest of that infrastructure.
+- Toolchain parity check (local host's compiler vs. the OCI
+  image's) — operator's responsibility for now (pin the image
+  patch version against the host). Mostly decorative under CAS,
+  since the worker preprocesses with the image gcc; matters
+  only for the local-fallback path.
 
 Farm out compilation to remote workers, isolated in **raw Firecracker
 microVMs driven directly by hpcc**, to parallelize beyond local CPU count
@@ -798,10 +798,11 @@ telemetry/audit sidecar — not in v1.)
 - Per-job timeout (configurable, default 60s).
 - VM crash mid-job: the runtime surfaces a process-exit event (Firecracker
   process dies or the agent stream errors); the worker reaps the dead VM,
-  cold-boots a new one for the tenant, and the client retries the RPC.
-  Today the worker reaps locally but doesn't yet broadcast the dead VM
-  to the scheduler — heartbeat covers it on the next tick, but a
-  dedicated failure RPC is open follow-up.
+  cold-boots a new one for the tenant (~125 ms, hidden by the next compile's
+  setup), and the client retries the RPC. No scheduler involvement — the
+  scheduler routes on `(tenant, image)` → worker, not → VM, so a dead VM
+  is a worker-local event. Heartbeat carries the load delta on the next
+  tick if it matters.
 
 ### 4.12 Audit Trail
 
