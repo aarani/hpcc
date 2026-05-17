@@ -97,6 +97,14 @@ of the worker process with no isolation at all.`,
 			defer cancel()
 			_ = metricsResult.Shutdown(shutdownCtx)
 		}()
+		if err := metrics.RegisterWorkerInflight(w.Inflight); err != nil {
+			return err
+		}
+		if pool := w.PooledRuntime(); pool != nil {
+			if err := metrics.RegisterWorkerContainers(pool.EntriesByTenant); err != nil {
+				return err
+			}
+		}
 
 		// Tracing is a no-op unless OTEL_EXPORTER_OTLP_ENDPOINT (or the
 		// trace-specific variant) is set. otelgrpc's stats handler

@@ -1097,6 +1097,25 @@ func (w *Worker) capacitySnapshot() (avail, load int32) {
 func (w *Worker) BeginCompile() { w.inflight.Add(1) }
 func (w *Worker) EndCompile()   { w.inflight.Add(-1) }
 
+// Inflight returns the current count of in-flight Compile RPCs. Exposed
+// for the metrics observable gauge; capacitySnapshot wraps the same
+// counter but also derives the available-vCPU number, which isn't
+// what a gauge wants.
+func (w *Worker) Inflight() int32 { return w.inflight.Load() }
+
+// PooledRuntime returns the per-tenant container pool wrapping the
+// underlying runtime, or nil if no pool is in use (which happens for
+// the dev-only "really_really_dangerous" handler and any future
+// runtime that doesn't get wrapped in NewPooledRuntime). Exposed for
+// the metrics observable that breaks active container count down by
+// tenant.
+func (w *Worker) PooledRuntime() *runtime.PooledRuntime {
+	if p, ok := w.runtime.(*runtime.PooledRuntime); ok {
+		return p
+	}
+	return nil
+}
+
 func (w *Worker) activeVMSnapshot() []*gen.ActiveVM {
 	var out []*gen.ActiveVM
 	w.Containers.Range(func(_, val any) bool {

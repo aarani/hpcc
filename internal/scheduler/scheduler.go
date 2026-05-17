@@ -406,3 +406,16 @@ func (s *Scheduler) Heartbeat(ctx context.Context, in *gen.WorkerHeartbeat) (*ge
 	metrics.SchedulerHeartbeat(ctx, metrics.ResultOK)
 	return &gen.HeartbeatResponse{}, nil
 }
+
+// RegisteredWorkers returns the current count of workers in the
+// registration table. Exposed for the metrics observable gauge;
+// snapshot only — does not distinguish healthy from stale (the
+// scheduler does not yet evict stale registrations).
+func (s *Scheduler) RegisteredWorkers() int {
+	n := 0
+	s.workerStates.Range(func(_, _ any) bool {
+		n++
+		return true
+	})
+	return n
+}

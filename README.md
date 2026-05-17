@@ -279,9 +279,12 @@ the daemon (gated on the standard OTLP env vars, so dev laptops
 stay quiet). Counters shipped: per-binary compile/auth/route/
 heartbeat/CAS, plus a cross-binary `hpcc.security_events_total`
 that's wired into `logging.Security` so every existing call site
-emits a sample without touching the call site. Observable gauges,
-durable security-event sidecar, daemon/agent tracing, and `hpcc
-explain <file>` are the remaining Phase-5 work.
+emits a sample without touching the call site. Observable gauges
+for in-flight compiles (daemon + worker), live container pool
+entries by tenant (worker), and registered workers (scheduler)
+ride on the same surface. Cache-bytes gauges, durable
+security-event sidecar, and `hpcc explain <file>` are the
+remaining Phase-5 work.
 
 ---
 

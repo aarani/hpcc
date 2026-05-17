@@ -86,6 +86,9 @@ Requires TLS (cert_file, key_file) and at least one auth method
 			defer cancel()
 			_ = metricsResult.Shutdown(shutdownCtx)
 		}()
+		if err := metrics.RegisterSchedulerWorkers(s.RegisteredWorkers); err != nil {
+			return err
+		}
 
 		// Tracing is a no-op unless OTEL_EXPORTER_OTLP_ENDPOINT (or the
 		// trace-specific variant) is set. otelgrpc's stats handler

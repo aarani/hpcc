@@ -47,6 +47,67 @@ func TestInitPrometheusReader(t *testing.T) {
 	}
 }
 
+// TestObservableGaugeCallback covers the observable-gauge registration
+// helpers: the registered callback is invoked on every Prometheus
+// scrape and the latest snapshot value lands in the exposition.
+func TestObservableGaugeCallback(t *testing.T) {
+	res, err := Init(context.Background(), Options{
+		ServiceName:      "hpcc-test",
+		PrometheusReader: true,
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer func() { _ = res.Shutdown(context.Background()) }()
+
+	var current int32 = 7
+	if err := RegisterDaemonInflight(func() int32 { return current }); err != nil {
+		t.Fatalf("RegisterDaemonInflight: %v", err)
+	}
+
+	srv := httptest.NewServer(res.PromHandler)
+	defer srv.Close()
+
+	scrape := func() string {
+		resp, err := http.Get(srv.URL)
+		if err != nil {
+			t.Fatalf("scrape: %v", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return string(body)
+	}
+
+	// The OTel exporter renders the otel_scope_* meta-labels on the
+	// metric line, so match by line-end value instead of the bare
+	// "name value" sequence Prometheus's textfile format implies.
+	hasValue := func(body string, want string) bool {
+		for _, line := range strings.Split(body, "\n") {
+			if strings.HasPrefix(line, "hpcc_daemon_inflight_compiles") &&
+				strings.HasSuffix(line, " "+want) {
+				return true
+			}
+		}
+		return false
+	}
+
+	body := scrape()
+	if !strings.Contains(body, "hpcc_daemon_inflight_compiles") {
+		t.Fatalf("expected hpcc_daemon_inflight_compiles in scrape, got:\n%s", body)
+	}
+	if !hasValue(body, "7") {
+		t.Fatalf("expected value 7 in scrape, got:\n%s", body)
+	}
+
+	// Snapshot read on each scrape: a later value should land
+	// without re-registering.
+	current = 12
+	body = scrape()
+	if !hasValue(body, "12") {
+		t.Fatalf("expected updated value 12 in scrape, got:\n%s", body)
+	}
+}
+
 // TestSecurityHookFiresOnLoggingSecurity confirms the metrics package's
 // init() registered itself with logging.Security so a security log
 // entry produces a counter sample without any extra plumbing at the
