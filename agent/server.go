@@ -67,6 +67,18 @@ func (s *execServer) Exec(stream agentpb.AgentService_ExecServer) error {
 		return errors.New("ExecHeader.argv must not be empty")
 	}
 
+	// Carry the worker-side trace context onto the agent's logs so an
+	// operator can grep this Exec's records by trace_id alongside the
+	// worker spans. No in-VM tracing SDK today (keeps the agent
+	// binary dep-light); when one lands, the parsed traceparent here
+	// becomes the parent span context for in-VM work.
+	if tid := traceIDFromTraceparent(hdr.Traceparent); tid != "" {
+		zap.L().Info("agent Exec received",
+			zap.String("exec_id", hdr.ExecId),
+			zap.String("trace_id", tid),
+		)
+	}
+
 	srcDir := filepath.Join(stagingRoot, "src", hdr.ExecId)
 	outDir := filepath.Join(stagingRoot, "out", hdr.ExecId)
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {

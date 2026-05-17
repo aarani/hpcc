@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aarani/hpcc/internal/metrics"
 	"github.com/aarani/hpcc/internal/protocol/gen"
 	"github.com/aarani/hpcc/internal/tracing"
 	"github.com/aarani/hpcc/internal/worker"
@@ -83,6 +84,20 @@ of the worker process with no isolation at all.`,
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
 
+		metrics.SetComponent("worker")
+		metricsResult, err := metrics.Init(ctx, metrics.Options{
+			ServiceName:      "hpcc-worker",
+			PrometheusReader: cfg.MetricsListen != "",
+		})
+		if err != nil {
+			return err
+		}
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = metricsResult.Shutdown(shutdownCtx)
+		}()
+
 		// Tracing is a no-op unless OTEL_EXPORTER_OTLP_ENDPOINT (or the
 		// trace-specific variant) is set. otelgrpc's stats handler
 		// creates a root span per inbound RPC and extracts an upstream
@@ -117,7 +132,7 @@ of the worker process with no isolation at all.`,
 		// Start serving before the scheduler liaison so clients routed
 		// to this worker (immediately after RegisterWorker returns)
 		// can connect without a transient connection-refused window.
-		errCh := make(chan error, 2)
+		errCh := make(chan error, 3)
 		go func() {
 			zap.S().Infof("worker listening on %s", lis.Addr())
 			errCh <- srv.Serve(lis)
@@ -125,6 +140,12 @@ of the worker process with no isolation at all.`,
 		go func() {
 			errCh <- w.Run(ctx)
 		}()
+		if cfg.MetricsListen != "" {
+			go func() {
+				zap.S().Infof("worker /metrics on %s", cfg.MetricsListen)
+				errCh <- metrics.ServePrometheus(ctx, cfg.MetricsListen, metricsResult.PromHandler)
+			}()
+		}
 
 		select {
 		case err := <-errCh:

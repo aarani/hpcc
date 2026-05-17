@@ -56,6 +56,20 @@ message ExecHeader {
   // /run/hpcc/out/<exec_id>/ once the compiler exits, and stream as
   // OutputFile frames. Paths are relative to that staging dir.
   repeated string outputs = 5;
+
+  // W3C `traceparent` header value carrying the worker-side span
+  // context that opened this Exec. The agent uses it as the parent
+  // span for any in-VM spans it emits (the compiler exec, side-effect
+  // file reads). Empty when the worker isn't exporting traces — agent
+  // just falls back to a fresh root span (and exports nothing if its
+  // own OTel env isn't set either).
+  //
+  // Standard textmap propagator carries `traceparent` (and optionally
+  // `tracestate`) as separate keys; we keep both on the wire so a
+  // future agent-side propagator chain that wants tracestate doesn't
+  // need another proto roll.
+  string traceparent = 6;
+  string tracestate  = 7;
 }
 
 // InputFile is one chunk of one input file. The agent writes chunks

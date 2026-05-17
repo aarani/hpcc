@@ -32,15 +32,65 @@ Make it easy to understand what hpcc is doing and why.
   `runtime_start`, `cache_lookup`, `invoke`, `collect_extras`, and
   `cache_store`, with per-phase attributes (image digest, vCPU
   count, cache_hit, exit_code, duration_ms) so a slow or failing
-  compile shows the failing phase directly in the trace UI. Daemon,
-  scheduler, and agent tracing are follow-ups under §5.8.
+  compile shows the failing phase directly in the trace UI.
+- **Done — §5.8 scheduler tracing + worker→agent propagation:**
+  `otelgrpc.NewServerHandler` is now installed on the scheduler
+  gRPC server, so `Authenticate` / `Route` / `RegisterWorker` /
+  `Heartbeat` each produce a root span when the scheduler has an
+  OTLP endpoint configured. `ExecHeader` (proto/agent/agent.proto)
+  grew `traceparent` + `tracestate` fields; both Firecracker and
+  agent-over-vsock runtimes inject the worker's current trace
+  context via `propagation.TextMapPropagator.Inject` when sending
+  the header. The in-VM agent stays dep-light — it parses the
+  traceparent with a hand-written extractor and stamps the trace
+  ID onto its zap log entries so operators can grep agent records
+  by trace alongside worker spans. Real in-VM spans are still a
+  follow-up (would require pulling the OTel SDK into the agent
+  rootfs binary); CAS RPC per-blob spans on the worker, and
+  daemon→scheduler/worker propagation, also remain open.
+- **Done — §5.1 OTel-backed metrics surface:** new
+  `internal/metrics` package wraps the OTel metrics SDK. Scheduler
+  and worker get an always-on Prometheus reader exposed via a new
+  `metrics_listen` TOML field (separate HTTP listener, plain
+  HTTP, not on the gRPC port — empty disables). All three
+  binaries — daemon, scheduler, worker — additionally push via
+  OTLP/gRPC when `OTEL_EXPORTER_OTLP_ENDPOINT` (or the
+  metric-specific variant) is set; the daemon has no Prometheus
+  listener because client machines aren't typically scrape
+  targets. Instruments wired so far:
+  `hpcc.daemon.compiles_total{result}` +
+  `hpcc.daemon.compile_duration_seconds`,
+  `hpcc.worker.compiles_total{tenant_id,result}` +
+  `hpcc.worker.compile_duration_seconds`,
+  `hpcc.worker.cas_{bytes,blobs}_total{direction}`,
+  `hpcc.scheduler.{auth,routes,heartbeats}_total`, and the
+  cross-binary `hpcc.security_events_total{component,event,tenant_id}`
+  registered into `logging.Security` via a hook in
+  `internal/logging` so every existing call site fires a counter
+  without touching the call site. Observable gauges (active
+  containers, registered workers, cache size) are left for a
+  follow-up.
 
 ### 5.1 Stats & Metrics
 
+**Status:** core wiring shipped (see "Progress so far" above).
+`internal/metrics` boots the OTel metrics SDK with two readers —
+an always-on Prometheus reader on scheduler and worker behind
+their respective `metrics_listen` HTTP listeners, and an
+optional OTLP push exporter on every binary gated by
+`OTEL_EXPORTER_OTLP_ENDPOINT`. The daemon uses OTLP push only
+(no scrape listener) because client machines aren't typical
+Prometheus targets — see the "use OTEL please" thread on the
+daemon question.
+
 - `hpcc stats` — hit rate (local/remote/distributed), miss reasons, cache
-  size, active VMs, compilation time saved.
-- Prometheus endpoint on the daemon, server, and scheduler.
-- Per-build summary printed at build end.
+  size, active VMs, compilation time saved. *Not yet wired to the
+  metrics surface — `stats` still reads on-disk cache state.*
+- Per-build summary printed at build end. *Open.*
+- Observable gauges (active containers, registered workers,
+  cache size, in-flight compiles). *Open* — the counter surface
+  is in place; gauges need observer callbacks on the worker pool
+  and scheduler state.
 
 ### 5.2 Cache Inspection
 

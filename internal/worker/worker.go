@@ -36,6 +36,7 @@ import (
 	"github.com/aarani/hpcc/internal/config"
 	"github.com/aarani/hpcc/internal/enum"
 	"github.com/aarani/hpcc/internal/logging"
+	"github.com/aarani/hpcc/internal/metrics"
 	"github.com/aarani/hpcc/internal/protocol/gen"
 	"github.com/aarani/hpcc/internal/tracing"
 	"github.com/aarani/hpcc/internal/worker/image"
@@ -270,6 +271,17 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 		)
 	}
 
+	// Record one outcome sample per Compile RPC. Result is reassigned
+	// before each terminating return below; tenantID is empty until
+	// the descriptor is trusted, which is fine — pre-descriptor
+	// failures are already captured via the security_events counter.
+	compileStart := time.Now()
+	compileResult := metrics.ResultError
+	tenantForMetric := ""
+	defer func() {
+		metrics.WorkerCompile(ctx, tenantForMetric, compileResult, time.Since(compileStart))
+	}()
+
 	if req.Descriptor_ == nil {
 		logging.Security("worker-missing-descriptor",
 			"worker Compile RPC missing CompileDescriptor",
@@ -289,6 +301,9 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 		)
 		return nil, fmt.Errorf("validate token: %w", err)
 	}
+	// Token validated; downstream metric samples can attribute to
+	// this tenant.
+	tenantForMetric = req.Descriptor_.TenantId
 
 	// Sanity-check: after client-side path rewriting, argv should
 	// reference only in-container paths (/src, /out, system dirs). A
@@ -461,6 +476,7 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 			// .d files the original cold compile produced — even
 			// though no gcc ran this time.
 			rootSpan.SetAttributes(attribute.Bool("hpcc.cache_hit", true))
+			compileResult = metrics.ResultCacheHit
 			return w.respond(cctx, req, container, inv, hit), nil
 		}
 	}
@@ -505,6 +521,7 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 		endSpan(storeSpan, storeErr)
 	}
 
+	compileResult = metrics.ResultOK
 	return w.respond(cctx, req, container, inv, result), nil
 }
 

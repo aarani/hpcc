@@ -15,6 +15,7 @@ import (
 
 	"github.com/aarani/hpcc/internal/compiler"
 	"github.com/aarani/hpcc/internal/logging"
+	"github.com/aarani/hpcc/internal/metrics"
 	"github.com/aarani/hpcc/internal/protocol/gen"
 )
 
@@ -315,6 +316,8 @@ func (w *Worker) UploadBlobs(stream gen.WorkerService_UploadBlobsServer) error {
 			if err := commit(); err != nil {
 				return err
 			}
+			metrics.WorkerCASTransfer(stream.Context(), metrics.DirectionUpload,
+				int64(result.BlobsReceived), int64(result.BytesReceived))
 			return stream.SendAndClose(result)
 		}
 		if err != nil {
