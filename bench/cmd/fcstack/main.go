@@ -43,7 +43,6 @@ import (
 	"encoding/pem"
 	"flag"
 	"fmt"
-	"log"
 	"math/big"
 	"net"
 	"net/http"
@@ -58,11 +57,13 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/go-containerregistry/pkg/crane"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
 	"github.com/aarani/hpcc/internal/config"
 	"github.com/aarani/hpcc/internal/enum"
+	"github.com/aarani/hpcc/internal/logging"
 	"github.com/aarani/hpcc/internal/protocol/gen"
 	"github.com/aarani/hpcc/internal/scheduler"
 	"github.com/aarani/hpcc/internal/worker"
@@ -86,6 +87,10 @@ const (
 )
 
 func main() {
+	logger := logging.Init()
+	defer func() { _ = logger.Sync() }()
+	_ = zap.RedirectStdLog(logger)
+
 	var (
 		stackDir  = flag.String("stack-dir", "", "scratch dir for certs/agent/rootfs (required)")
 		clientCfg = flag.String("client-config", "", "where to write the client TOML (required)")
@@ -137,43 +142,43 @@ func main() {
 	flag.Parse()
 
 	if *stackDir == "" || *clientCfg == "" {
-		log.Fatalf("--stack-dir and --client-config are required")
+		zap.S().Fatalf("--stack-dir and --client-config are required")
 	}
 	switch *sourceMode {
 	case "preprocessed", "cas":
 	default:
-		log.Fatalf("--source-mode must be \"preprocessed\" or \"cas\"; got %q", *sourceMode)
+		zap.S().Fatalf("--source-mode must be \"preprocessed\" or \"cas\"; got %q", *sourceMode)
 	}
 	if *fcBin == "" || *jailerBin == "" || *kernel == "" {
-		log.Fatalf("--firecracker-bin, --jailer-bin, --kernel are required (env HPCC_FIRECRACKER_BIN/HPCC_JAILER_BIN/HPCC_TEST_KERNEL)")
+		zap.S().Fatalf("--firecracker-bin, --jailer-bin, --kernel are required (env HPCC_FIRECRACKER_BIN/HPCC_JAILER_BIN/HPCC_TEST_KERNEL)")
 	}
 	if os.Geteuid() != 0 {
-		log.Fatalf("fcstack: must run as root (jailer needs CAP_SYS_ADMIN + chroot)")
+		zap.S().Fatalf("fcstack: must run as root (jailer needs CAP_SYS_ADMIN + chroot)")
 	}
 
 	if err := os.MkdirAll(*stackDir, 0o755); err != nil {
-		log.Fatalf("mkdir stack-dir: %v", err)
+		zap.S().Fatalf("mkdir stack-dir: %v", err)
 	}
 
 	// 1. IdP — bring it up first so we have a JWKS URL to hand to
 	//    the scheduler before it validates the first user JWT.
 	idpKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		log.Fatalf("rsa keygen: %v", err)
+		zap.S().Fatalf("rsa keygen: %v", err)
 	}
 	idpURL, idpStop, err := startIdP(*idpBind, idpKey, "fcstack-key-1")
 	if err != nil {
-		log.Fatalf("start IdP: %v", err)
+		zap.S().Fatalf("start IdP: %v", err)
 	}
 	defer idpStop()
-	log.Printf("fcstack: IdP at %s", idpURL)
+	zap.S().Infof("fcstack: IdP at %s", idpURL)
 
 	// 2. TLS material. Same cert serves both gRPC endpoints — the
 	//    scheduler pins by SHA-256 of the cert anyway, and there's
 	//    no SNI distinction worth making in a single-host bench.
 	certPath, keyPath, err := writeSelfSignedCert(*stackDir, "fcstack")
 	if err != nil {
-		log.Fatalf("write cert: %v", err)
+		zap.S().Fatalf("write cert: %v", err)
 	}
 
 	// 3. Bind both gRPC listeners up front; we need their addresses
@@ -181,28 +186,28 @@ func main() {
 	//    or the client TOML.
 	schedLis, err := net.Listen("tcp", *schedBind)
 	if err != nil {
-		log.Fatalf("bind scheduler: %v", err)
+		zap.S().Fatalf("bind scheduler: %v", err)
 	}
 	defer schedLis.Close()
 
 	workerLis, err := net.Listen("tcp", *workerBind)
 	if err != nil {
-		log.Fatalf("bind worker: %v", err)
+		zap.S().Fatalf("bind worker: %v", err)
 	}
 	defer workerLis.Close()
 
 	schedAddr := schedLis.Addr().String()
 	workerAddr := workerLis.Addr().String()
-	log.Printf("fcstack: scheduler will bind %s", schedAddr)
-	log.Printf("fcstack: worker will bind %s", workerAddr)
+	zap.S().Infof("fcstack: scheduler will bind %s", schedAddr)
+	zap.S().Infof("fcstack: worker will bind %s", workerAddr)
 
 	// 4. Build the in-VM agent statically for linux/amd64. The
 	//    rootfs pipeline injects this at /.hpcc/agent as PID 1.
 	agentPath, err := buildAgent(*stackDir)
 	if err != nil {
-		log.Fatalf("build agent: %v", err)
+		zap.S().Fatalf("build agent: %v", err)
 	}
-	log.Printf("fcstack: built agent at %s", agentPath)
+	zap.S().Infof("fcstack: built agent at %s", agentPath)
 
 	// 5. Pull the toolchain image and pre-stage its rootfs. The
 	//    worker advertises this digest in its Register heartbeat;
@@ -211,9 +216,9 @@ func main() {
 	rootfsDir := filepath.Join(*stackDir, "rootfs")
 	pinnedRef, digest, err := prepareRootfs(rootfsDir, *imageRef, agentPath)
 	if err != nil {
-		log.Fatalf("prepare rootfs: %v", err)
+		zap.S().Fatalf("prepare rootfs: %v", err)
 	}
-	log.Printf("fcstack: prepared rootfs for %s (digest %s)", pinnedRef, digest)
+	zap.S().Infof("fcstack: prepared rootfs for %s (digest %s)", pinnedRef, digest)
 
 	// 6. Scheduler — in-process, listens for client Route() and
 	//    worker Register/Heartbeat over the same gRPC server.
@@ -239,12 +244,12 @@ func main() {
 	}
 	sched, err := scheduler.NewScheduler(schedCfg)
 	if err != nil {
-		log.Fatalf("NewScheduler: %v", err)
+		zap.S().Fatalf("NewScheduler: %v", err)
 	}
 
 	schedCert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
-		log.Fatalf("load cert: %v", err)
+		zap.S().Fatalf("load cert: %v", err)
 	}
 	schedSrv := grpc.NewServer(grpc.Creds(credentials.NewTLS(&tls.Config{
 		Certificates: []tls.Certificate{schedCert},
@@ -260,7 +265,7 @@ func main() {
 	//    the same VMs the cold build started.
 	runDir := filepath.Join(*stackDir, "jailer")
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		log.Fatalf("mkdir runDir: %v", err)
+		zap.S().Fatalf("mkdir runDir: %v", err)
 	}
 	uid, gid := pickJailerCreds()
 
@@ -276,7 +281,7 @@ func main() {
 	// surface in paranoid mode).
 	cacheDir := filepath.Join(*stackDir, "cache")
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		log.Fatalf("mkdir cacheDir: %v", err)
+		zap.S().Fatalf("mkdir cacheDir: %v", err)
 	}
 
 	workerCfg := worker.Config{
@@ -327,12 +332,12 @@ func main() {
 
 	w, err := worker.NewWorker(workerCfg)
 	if err != nil {
-		log.Fatalf("NewWorker: %v", err)
+		zap.S().Fatalf("NewWorker: %v", err)
 	}
 
 	workerCert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
-		log.Fatalf("load worker cert: %v", err)
+		zap.S().Fatalf("load worker cert: %v", err)
 	}
 	workerSrv := grpc.NewServer(
 		grpc.Creds(credentials.NewTLS(&tls.Config{
@@ -380,21 +385,21 @@ password      = "unused"
 `, *sourceMode, tenantID, pinnedRef, digest, schedAddr, certPath)
 
 	if err := os.WriteFile(*clientCfg, []byte(clientToml), 0o600); err != nil {
-		log.Fatalf("write client config: %v", err)
+		zap.S().Fatalf("write client config: %v", err)
 	}
 
 	// Single-line, no-prefix print so the shell wrapper can capture
 	// it with `read CONFIG < <(...)` style. Everything else from
 	// this binary goes to stderr via log.
 	fmt.Println(*clientCfg)
-	log.Printf("fcstack: client config at %s", *clientCfg)
-	log.Printf("fcstack: ready; waiting for SIGINT/SIGTERM")
+	zap.S().Infof("fcstack: client config at %s", *clientCfg)
+	zap.S().Infof("fcstack: ready; waiting for SIGINT/SIGTERM")
 
 	select {
 	case err := <-runDone:
-		log.Printf("fcstack: worker.Run returned: %v", err)
+		zap.S().Infof("fcstack: worker.Run returned: %v", err)
 	case <-ctx.Done():
-		log.Printf("fcstack: shutting down")
+		zap.S().Infof("fcstack: shutting down")
 	}
 }
 

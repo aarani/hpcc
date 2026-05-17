@@ -10,7 +10,6 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.uber.org/zap"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -32,6 +32,7 @@ import (
 	"github.com/aarani/hpcc/internal/compiler"
 	"github.com/aarani/hpcc/internal/config"
 	"github.com/aarani/hpcc/internal/enum"
+	"github.com/aarani/hpcc/internal/logging"
 	"github.com/aarani/hpcc/internal/protocol/gen"
 	"github.com/aarani/hpcc/internal/worker/image"
 	"github.com/aarani/hpcc/internal/worker/runtime"
@@ -238,10 +239,22 @@ func buildImageStore(cfg Config) (image.Store, error) {
 
 func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.CompileResponse, error) {
 	if req.Descriptor_ == nil {
+		logging.Security("worker-missing-descriptor",
+			"worker Compile RPC missing CompileDescriptor",
+			zap.String("rpc", "Compile"),
+		)
 		return nil, fmt.Errorf("missing CompileDescriptor")
 	}
 
 	if err := w.ValidateToken(req); err != nil {
+		logging.Security("worker-token-invalid",
+			"worker Compile RPC rejected: scheduler token validation failed",
+			zap.String("rpc", "Compile"),
+			zap.String("tenant_id", req.Descriptor_.TenantId),
+			zap.String("image_digest", req.Descriptor_.ImageDigest),
+			logging.JWTClaims(req.Descriptor_.SchedulerToken),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("validate token: %w", err)
 	}
 
@@ -251,6 +264,12 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 	// botched the rewrite for the chosen source mode — fail loudly so
 	// the bug surfaces here, not as a confusing in-VM "no such file."
 	if err := compiler.ValidateNoHostPaths(req.Args); err != nil {
+		logging.Security("worker-host-path-leak",
+			"worker Compile RPC rejected: argv contains host-shaped path",
+			zap.String("rpc", "Compile"),
+			zap.String("tenant_id", req.Descriptor_.TenantId),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("argv validation: %w", err)
 	}
 
@@ -269,6 +288,13 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 	if cas := req.Descriptor_.GetCas(); cas != nil {
 		md, err := verifyManifestDigest(cas)
 		if err != nil {
+			logging.Security("worker-manifest-digest-mismatch",
+				"worker Compile RPC rejected: manifest digest verification failed",
+				zap.String("rpc", "Compile"),
+				zap.String("tenant_id", req.Descriptor_.TenantId),
+				zap.String("image_digest", req.Descriptor_.ImageDigest),
+				zap.Error(err),
+			)
 			return nil, fmt.Errorf("verify manifest digest: %w", err)
 		}
 		verifiedManifestDigest = &md
@@ -717,7 +743,7 @@ func (w *Worker) buildAudit(req *gen.CompileRequest, container runtime.Container
 // trail today. Expensive sinks (Kafka topic, signed log file) hook
 // here in follow-up work.
 func logAudit(rec *gen.AuditRecord) {
-	log.Printf("audit tenant=%s worker=%s vm=%s image=%s cache_key=%s exit=%d duration_ms=%d source_digest=%x output_digest=%x",
+	zap.S().Infof("audit tenant=%s worker=%s vm=%s image=%s cache_key=%s exit=%d duration_ms=%d source_digest=%x output_digest=%x",
 		rec.TenantId, rec.WorkerId, rec.VmId, rec.ImageDigest,
 		rec.CacheKey, rec.ExitCode, rec.DurationMs,
 		rec.SourceDigest, rec.OutputDigest)
@@ -814,12 +840,12 @@ func (w *Worker) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 			if err := w.heartbeat(ctx); err != nil {
-				log.Printf("worker: heartbeat failed: %v", err)
+				zap.S().Infof("worker: heartbeat failed: %v", err)
 				// Most likely the scheduler restarted (signing key
 				// changed) or our session was evicted. Re-auth and
 				// re-register; the next tick will heartbeat anew.
 				if rerr := w.authenticateAndRegister(ctx); rerr != nil {
-					log.Printf("worker: re-auth after heartbeat failure: %v", rerr)
+					zap.S().Infof("worker: re-auth after heartbeat failure: %v", rerr)
 				}
 			}
 		}
@@ -857,7 +883,7 @@ func (w *Worker) bootstrap() error {
 	if w.ImageStore != nil {
 		existing, err := w.ImageStore.GetExistingImages(context.Background())
 		if err != nil {
-			log.Printf("worker: enumerate prepared images: %v", err)
+			zap.S().Infof("worker: enumerate prepared images: %v", err)
 		}
 		for _, d := range existing {
 			entry := &imageEntry{}
@@ -1040,7 +1066,7 @@ func (w *Worker) ensureImage(ctx context.Context, digest, ref string) error {
 			if ref == "" {
 				return nil, fmt.Errorf("image %s not present locally and no image_ref to pull from", digest)
 			}
-			log.Printf("worker: pulling image %s (ref=%s)", digest, ref)
+			zap.S().Infof("worker: pulling image %s (ref=%s)", digest, ref)
 			if err := w.ImageStore.PullImage(ctx, ref, digest); err != nil {
 				return nil, fmt.Errorf("pull image %q: %w", ref, err)
 			}
@@ -1101,7 +1127,7 @@ func (w *Worker) evictImagesOnce(ctx context.Context, ttl time.Duration, pinned 
 		}
 		untagCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		if err := w.ImageStore.UntagImage(untagCtx, digest); err != nil {
-			log.Printf("worker: untag idle image %s: %v", digest, err)
+			zap.S().Infof("worker: untag idle image %s: %v", digest, err)
 		}
 		cancel()
 		return true
@@ -1122,7 +1148,7 @@ func (w *Worker) runtimeType() gen.RuntimeType {
 		// Unknown runtime — default to FIRECRACKER and let the
 		// scheduler reject if it disagrees. Logged so misconfig
 		// surfaces in operations.
-		log.Printf("worker: unrecognized runtime handler %q, defaulting to FIRECRACKER",
+		zap.S().Infof("worker: unrecognized runtime handler %q, defaulting to FIRECRACKER",
 			w.Config.Runtime.Handler)
 		return gen.RuntimeType_FIRECRACKER
 	}

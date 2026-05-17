@@ -9,10 +9,12 @@ import (
 	"sort"
 
 	"github.com/zeebo/blake3"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/aarani/hpcc/internal/compiler"
+	"github.com/aarani/hpcc/internal/logging"
 	"github.com/aarani/hpcc/internal/protocol/gen"
 )
 
@@ -32,12 +34,31 @@ import (
 // write path and cannot poison cache content.
 func (w *Worker) ProbeCompileCache(ctx context.Context, req *gen.CompileProbe) (*gen.ProbeResponse, error) {
 	if err := w.validateSchedulerToken(req.SchedulerToken, req.TenantId, req.ImageDigest); err != nil {
+		logging.Security("worker-token-invalid",
+			"worker ProbeCompileCache rejected: scheduler token validation failed",
+			zap.String("rpc", "ProbeCompileCache"),
+			zap.String("tenant_id", req.TenantId),
+			zap.String("image_digest", req.ImageDigest),
+			logging.JWTClaims(req.SchedulerToken),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("validate token: %w", err)
 	}
 	if len(req.ManifestDigest) != 32 {
+		logging.Security("worker-malformed-request",
+			"worker ProbeCompileCache rejected: manifest_digest must be 32 bytes",
+			zap.String("rpc", "ProbeCompileCache"),
+			zap.String("tenant_id", req.TenantId),
+			zap.Int("manifest_digest_len", len(req.ManifestDigest)),
+		)
 		return nil, status.Error(codes.InvalidArgument, "manifest_digest must be 32 bytes")
 	}
 	if len(req.Args) == 0 {
+		logging.Security("worker-malformed-request",
+			"worker ProbeCompileCache rejected: args must not be empty",
+			zap.String("rpc", "ProbeCompileCache"),
+			zap.String("tenant_id", req.TenantId),
+		)
 		return nil, status.Error(codes.InvalidArgument, "args must not be empty")
 	}
 
@@ -153,17 +174,39 @@ func (w *Worker) FindMissingBlobs(stream gen.WorkerService_FindMissingBlobsServe
 			return err
 		}
 		if len(req.Digest) == 0 {
+			logging.Security("worker-malformed-request",
+				"worker FindMissingBlobs rejected: blob digest must not be empty",
+				zap.String("rpc", "FindMissingBlobs"),
+				zap.String("tenant_id", req.TenantId),
+			)
 			return status.Error(codes.InvalidArgument, "blob digest must not be empty")
 		}
 		if req.TenantId == "" {
+			logging.Security("worker-malformed-request",
+				"worker FindMissingBlobs rejected: tenant_id is required",
+				zap.String("rpc", "FindMissingBlobs"),
+			)
 			return status.Error(codes.InvalidArgument, "tenant_id is required")
 		}
 		if err := w.validateSchedulerTokenForCAS(req.SchedulerToken, req.TenantId); err != nil {
+			logging.Security("worker-token-invalid",
+				"worker FindMissingBlobs rejected: scheduler token validation failed",
+				zap.String("rpc", "FindMissingBlobs"),
+				zap.String("tenant_id", req.TenantId),
+				logging.JWTClaims(req.SchedulerToken),
+				zap.Error(err),
+			)
 			return status.Errorf(codes.Unauthenticated, "scheduler token: %v", err)
 		}
 		if streamTenant == "" {
 			streamTenant = req.TenantId
 		} else if req.TenantId != streamTenant {
+			logging.Security("worker-tenant-mismatch",
+				"worker FindMissingBlobs rejected: tenant_id changed mid-stream",
+				zap.String("rpc", "FindMissingBlobs"),
+				zap.String("stream_tenant_id", streamTenant),
+				zap.String("frame_tenant_id", req.TenantId),
+			)
 			return status.Errorf(codes.InvalidArgument, "tenant_id changed mid-stream (was %q, now %q)", streamTenant, req.TenantId)
 		}
 		has, err := w.sourceStore.Namespace(req.TenantId).Has(req.Digest)
@@ -232,6 +275,12 @@ func (w *Worker) UploadBlobs(stream gen.WorkerService_UploadBlobsServer) error {
 		defer func() { active = nil }()
 
 		if active.rejected {
+			logging.Security("worker-blob-oversize",
+				"worker UploadBlobs rejected blob: exceeded max blob size",
+				zap.String("rpc", "UploadBlobs"),
+				zap.String("tenant_id", active.header.TenantId),
+				zap.Int("max_bytes", maxSourceBlobBytes),
+			)
 			result.RejectedDigests = append(result.RejectedDigests, active.header.Digest)
 			return nil
 		}
@@ -239,6 +288,11 @@ func (w *Worker) UploadBlobs(stream gen.WorkerService_UploadBlobsServer) error {
 		var recomputed [32]byte
 		copy(recomputed[:], active.hasher.Sum(nil))
 		if !bytes.Equal(recomputed[:], active.header.Digest) {
+			logging.Security("worker-blob-digest-mismatch",
+				"worker UploadBlobs rejected blob: claimed digest does not match recomputed BLAKE3",
+				zap.String("rpc", "UploadBlobs"),
+				zap.String("tenant_id", active.header.TenantId),
+			)
 			result.RejectedDigests = append(result.RejectedDigests, active.header.Digest)
 			return nil
 		}
@@ -281,23 +335,50 @@ func (w *Worker) UploadBlobs(stream gen.WorkerService_UploadBlobsServer) error {
 				// a 32-byte digest to put in the slot. Clients
 				// shipping malformed protobuf is a bug, not a
 				// content-level rejection.
+				logging.Security("worker-malformed-request",
+					"worker UploadBlobs rejected: blob header missing 32-byte digest",
+					zap.String("rpc", "UploadBlobs"),
+					zap.String("stream_tenant_id", streamTenant),
+				)
 				return status.Error(codes.InvalidArgument, "blob header missing 32-byte digest")
 			}
 			if h.TenantId == "" {
+				logging.Security("worker-malformed-request",
+					"worker UploadBlobs rejected: blob header missing tenant_id",
+					zap.String("rpc", "UploadBlobs"),
+				)
 				return status.Error(codes.InvalidArgument, "blob header missing tenant_id")
 			}
 			if err := w.validateSchedulerTokenForCAS(h.SchedulerToken, h.TenantId); err != nil {
+				logging.Security("worker-token-invalid",
+					"worker UploadBlobs rejected: scheduler token validation failed",
+					zap.String("rpc", "UploadBlobs"),
+					zap.String("tenant_id", h.TenantId),
+					logging.JWTClaims(h.SchedulerToken),
+					zap.Error(err),
+				)
 				return status.Errorf(codes.Unauthenticated, "scheduler token: %v", err)
 			}
 			if streamTenant == "" {
 				streamTenant = h.TenantId
 			} else if h.TenantId != streamTenant {
+				logging.Security("worker-tenant-mismatch",
+					"worker UploadBlobs rejected: tenant_id changed mid-stream",
+					zap.String("rpc", "UploadBlobs"),
+					zap.String("stream_tenant_id", streamTenant),
+					zap.String("frame_tenant_id", h.TenantId),
+				)
 				return status.Errorf(codes.InvalidArgument, "tenant_id changed mid-stream (was %q, now %q)", streamTenant, h.TenantId)
 			}
 			active = &blobInProgress{header: h, hasher: blake3.New()}
 
 		case *gen.BlobChunk_Data:
 			if active == nil {
+				logging.Security("worker-protocol-violation",
+					"worker UploadBlobs rejected: data chunk before any blob header",
+					zap.String("rpc", "UploadBlobs"),
+					zap.String("stream_tenant_id", streamTenant),
+				)
 				return status.Error(codes.InvalidArgument, "data chunk before any blob header")
 			}
 			if active.rejected {
@@ -314,6 +395,12 @@ func (w *Worker) UploadBlobs(stream gen.WorkerService_UploadBlobsServer) error {
 			active.buf.Write(body.Data)
 
 		default:
+			logging.Security("worker-malformed-request",
+				"worker UploadBlobs rejected: unknown BlobChunk body type",
+				zap.String("rpc", "UploadBlobs"),
+				zap.String("stream_tenant_id", streamTenant),
+				zap.String("body_type", fmt.Sprintf("%T", body)),
+			)
 			return status.Error(codes.InvalidArgument, fmt.Sprintf("unknown BlobChunk body %T", body))
 		}
 	}

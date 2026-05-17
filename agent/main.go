@@ -12,15 +12,21 @@
 package main
 
 import (
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 func main() {
+	logger := initLogger()
+	defer func() { _ = logger.Sync() }()
+	_ = zap.RedirectStdLog(logger)
+
 	if err := setupInit(); err != nil {
-		log.Fatalf("hpcc-agent: init: %v", err)
+		zap.S().Fatalf("hpcc-agent: init: %v", err)
 	}
 
 	// Ensure PATH is set on the agent process itself so exec.Command
@@ -48,8 +54,27 @@ func main() {
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	select {
 	case sig := <-sigs:
-		log.Printf("hpcc-agent: received %s, exiting", sig)
+		zap.S().Infof("hpcc-agent: received %s, exiting", sig)
 	case err := <-errCh:
-		log.Fatalf("hpcc-agent: vsock server: %v", err)
+		zap.S().Fatalf("hpcc-agent: vsock server: %v", err)
 	}
+}
+
+// initLogger installs and returns a console-format zap logger writing
+// to stderr (which goes to the VM's kernel console). The agent is a
+// tiny in-VM PID-1, so it doesn't import the main module's
+// internal/logging package — it carries its own minimal setup.
+func initLogger() *zap.Logger {
+	encCfg := zap.NewProductionEncoderConfig()
+	encCfg.TimeKey = "ts"
+	encCfg.EncodeTime = zapcore.ISO8601TimeEncoder
+	encCfg.EncodeLevel = zapcore.CapitalLevelEncoder
+	core := zapcore.NewCore(
+		zapcore.NewConsoleEncoder(encCfg),
+		zapcore.Lock(os.Stderr),
+		zap.InfoLevel,
+	)
+	logger := zap.New(core)
+	zap.ReplaceGlobals(logger)
+	return logger
 }

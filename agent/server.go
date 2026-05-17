@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	agentpb "github.com/aarani/hpcc/proto/agent"
+	"go.uber.org/zap"
 )
 
 // agentVsockPort is the numeric AF_VSOCK port the agent listens on.
@@ -44,12 +45,25 @@ func (s *execServer) Exec(stream agentpb.AgentService_ExecServer) error {
 	}
 	hdr := first.GetHeader()
 	if hdr == nil {
+		securityEvent("agent-malformed-request",
+			"agent Exec rejected: first frame missing ExecHeader",
+			zap.String("rpc", "Exec"),
+		)
 		return errors.New("first frame must carry ExecHeader")
 	}
 	if hdr.ExecId == "" {
+		securityEvent("agent-malformed-request",
+			"agent Exec rejected: ExecHeader.exec_id is required",
+			zap.String("rpc", "Exec"),
+		)
 		return errors.New("ExecHeader.exec_id is required")
 	}
 	if len(hdr.Argv) == 0 {
+		securityEvent("agent-malformed-request",
+			"agent Exec rejected: ExecHeader.argv must not be empty",
+			zap.String("rpc", "Exec"),
+			zap.String("exec_id", hdr.ExecId),
+		)
 		return errors.New("ExecHeader.argv must not be empty")
 	}
 
@@ -143,9 +157,19 @@ func stageInputs(stream agentpb.AgentService_ExecServer, srcDir string) error {
 		}
 		in := frame.GetInput()
 		if in == nil {
+			securityEvent("agent-malformed-request",
+				"agent stageInputs rejected: expected InputFile frame after header",
+				zap.String("rpc", "Exec"),
+			)
 			return errors.New("expected InputFile frame after header")
 		}
 		if err := safeRel(in.Path); err != nil {
+			securityEvent("agent-path-traversal",
+				"agent stageInputs rejected: input path is absolute or escapes staging dir",
+				zap.String("rpc", "Exec"),
+				zap.String("path", in.Path),
+				zap.Error(err),
+			)
 			return fmt.Errorf("input path %q: %w", in.Path, err)
 		}
 		fh, ok := open[in.Path]

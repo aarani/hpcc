@@ -5,12 +5,12 @@ package cmd
 
 import (
 	"crypto/tls"
-	"log"
 	"net"
 
 	"github.com/aarani/hpcc/internal/protocol/gen"
 	"github.com/aarani/hpcc/internal/scheduler"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
@@ -71,7 +71,7 @@ Requires TLS (cert_file, key_file) and at least one auth method
 			return err
 		}
 
-		log.Printf("scheduler listening on %s", lis.Addr())
+		zap.S().Infof("scheduler listening on %s", lis.Addr())
 		return srv.Serve(lis)
 	},
 }

@@ -6,7 +6,9 @@ package cmd
 import (
 	"os"
 
+	"github.com/aarani/hpcc/internal/logging"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -34,6 +36,10 @@ and cmake see no difference from the underlying compiler.`,
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
+	logger := logging.Init()
+	defer func() { _ = logger.Sync() }()
+	_ = zap.RedirectStdLog(logger)
+
 	err := rootCmd.Execute()
 	if err != nil {
 		os.Exit(1)

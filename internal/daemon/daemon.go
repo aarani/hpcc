@@ -9,13 +9,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
+	"go.uber.org/zap"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/aarani/hpcc/internal/cache"
@@ -24,6 +24,7 @@ import (
 	"github.com/aarani/hpcc/internal/daemon/client"
 	"github.com/aarani/hpcc/internal/daemon/dispatch"
 	"github.com/aarani/hpcc/internal/enum"
+	"github.com/aarani/hpcc/internal/logging"
 	"github.com/aarani/hpcc/internal/runner"
 	"google.golang.org/protobuf/proto"
 
@@ -83,16 +84,16 @@ func NewDefaultDaemon() *DefaultDaemon {
 	}
 	cfg, err := config.LoadConfig(cfgPath)
 	if err != nil {
-		log.Printf("daemon: load config: %v (continuing without remote dispatch)", err)
+		zap.S().Infof("daemon: load config: %v (continuing without remote dispatch)", err)
 		return d
 	}
 	if cfg.Remote.Enabled {
 		dp, err := dispatch.New(cfg.Remote, cfg.SourceMode)
 		if err != nil {
-			log.Printf("daemon: init remote dispatcher: %v (continuing local-only)", err)
+			zap.S().Infof("daemon: init remote dispatcher: %v (continuing local-only)", err)
 		} else {
 			d.dispatcher = dp
-			log.Printf("daemon: remote dispatch enabled (scheduler=%s)", cfg.Remote.Scheduler.URL)
+			zap.S().Infof("daemon: remote dispatch enabled (scheduler=%s)", cfg.Remote.Scheduler.URL)
 		}
 		d.tenantID = cfg.Remote.TenantID
 	}
@@ -131,14 +132,19 @@ func setRunningDaemon(token string, port int) error {
 
 func (d *DefaultDaemon) handleConnection(conn *net.TCPConn) error {
 	remote := conn.RemoteAddr()
-	log.Printf("connection(%s): accepted", remote)
+	zap.S().Infof("connection(%s): accepted", remote)
 	reader := bufio.NewReader(conn)
 	var writeMu sync.Mutex
 
 	if err := d.checkAuth(reader); err != nil {
+		logging.Security("daemon-auth-failed",
+			"daemon rejected connection: auth check failed",
+			zap.Stringer("remote", remote),
+			zap.Error(err),
+		)
 		return fmt.Errorf("connection(%s): auth failed: %w", remote, err)
 	}
-	log.Printf("connection(%s): authenticated", remote)
+	zap.S().Infof("connection(%s): authenticated", remote)
 
 	for {
 		lengthBytes := make([]byte, 4)
@@ -148,7 +154,7 @@ func (d *DefaultDaemon) handleConnection(conn *net.TCPConn) error {
 		}
 		length := int(binary.BigEndian.Uint32(lengthBytes))
 		if length == 0 {
-			log.Printf("connection(%s): closed by client", remote)
+			zap.S().Infof("connection(%s): closed by client", remote)
 			return nil
 		}
 		messageBytes := make([]byte, length)
@@ -205,11 +211,11 @@ func (d *DefaultDaemon) writeErrorResponse(conn *net.TCPConn, writeMu *sync.Mute
 	}
 	marshalled, err := proto.Marshal(response)
 	if err != nil {
-		log.Println(fmt.Errorf("marshal error response: %w", err))
+		zap.S().Errorf("marshal error response: %v", err)
 		return
 	}
 	if err := d.writeResponse(conn, writeMu, marshalled); err != nil {
-		log.Println(fmt.Errorf("write error response: %w", err))
+		zap.S().Errorf("write error response: %v", err)
 	}
 }
 
@@ -217,7 +223,7 @@ func (d *DefaultDaemon) getOrCreateContext(cmd string) (*compiler.Context, error
 	if ctx, ok := d.Contexts.Load(cmd); ok && ctx != nil {
 		return ctx.(*compiler.Context), nil
 	}
-	log.Printf("context: initializing %q", cmd)
+	zap.S().Infof("context: initializing %q", cmd)
 	newCtx, err := runner.NewContext(cmd)
 	if err != nil {
 		return nil, err
@@ -280,7 +286,11 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 	compileRequest := gen.CompileRequest{}
 
 	if err := proto.Unmarshal(bytes, &compileRequest); err != nil {
-		log.Println(fmt.Errorf("unmarshal: %w", err))
+		logging.Security("daemon-malformed-request",
+			"daemon received un-decodable CompileRequest from authenticated client",
+			zap.Stringer("remote", conn.RemoteAddr()),
+			zap.Error(err),
+		)
 		d.writeErrorResponse(conn, writeMu, fmt.Sprintf("unmarshal: %v", err), 1)
 		return
 	}
@@ -296,7 +306,7 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 
 	context, err := d.getOrCreateContext(cmd)
 	if err != nil {
-		log.Println(fmt.Errorf("new context: %w", err))
+		zap.S().Errorf("new context: %v", err)
 		d.writeErrorResponse(conn, writeMu, fmt.Sprintf("new context: %v", err), 1)
 		return
 	}
@@ -307,7 +317,7 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 
 	inv, err := context.Compiler.Parse(args)
 	if err != nil {
-		log.Println(fmt.Errorf("args_parse: %w", err))
+		zap.S().Errorf("args_parse: %v", err)
 		d.writeErrorResponse(conn, writeMu, fmt.Sprintf("args_parse: %v", err), 1)
 		return
 	}
@@ -320,7 +330,7 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 	// everything the walker can't reliably classify.
 	inv.Cwd = compileRequest.Cwd
 
-	log.Printf("compile: %s -> %s", cmd, inv.Output)
+	zap.S().Infof("compile: %s -> %s", cmd, inv.Output)
 
 	// Two gates:
 	//   - locallyCacheable: can the local CompileCache safely key on
@@ -344,7 +354,7 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 	if !locallyCacheable && !casDispatchable {
 		result, invokeErr := context.Compiler.Invoke(inv)
 		if invokeErr != nil {
-			log.Println(fmt.Errorf("compile: %w", invokeErr))
+			zap.S().Errorf("compile: %v", invokeErr)
 			d.writeErrorResponse(conn, writeMu, fmt.Sprintf("compile: %v", invokeErr), 1)
 			return
 		}
@@ -374,28 +384,28 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 		if locallyCacheable {
 			result, lookupErr := context.Cache.Lookup(inv, d.tenantID)
 			if lookupErr == nil && result != nil {
-				log.Printf("compile: %s cache hit", inv.Output)
+				zap.S().Infof("compile: %s cache hit", inv.Output)
 				return result, nil
 			}
-			log.Printf("compile: %s cache miss, invoking compiler", inv.Output)
+			zap.S().Infof("compile: %s cache miss, invoking compiler", inv.Output)
 		} else {
 			// CAS-only path (e.g. .S inputs). Local cache is
 			// unsound; the worker's manifest-keyed cache handles
 			// hit detection on the remote side.
-			log.Printf("compile: %s dispatching via CAS (local cache skipped)", inv.Output)
+			zap.S().Infof("compile: %s dispatching via CAS (local cache skipped)", inv.Output)
 		}
 
 		var fallbackWarning []byte
 		if d.dispatcher != nil {
 			remoteResult, remoteErr := d.dispatcher.Dispatch(context_pkgContext(), context.Compiler, inv)
 			if remoteErr == nil {
-				log.Printf("compile: %s served remotely (exit=%d)", inv.Output, remoteResult.ExitCode)
+				zap.S().Infof("compile: %s served remotely (exit=%d)", inv.Output, remoteResult.ExitCode)
 				if locallyCacheable {
 					_ = context.Cache.Store(inv, remoteResult, d.tenantID)
 				}
 				return remoteResult, nil
 			}
-			log.Printf("compile: %s remote dispatch failed: %v (falling back to local)", inv.Output, remoteErr)
+			zap.S().Infof("compile: %s remote dispatch failed: %v (falling back to local)", inv.Output, remoteErr)
 			fallbackWarning = redWarning(remoteErr)
 		}
 
@@ -437,14 +447,14 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 	}
 
 	if err != nil {
-		log.Println(fmt.Errorf("compile: %w", err))
+		zap.S().Errorf("compile: %v", err)
 		d.writeErrorResponse(conn, writeMu, fmt.Sprintf("compile: %v", err), 1)
 		return
 	}
 
 	result := val.(*compiler.InvocationResult)
 	if shared {
-		log.Printf("compile: %s deduped", inv.Output)
+		zap.S().Infof("compile: %s deduped", inv.Output)
 	}
 	d.writeCompileResult(conn, writeMu, inv, result)
 }
@@ -454,11 +464,11 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 // any side-effect extras (.d files etc.) to their cwd-relative paths,
 // then sends a CompileResponse with stdout/stderr/exit code.
 func (d *DefaultDaemon) writeCompileResult(conn *net.TCPConn, writeMu *sync.Mutex, inv *compiler.Invocation, result *compiler.InvocationResult) {
-	log.Printf("compile: %s exit=%d", inv.Output, result.ExitCode)
+	zap.S().Infof("compile: %s exit=%d", inv.Output, result.ExitCode)
 
 	if inv.Output != "" && result.Output != nil {
 		if err := os.WriteFile(inv.Output, result.Output, 0644); err != nil {
-			log.Println(fmt.Errorf("write_output: %w", err))
+			zap.S().Errorf("write_output: %v", err)
 		}
 	}
 
@@ -475,11 +485,11 @@ func (d *DefaultDaemon) writeCompileResult(conn *net.TCPConn, writeMu *sync.Mute
 			full = filepath.Join(inv.Cwd, path)
 		}
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			log.Println(fmt.Errorf("write_extra: mkdir %q: %w", full, err))
+			zap.S().Errorf("write_extra: mkdir %q: %v", full, err)
 			continue
 		}
 		if err := os.WriteFile(full, bytes, 0o644); err != nil {
-			log.Println(fmt.Errorf("write_extra %q: %w", full, err))
+			zap.S().Errorf("write_extra %q: %v", full, err)
 		}
 	}
 
@@ -491,11 +501,11 @@ func (d *DefaultDaemon) writeCompileResult(conn *net.TCPConn, writeMu *sync.Mute
 
 	marshalled, err := proto.Marshal(response)
 	if err != nil {
-		log.Println(fmt.Errorf("marshal: %w", err))
+		zap.S().Errorf("marshal: %v", err)
 		return
 	}
 	if err := d.writeResponse(conn, writeMu, marshalled); err != nil {
-		log.Println(fmt.Errorf("write: %w", err))
+		zap.S().Errorf("write: %v", err)
 	}
 }
 
@@ -532,7 +542,7 @@ func (d *DefaultDaemon) Run(force bool) error {
 		var l *net.TCPListener
 		if l, err = net.ListenTCP("tcp", a); err == nil {
 			defer func(l *net.TCPListener) {
-				log.Printf("daemon: shutting down")
+				zap.S().Infof("daemon: shutting down")
 				_ = setRunningDaemon("", -1)
 				_ = l.Close()
 			}(l)
@@ -540,19 +550,19 @@ func (d *DefaultDaemon) Run(force bool) error {
 			if err := setRunningDaemon(d.AuthToken, port); err != nil {
 				return err
 			}
-			log.Printf("daemon: listening on localhost:%d (pid=%d)", port, os.Getpid())
+			zap.S().Infof("daemon: listening on localhost:%d (pid=%d)", port, os.Getpid())
 
 			for {
 				conn, err := l.AcceptTCP()
 				if err != nil {
-					log.Println(fmt.Errorf("accept: %w", err))
+					zap.S().Errorf("accept: %v", err)
 					continue
 				}
 				_ = conn.SetNoDelay(true)
 
 				go func() {
 					if err := d.handleConnection(conn); err != nil {
-						log.Println(err)
+						zap.S().Error(err)
 					}
 				}()
 			}

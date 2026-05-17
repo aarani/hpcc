@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/MicahParks/keyfunc/v3"
+	"github.com/aarani/hpcc/internal/logging"
 	"github.com/aarani/hpcc/internal/protocol/gen"
 	"github.com/golang-jwt/jwt/v5"
+	"go.uber.org/zap"
 )
 
 type Scheduler struct {
@@ -98,6 +100,11 @@ var _ gen.SchedulerServiceServer = (*Scheduler)(nil)
 func (s *Scheduler) GetTenantIdP(ctx context.Context, in *gen.GetTenantIdPRequest) (*gen.GetTenantIdPResponse, error) {
 	ta, ok := s.tenantAuth[in.TenantId]
 	if !ok {
+		logging.Security("scheduler-unknown-tenant",
+			"scheduler GetTenantIdP rejected: unknown tenant",
+			zap.String("rpc", "GetTenantIdP"),
+			zap.String("tenant_id", in.TenantId),
+		)
 		return nil, fmt.Errorf("unknown tenant")
 	}
 	return &gen.GetTenantIdPResponse{
@@ -117,6 +124,18 @@ func (s *Scheduler) Authenticate(ctx context.Context, in *gen.AuthRequest) (*gen
 			// "unknown tenant", "bad signature", "bad iss/aud",
 			// and "expired" — distinguishing any of these would
 			// leak tenant enumeration. See docs/plan/multi-tenant.md.
+			//
+			// Server-side log records the tenant_id the client
+			// presented and the JWT's *unverified* claims so an
+			// operator can correlate adversarial probes; the wire
+			// response stays opaque.
+			logging.Security("scheduler-auth-failed",
+				"scheduler Authenticate rejected: JWT verification failed",
+				zap.String("rpc", "Authenticate"),
+				zap.String("auth_method", "jwt"),
+				zap.String("tenant_id", in.TenantId),
+				logging.JWTClaims(t.JwtToken),
+			)
 			return &gen.AuthResponse{Success: false}, nil
 		}
 
@@ -131,6 +150,11 @@ func (s *Scheduler) Authenticate(ctx context.Context, in *gen.AuthRequest) (*gen
 		tokenBytes := []byte(t.StaticToken)
 		expectedBytes := []byte(s.config.Auth.WorkerToken)
 		if subtle.ConstantTimeCompare(tokenBytes, expectedBytes) != 1 {
+			logging.Security("scheduler-auth-failed",
+				"scheduler Authenticate rejected: worker static token mismatch",
+				zap.String("rpc", "Authenticate"),
+				zap.String("auth_method", "static_token"),
+			)
 			return &gen.AuthResponse{Success: false}, nil
 		}
 
@@ -143,6 +167,10 @@ func (s *Scheduler) Authenticate(ctx context.Context, in *gen.AuthRequest) (*gen
 		}, nil
 
 	default:
+		logging.Security("scheduler-auth-failed",
+			"scheduler Authenticate rejected: unknown token type",
+			zap.String("rpc", "Authenticate"),
+		)
 		return &gen.AuthResponse{Success: false}, nil
 	}
 }
@@ -150,12 +178,23 @@ func (s *Scheduler) Authenticate(ctx context.Context, in *gen.AuthRequest) (*gen
 func (s *Scheduler) Route(ctx context.Context, in *gen.RouteRequest) (*gen.RouteResponse, error) {
 	sessVal, authenticated := s.userSessions.Load(in.SessionToken)
 	if !authenticated {
+		logging.Security("scheduler-session-invalid",
+			"scheduler Route rejected: unknown or expired session",
+			zap.String("rpc", "Route"),
+			zap.String("tenant_id", in.TenantId),
+		)
 		return nil, fmt.Errorf("unauthenticated")
 	}
 	sessTenant, _ := sessVal.(string)
 	// Session is bound to the tenant the JWT authenticated. A session
 	// for tenant A cannot route as tenant B even if the JWT verified.
 	if sessTenant == "" || sessTenant != in.TenantId {
+		logging.Security("scheduler-tenant-mismatch",
+			"scheduler Route rejected: session tenant does not match request tenant",
+			zap.String("rpc", "Route"),
+			zap.String("session_tenant_id", sessTenant),
+			zap.String("request_tenant_id", in.TenantId),
+		)
 		return nil, fmt.Errorf("unauthenticated")
 	}
 
@@ -302,6 +341,11 @@ func (s *Scheduler) pickWorker(tenantID, imageDigest string) (*WorkerState, erro
 
 func (s *Scheduler) RegisterWorker(ctx context.Context, in *gen.RegisterWorkerRequest) (*gen.RegisterWorkerResponse, error) {
 	if _, authenticated := s.workerSessions.Load(in.SessionToken); !authenticated {
+		logging.Security("scheduler-session-invalid",
+			"scheduler RegisterWorker rejected: unknown or expired worker session",
+			zap.String("rpc", "RegisterWorker"),
+			zap.String("worker_id", in.WorkerId),
+		)
 		return &gen.RegisterWorkerResponse{Success: false}, nil
 	}
 
@@ -315,15 +359,31 @@ func (s *Scheduler) RegisterWorker(ctx context.Context, in *gen.RegisterWorkerRe
 func (s *Scheduler) Heartbeat(ctx context.Context, in *gen.WorkerHeartbeat) (*gen.HeartbeatResponse, error) {
 	workerID, authenticated := s.workerSessions.Load(in.SessionToken)
 	if !authenticated {
+		logging.Security("scheduler-session-invalid",
+			"scheduler Heartbeat rejected: unknown or expired worker session",
+			zap.String("rpc", "Heartbeat"),
+			zap.String("worker_id", in.WorkerId),
+		)
 		return nil, fmt.Errorf("unauthenticated")
 	}
 
 	if workerID != in.WorkerId {
+		logging.Security("scheduler-worker-id-mismatch",
+			"scheduler Heartbeat rejected: session worker_id does not match request",
+			zap.String("rpc", "Heartbeat"),
+			zap.Any("session_worker_id", workerID),
+			zap.String("request_worker_id", in.WorkerId),
+		)
 		return nil, fmt.Errorf("session does not match worker ID")
 	}
 
 	val, exists := s.workerStates.Load(in.WorkerId)
 	if !exists {
+		logging.Security("scheduler-worker-not-registered",
+			"scheduler Heartbeat rejected: worker authenticated but has no registration state",
+			zap.String("rpc", "Heartbeat"),
+			zap.String("worker_id", in.WorkerId),
+		)
 		return nil, fmt.Errorf("worker %q not registered", in.WorkerId)
 	}
 
