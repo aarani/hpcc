@@ -282,9 +282,14 @@ that's wired into `logging.Security` so every existing call site
 emits a sample without touching the call site. Observable gauges
 for in-flight compiles (daemon + worker), live container pool
 entries by tenant (worker), and registered workers (scheduler)
-ride on the same surface. Cache-bytes gauges, durable
-security-event sidecar, and `hpcc explain <file>` are the
-remaining Phase-5 work.
+ride on the same surface. `hpcc explain <source>` (§5.3) is wired
+— the daemon writes one record per compile attempt under
+`$os.UserCacheDir/hpcc/explain/`, computes the structured diff
+against the prior record at write time, and the CLI prints a
+named change list (`compiler`, `flags`, `source`,
+`header <path>`, `image`) so a miss is one command away from a
+specific root cause. Cache-bytes gauges and durable security-event
+sidecar are the remaining Phase-5 work.
 
 ---
 
@@ -337,5 +342,9 @@ follow-up.
   plus the matching client-side fallback. Deferred to
   [phase-5-observability.md §5.7](docs/plan/phase-5-observability.md)
   because its overrun event is a security-event-log row.
-- **No `hpcc explain <file>`.** Structured cache-miss reasons are
-  Phase 5.
+- **`hpcc explain <file>` is daemon-local and source-path-only.**
+  Compiles that never traversed the daemon (CI runs without a
+  daemon, worker-direct calls) leave no record. Output-path
+  lookup (`hpcc explain foo.o`) isn't wired yet. MSVC per-header
+  attribution waits on capturing the `/showIncludes` stream —
+  gcc / clang work via the existing `.d` file collection.

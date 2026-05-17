@@ -6,6 +6,15 @@ import (
 	"slices"
 )
 
+// CacheKeyFlagsBytes returns the canonical byte encoding of the
+// cache-key-relevant flags for inv — the same bytes the cache key's
+// flags chunk is built from. Exported for the explain package, which
+// hashes them separately so a "flags changed" diff is recoverable
+// from the prior compile's record. Production code outside that
+// callsite should stick with CacheKey/ComputeHash; this returns the
+// raw bytes, not a hash.
+func CacheKeyFlagsBytes(inv *Invocation) []byte { return cacheKeyFlags(inv) }
+
 // cacheKeyFlags returns a canonical byte encoding of the parts of an
 // Invocation that affect the compiled object's content. Anything that
 // only affects diagnostics, dependency-file emission, or where the

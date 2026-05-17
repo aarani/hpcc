@@ -129,6 +129,12 @@ func New(cfg config.RemoteConfig, sourceMode enum.SourceMode) (*Dispatcher, erro
 // handle (e.g. GAS .S with .incbin — see Cacheable's comments).
 func (d *Dispatcher) SourceMode() enum.SourceMode { return d.sourceMode }
 
+// ImageDigest returns the OCI image digest the dispatcher tags every
+// Compile RPC with. Exposed for the daemon's `hpcc explain` record so
+// the daemon can report image-pin changes as a discrete cache-miss
+// reason without rerunning the dispatcher.
+func (d *Dispatcher) ImageDigest() string { return d.cfg.ImageDigest }
+
 // Close shuts down all gRPC connections (scheduler + worker pool).
 func (d *Dispatcher) Close() error {
 	d.workersMu.Lock()
