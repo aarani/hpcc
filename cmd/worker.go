@@ -9,10 +9,13 @@ import (
 	"net"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/aarani/hpcc/internal/protocol/gen"
+	"github.com/aarani/hpcc/internal/tracing"
 	"github.com/aarani/hpcc/internal/worker"
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -75,10 +78,34 @@ of the worker process with no isolation at all.`,
 			return err
 		}
 
+		// Catch SIGINT/SIGTERM so a kill returns control to the deferred
+		// graceful-stop instead of dropping in-flight RPCs.
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+
+		// Tracing is a no-op unless OTEL_EXPORTER_OTLP_ENDPOINT (or the
+		// trace-specific variant) is set. otelgrpc's stats handler
+		// creates a root span per inbound RPC and extracts an upstream
+		// traceparent if the client sent one, so worker spans nest
+		// under client spans for end-to-end visibility.
+		tracingShutdown, err := tracing.Init(ctx, "hpcc-worker")
+		if err != nil {
+			return err
+		}
+		defer func() {
+			// Allow up to a few seconds for in-flight batched spans to
+			// drain; the parent ctx may already be cancelled, so
+			// shutdown gets its own context.
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tracingShutdown(shutdownCtx)
+		}()
+
 		srv := grpc.NewServer(
 			grpc.Creds(credentials.NewTLS(tlsCfg)),
 			grpc.MaxRecvMsgSize(gen.MaxCompileMessageBytes),
 			grpc.MaxSendMsgSize(gen.MaxCompileMessageBytes),
+			grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		)
 		gen.RegisterWorkerServiceServer(srv, w)
 
@@ -86,11 +113,6 @@ of the worker process with no isolation at all.`,
 		if err != nil {
 			return err
 		}
-
-		// Catch SIGINT/SIGTERM so a kill returns control to the deferred
-		// graceful-stop instead of dropping in-flight RPCs.
-		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-		defer stop()
 
 		// Start serving before the scheduler liaison so clients routed
 		// to this worker (immediately after RegisterWorker returns)
