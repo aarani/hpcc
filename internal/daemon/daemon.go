@@ -26,6 +26,7 @@ import (
 	"github.com/aarani/hpcc/internal/daemon/client"
 	"github.com/aarani/hpcc/internal/daemon/dispatch"
 	"github.com/aarani/hpcc/internal/enum"
+	"github.com/aarani/hpcc/internal/explain"
 	"github.com/aarani/hpcc/internal/logging"
 	"github.com/aarani/hpcc/internal/metrics"
 	"github.com/aarani/hpcc/internal/runner"
@@ -63,6 +64,15 @@ type DefaultDaemon struct {
 	// surfaced via the hpcc.daemon.inflight_compiles observable
 	// gauge. Atomic so the metrics callback never takes a lock.
 	inflight atomic.Int32
+
+	// explainStore records per-compile metadata (compiler identity,
+	// flags hash, source content hash, per-header content hashes,
+	// image digest, outcome) on every compile attempt. `hpcc explain
+	// <source>` reads the latest record for that source and diffs
+	// against the prior to name which input changed. Phase 5 §5.3.
+	// nil when the user's cache dir isn't resolvable — explain is
+	// best-effort, the compile still happens.
+	explainStore explain.Store
 }
 
 // sideEffectBypassNotice is the one-time message the daemon prepends
@@ -109,6 +119,20 @@ func NewDefaultDaemon() *DefaultDaemon {
 	if d.tenantID == "" {
 		d.tenantID = cache.TenantLocal
 	}
+
+	// Explain store under the user's cache dir; failures are
+	// logged-and-ignored so a missing UserCacheDir doesn't take the
+	// daemon down with it.
+	if dir, err := explain.DefaultDir(); err == nil {
+		if store, err := explain.NewDiskStore(dir, 0); err == nil {
+			d.explainStore = store
+		} else {
+			zap.S().Infof("daemon: init explain store: %v (explain disabled)", err)
+		}
+	} else {
+		zap.S().Infof("daemon: locate explain dir: %v (explain disabled)", err)
+	}
+
 	return d
 }
 
@@ -373,6 +397,7 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 			return
 		}
 		metrics.DaemonCompile(context_pkgContext(), metrics.ResultBypass, time.Since(bypassStart))
+		d.recordExplain(context, inv, "", explain.OutcomeBypass, result, "")
 		// One-shot user-visible warning when the bypass is due to an
 		// uncaptured-side-effect flag specifically (not the other
 		// non-dispatchable cases like stdin / multi-input / link,
@@ -483,6 +508,26 @@ func (d *DefaultDaemon) handleRequest(bytes []byte, conn *net.TCPConn, writeMu *
 	if shared {
 		zap.S().Infof("compile: %s deduped", inv.Output)
 	}
+
+	// Translate the metrics-shaped outcome into the explain enum.
+	// They're aligned by intent (one row per compile attempt) but
+	// the explain side has its own stable strings — keeps the on-disk
+	// record schema independent of the metrics label space.
+	var explainOutcome explain.Outcome
+	var imgDigest string
+	switch outcome {
+	case metrics.ResultLocalHit:
+		explainOutcome = explain.OutcomeLocalHit
+	case metrics.ResultRemote:
+		explainOutcome = explain.OutcomeRemote
+		if d.dispatcher != nil {
+			imgDigest = d.dispatcher.ImageDigest()
+		}
+	default:
+		explainOutcome = explain.OutcomeLocalInvoke
+	}
+	d.recordExplain(context, inv, hash, explainOutcome, result, imgDigest)
+
 	d.writeCompileResult(conn, writeMu, inv, result)
 }
 

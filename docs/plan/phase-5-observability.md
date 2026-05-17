@@ -68,6 +68,26 @@ Make it easy to understand what hpcc is doing and why.
   registered into `logging.Security` via a hook in
   `internal/logging` so every existing call site fires a counter
   without touching the call site.
+- **Done — §5.3 `hpcc explain <source-file>`:** new
+  `internal/explain` package owns a JSON-file-per-source disk store
+  under `$os.UserCacheDir/hpcc/explain/` (LRU eviction at 10k
+  records, atomic rename on Put). The daemon writes one record on
+  every compile attempt — hit, miss, bypass, error — carrying
+  hex-SHA-256 sub-hashes of the inputs the cache key was built
+  from: compiler identity (from `Compiler.Identity()`), canonical
+  flags (from the new `compiler.CacheKeyFlagsBytes` accessor — same
+  bytes the cache key consumes), source content, per-header content
+  (paths parsed out of the `.d` file the compile produced, either
+  on disk locally or shipped back as an extra by the worker), and
+  the dispatcher's image digest when remote. The diff against the
+  prior record is computed at write time (the daemon has both in
+  hand) and embedded into the new record's `diffs` field, so the
+  CLI is a pure read. `hpcc explain <source>` renders the latest
+  outcome and the named change list:
+  `compiler` / `flags` / `source` / `header <path>` / `image`.
+  MSVC per-header attribution waits on capturing the
+  `/showIncludes` stream into the record; output-path lookup
+  (`hpcc explain foo.o`) waits on a second index.
 - **Done — §5.1 observable gauges:** `internal/metrics/gauges.go`
   exposes `RegisterDaemonInflight` /
   `RegisterWorkerInflight` / `RegisterWorkerContainers` /
@@ -113,14 +133,36 @@ daemon question.
 
 ### 5.3 Miss Reasons
 
-When a cache miss occurs, log exactly why:
-- New file (never seen before)
-- Source changed (diff the preprocessed output if previous version exists)
-- Flags changed
-- Toolchain image digest changed
-- Header changed (identify which header)
+**Status:** shipped (see "Progress so far" above). One JSON
+record per source path under `$os.UserCacheDir/hpcc/explain/`,
+written by the daemon on every compile attempt. The diff against
+the prior record is computed at write time and embedded into the
+new record, so `hpcc explain` is a pure read with no two-record
+history requirement.
 
-`hpcc explain <file>` — show why the last compilation was a miss.
+Categories surfaced today:
+- `compiler` — compiler binary's identity changed (rebuilt,
+  replaced, symlink moved)
+- `flags` — the cache-key-relevant flag set changed (added /
+  removed / reordered flags)
+- `source` — the source file's bytes changed
+- `header <path>` — a specific transitively-included header
+  changed, was added, or was removed
+- `image` — the OCI toolchain image digest the dispatcher pins
+  changed
+
+Still open:
+- MSVC per-header attribution. gcc / clang dep emission lands in
+  `.d` files the daemon already collects; MSVC writes the same
+  data to stderr via `/showIncludes`, which the daemon doesn't
+  capture today.
+- Output-path lookup (`hpcc explain foo.o`). Source path only in
+  the MVP — adding it needs a second index file mapping output →
+  source.
+- Worker-only compiles. Compiles that never traversed the daemon
+  (e.g. CI calling the wrapper without a running daemon) leave
+  no explain record. A worker-side explain feed merged into the
+  daemon view is a follow-up.
 
 ### 5.4 Configuration
 
