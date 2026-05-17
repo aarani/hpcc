@@ -6,7 +6,6 @@ package cmd
 import (
 	"context"
 	"crypto/tls"
-	"log"
 	"net"
 	"os/signal"
 	"syscall"
@@ -14,6 +13,7 @@ import (
 	"github.com/aarani/hpcc/internal/protocol/gen"
 	"github.com/aarani/hpcc/internal/worker"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
@@ -97,7 +97,7 @@ of the worker process with no isolation at all.`,
 		// can connect without a transient connection-refused window.
 		errCh := make(chan error, 2)
 		go func() {
-			log.Printf("worker listening on %s", lis.Addr())
+			zap.S().Infof("worker listening on %s", lis.Addr())
 			errCh <- srv.Serve(lis)
 		}()
 		go func() {
@@ -109,7 +109,7 @@ of the worker process with no isolation at all.`,
 			srv.GracefulStop()
 			return err
 		case <-ctx.Done():
-			log.Printf("worker: shutting down")
+			zap.S().Infof("worker: shutting down")
 			srv.GracefulStop()
 			return nil
 		}
