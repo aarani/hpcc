@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/hex"
 	"path/filepath"
 
 	"github.com/aarani/hpcc/internal/compiler"
@@ -14,7 +15,7 @@ import (
 // client and explain is opportunistic metadata, not part of the
 // contract.
 //
-// sub-hashes are derived as follows:
+// Sub-hash sources:
 //
 //   - Compiler identity: compiler.Compiler.Identity() bytes,
 //     SHA-256-hashed for the on-disk record (Identity itself is
@@ -24,17 +25,26 @@ import (
 //     encoding the cache key consumes — so a "flags changed" diff
 //     here lines up exactly with what the cache key saw.
 //   - Source content: the first input file's bytes.
-//   - Headers: parsed from the .d file the compile just produced
-//     (whether locally or shipped back as an extra by the worker).
+//   - Headers: lifted straight from the CAS source-closure manifest
+//     when one was built (the default; CAS-mode local-cache lookup
+//     always builds one). Manifest blobs carry per-file BLAKE3
+//     digests already, so explain pays nothing for them — no extra
+//     preprocess pass, no per-flag dependence. Records mark
+//     `header_hash_algo = "blake3"` so the diff renderer stays
+//     algorithm-agnostic and a future SHA-256 source can coexist
+//     without colliding.
 //
-// cacheKey is the daemon's already-computed hex digest, or "" when
-// we never computed one (bypass path).
+// manifest may be nil; the worker's ManifestDigest /
+// PreprocessedDigest short-circuits and the PREPROCESSED-mode local
+// path don't produce one, and the bypass path doesn't go through
+// cache-key plumbing at all. Header tracking is best-effort and gets
+// skipped in those cases.
 func (d *DefaultDaemon) recordExplain(
 	ctx *compiler.Context,
 	inv *compiler.Invocation,
 	cacheKey string,
 	outcome explain.Outcome,
-	result *compiler.InvocationResult,
+	manifest *compiler.Manifest,
 	imageDigest string,
 ) {
 	if d.explainStore == nil {
@@ -43,9 +53,6 @@ func (d *DefaultDaemon) recordExplain(
 	if len(inv.Inputs) == 0 {
 		return
 	}
-	// Absolute paths so two builds of the same source from
-	// different cwds collapse onto one record (and `hpcc explain
-	// ./foo.c` from either directory finds it).
 	srcAbs := absOrSelf(inv.Inputs[0], inv.Cwd)
 	rec := &explain.Record{
 		SourcePath:     srcAbs,
@@ -64,7 +71,9 @@ func (d *DefaultDaemon) recordExplain(
 	if h, err := explain.HashFile(srcAbs); err == nil {
 		rec.SourceContentHash = h
 	}
-	rec.HeaderHashes = collectHeaderHashes(inv, result)
+	if manifest != nil {
+		rec.HeaderHashes, rec.HeaderHashAlgo = headerHashesFromManifest(manifest, srcAbs, inv.Cwd)
+	}
 
 	// Compute the structured diff against the prior record while we
 	// still have access to both — the Put below overwrites the
@@ -86,53 +95,36 @@ func (d *DefaultDaemon) recordExplain(
 	}
 }
 
-// collectHeaderHashes finds the .d file the compiler produced and
-// hashes each header it lists. Returns nil if no .d file is available
-// (bypass paths, MSVC, or a TU with no -MMD on the cmdline).
+// headerHashesFromManifest turns the closure manifest's blob list
+// into the explain record's header-hash map. The source file itself
+// is excluded (it lives in record.SourceContentHash); everything else
+// in the closure is treated as a header.
 //
-// Two sources:
-//   - result.Extras: dispatched compiles ship the .d back as a side
-//     output. The bytes are in memory; parse directly.
-//   - Local invoke: the .d file lives on disk. The daemon's main
-//     flow already calls CollectDepEmissionExtras which reads it
-//     into result.Extras, so this code path subsumes both.
+// Manifest paths are as-spelled (potentially project-relative when a
+// `.hpcc` marker normalises them, otherwise absolute). For diff
+// stability we resolve each to an absolute path against inv.Cwd —
+// same convention as record.SourcePath — so two builds of the same
+// TU from different cwds collapse onto comparable header keys.
 //
-// Header paths in the .d are resolved against inv.Cwd before
-// hashing, so "../include/foo.h" finds the right file.
-func collectHeaderHashes(inv *compiler.Invocation, result *compiler.InvocationResult) map[string]string {
-	if result == nil || len(result.Extras) == 0 {
-		return nil
+// Returned algorithm string is "blake3" since manifest digests are
+// BLAKE3-256; baked into the record so a later SHA-256 source can
+// coexist without the diff engine mixing algorithms.
+func headerHashesFromManifest(m *compiler.Manifest, srcAbs, cwd string) (map[string]string, string) {
+	if m == nil || len(m.Blobs) == 0 {
+		return nil, ""
 	}
-	out := map[string]string{}
-	for _, content := range result.Extras {
-		// .d files are short; skip the "is this a .d" classification
-		// and just try to parse — ParseDepFile returns nil on
-		// non-Make-rule content.
-		deps := explain.ParseDepFile(content)
-		// First dep is the source itself; skip it. Subsequent are
-		// headers. Some compilers emit the source as a later entry
-		// — keep the simple "skip srcAbs match" rule that handles
-		// both layouts.
-		srcAbs := absOrSelf(inv.Inputs[0], inv.Cwd)
-		for _, dep := range deps {
-			depAbs := absOrSelf(dep, inv.Cwd)
-			if depAbs == srcAbs {
-				continue
-			}
-			if _, ok := out[depAbs]; ok {
-				continue
-			}
-			h, err := explain.HashFile(depAbs)
-			if err != nil {
-				continue
-			}
-			out[depAbs] = h
+	out := make(map[string]string, len(m.Blobs))
+	for _, b := range m.Blobs {
+		abs := absOrSelf(b.Path, cwd)
+		if abs == srcAbs {
+			continue
 		}
+		out[abs] = hex.EncodeToString(b.Digest[:])
 	}
 	if len(out) == 0 {
-		return nil
+		return nil, ""
 	}
-	return out
+	return out, "blake3"
 }
 
 // absOrSelf resolves p against cwd when p is relative and cwd is non-

@@ -345,6 +345,8 @@ follow-up.
 - **`hpcc explain <file>` is daemon-local and source-path-only.**
   Compiles that never traversed the daemon (CI runs without a
   daemon, worker-direct calls) leave no record. Output-path
-  lookup (`hpcc explain foo.o`) isn't wired yet. MSVC per-header
-  attribution waits on capturing the `/showIncludes` stream —
-  gcc / clang work via the existing `.d` file collection.
+  lookup (`hpcc explain foo.o`) isn't wired yet. Header
+  attribution is universal across gcc / clang / MSVC: the daemon
+  mines paths and BLAKE3 digests from the CAS source-closure
+  manifest it already builds for cache-key computation, so user
+  `-MMD` flags don't matter.
