@@ -17,6 +17,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
@@ -34,12 +37,29 @@ import (
 	"github.com/aarani/hpcc/internal/enum"
 	"github.com/aarani/hpcc/internal/logging"
 	"github.com/aarani/hpcc/internal/protocol/gen"
+	"github.com/aarani/hpcc/internal/tracing"
 	"github.com/aarani/hpcc/internal/worker/image"
 	"github.com/aarani/hpcc/internal/worker/runtime"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/zeebo/blake3"
 )
+
+// tracer is the worker package's OTel instrumentation handle. Named
+// with the import path so traces are filterable to this layer of the
+// stack.
+var tracer = tracing.Tracer("github.com/aarani/hpcc/internal/worker")
+
+// endSpan records err on span and closes it. Pulled out as a helper so
+// the dozen-or-so per-phase spans in Compile stay one-liners at the
+// call site. nil err leaves the span with OK status (the default).
+func endSpan(span trace.Span, err error) {
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(otelcodes.Error, err.Error())
+	}
+	span.End()
+}
 
 // heartbeatInterval is how often the worker pushes state to the scheduler.
 // Short enough that the scheduler's view of free capacity isn't stale,
@@ -238,6 +258,18 @@ func buildImageStore(cfg Config) (image.Store, error) {
 }
 
 func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.CompileResponse, error) {
+	// otelgrpc's stats handler already opened a root span for this
+	// RPC; we attach high-cardinality compile-specific attributes to
+	// it and let each phase below open a child span.
+	rootSpan := trace.SpanFromContext(ctx)
+	if req.Descriptor_ != nil {
+		rootSpan.SetAttributes(
+			attribute.String("hpcc.tenant_id", req.Descriptor_.TenantId),
+			attribute.String("hpcc.image_digest", req.Descriptor_.ImageDigest),
+			attribute.String("hpcc.source_mode", req.Descriptor_.SourceMode.String()),
+		)
+	}
+
 	if req.Descriptor_ == nil {
 		logging.Security("worker-missing-descriptor",
 			"worker Compile RPC missing CompileDescriptor",
@@ -286,16 +318,20 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 	// request we're about to refuse.
 	var verifiedManifestDigest *[32]byte
 	if cas := req.Descriptor_.GetCas(); cas != nil {
-		md, err := verifyManifestDigest(cas)
-		if err != nil {
+		_, vspan := tracer.Start(ctx, "compile.verify_manifest",
+			trace.WithAttributes(attribute.Int("hpcc.blob_count", len(cas.Blobs))),
+		)
+		md, mdErr := verifyManifestDigest(cas)
+		endSpan(vspan, mdErr)
+		if mdErr != nil {
 			logging.Security("worker-manifest-digest-mismatch",
 				"worker Compile RPC rejected: manifest digest verification failed",
 				zap.String("rpc", "Compile"),
 				zap.String("tenant_id", req.Descriptor_.TenantId),
 				zap.String("image_digest", req.Descriptor_.ImageDigest),
-				zap.Error(err),
+				zap.Error(mdErr),
 			)
-			return nil, fmt.Errorf("verify manifest digest: %w", err)
+			return nil, fmt.Errorf("verify manifest digest: %w", mdErr)
 		}
 		verifiedManifestDigest = &md
 	}
@@ -304,11 +340,18 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 	// before we ask the runtime to start a container against it. On a
 	// miss this pulls (deduped across concurrent compiles for the same
 	// digest); on a hit this just touches the lastUsed timestamp.
-	if err := w.ensureImage(ctx, req.Descriptor_.ImageDigest, req.Descriptor_.ImageRef); err != nil {
-		return nil, fmt.Errorf("ensure image: %w", err)
+	ensureCtx, ensureSpan := tracer.Start(ctx, "compile.ensure_image",
+		trace.WithAttributes(attribute.String("hpcc.image_digest", req.Descriptor_.ImageDigest)),
+	)
+	ensureErr := w.ensureImage(ensureCtx, req.Descriptor_.ImageDigest, req.Descriptor_.ImageRef)
+	endSpan(ensureSpan, ensureErr)
+	if ensureErr != nil {
+		return nil, fmt.Errorf("ensure image: %w", ensureErr)
 	}
 
+	_, stageSpan := tracer.Start(ctx, "compile.stage_source")
 	srcHostPath, outHostPath, cleanup, err := w.stageSource(req)
+	endSpan(stageSpan, err)
 	if err != nil {
 		return nil, fmt.Errorf("stage source: %w", err)
 	}
@@ -350,13 +393,21 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 		MemoryBytes: w.Config.VM.MemoryBytes(),
 	}
 
-	container, err := w.runtime.Start(ctx, spec)
+	startCtx, startSpan := tracer.Start(ctx, "compile.runtime_start",
+		trace.WithAttributes(
+			attribute.String("hpcc.container_id", spec.ID),
+			attribute.Int("hpcc.vm.vcpus", int(spec.VCPUs)),
+		),
+	)
+	container, err := w.runtime.Start(startCtx, spec)
+	endSpan(startSpan, err)
 	if err != nil {
 		return nil, fmt.Errorf("start container: %w", err)
 	}
 	// Stop on a pooled runtime returns the container to the pool;
 	// inside the dev runtime it's a no-op. Either way, defer is safe.
 	defer container.Stop(ctx)
+	rootSpan.SetAttributes(attribute.String("hpcc.container_id", container.ID()))
 
 	c, err := compiler.Detect(req.Args[0])
 	if err != nil {
@@ -400,16 +451,31 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 	useCache := w.Config.Paranoid || req.Descriptor_.SourceMode == gen.SourceMode_CAS
 
 	if useCache {
-		if hit, err := cctx.Cache.Lookup(inv, req.Descriptor_.TenantId); err == nil && hit != nil {
+		_, lookupSpan := tracer.Start(ctx, "compile.cache_lookup")
+		hit, lookupErr := cctx.Cache.Lookup(inv, req.Descriptor_.TenantId)
+		lookupSpan.SetAttributes(attribute.Bool("hpcc.cache_hit", lookupErr == nil && hit != nil))
+		endSpan(lookupSpan, lookupErr)
+		if lookupErr == nil && hit != nil {
 			// Cache hit. hit.Extras was populated by loadEntry from
 			// the cached `extras` blob, so the client gets the same
 			// .d files the original cold compile produced — even
 			// though no gcc ran this time.
+			rootSpan.SetAttributes(attribute.Bool("hpcc.cache_hit", true))
 			return w.respond(cctx, req, container, inv, hit), nil
 		}
 	}
+	rootSpan.SetAttributes(attribute.Bool("hpcc.cache_hit", false))
 
+	_, invokeSpan := tracer.Start(ctx, "compile.invoke")
 	result, err := c.Invoke(inv)
+	if result != nil {
+		invokeSpan.SetAttributes(
+			attribute.Int("hpcc.exit_code", result.ExitCode),
+			attribute.Int64("hpcc.duration_ms", result.Duration.Milliseconds()),
+			attribute.Int("hpcc.output_bytes", len(result.Output)),
+		)
+	}
+	endSpan(invokeSpan, err)
 	if err != nil {
 		return nil, fmt.Errorf("invoke compiler: %w", err)
 	}
@@ -420,7 +486,10 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 	// extract anything that isn't the primary -o artifact. The
 	// client rewrote dep-emission paths to live under /out before
 	// sending, so the relative key here matches the path it remembers.
+	_, extrasSpan := tracer.Start(ctx, "compile.collect_extras")
 	extras, err := collectExtraOutputs(outHostPath, inv.Output)
+	extrasSpan.SetAttributes(attribute.Int("hpcc.extra_count", len(extras)))
+	endSpan(extrasSpan, err)
 	if err != nil {
 		return nil, fmt.Errorf("collect extra outputs: %w", err)
 	}
@@ -431,7 +500,9 @@ func (w *Worker) Compile(ctx context.Context, req *gen.CompileRequest) (*gen.Com
 		// request can recompute and try again. Extras go into the
 		// cache too so warm hits replay the same .d files cold
 		// compiles produced.
-		_ = cctx.Cache.Store(inv, result, req.Descriptor_.TenantId)
+		_, storeSpan := tracer.Start(ctx, "compile.cache_store")
+		storeErr := cctx.Cache.Store(inv, result, req.Descriptor_.TenantId)
+		endSpan(storeSpan, storeErr)
 	}
 
 	return w.respond(cctx, req, container, inv, result), nil
