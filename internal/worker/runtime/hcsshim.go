@@ -20,7 +20,24 @@ import (
 
 	"github.com/aarani/hpcc/internal/protocol/gen"
 	"github.com/aarani/hpcc/internal/worker/image/cdimage"
+
+	"github.com/containerd/containerd/v2/core/containers"
 )
+
+// withNoWindowsNIC zeroes spec.Windows.Network. The runhcs shim
+// reads EndpointList / NetworkNamespace to decide whether to attach
+// an HNS endpoint (and, for hyperv, whether the utility VM gets a
+// synthetic NIC). Leaving the field nil yields "no networking,"
+// which is what hpcc wants — compiles dispatch over HvSocket
+// (hyperv) or Task.Exec (process), so the container needs no IP
+// stack and exposing one would only widen the attack surface.
+func withNoWindowsNIC(_ context.Context, _ oci.Client, _ *containers.Container, s *oci.Spec) error {
+	if s.Windows == nil {
+		s.Windows = &specs.Windows{}
+	}
+	s.Windows.Network = nil
+	return nil
+}
 
 // HandlerHcsshim is the config.toml runtime.handler value that selects
 // the containerd + hcsshim driver. Wires the worker to a containerd
@@ -302,6 +319,14 @@ func (h *Hcsshim) Start(ctx context.Context, spec ContainerSpec) (Container, err
 		// default is cmd.exe, which would exit immediately under
 		// cio.NullIO).
 		oci.WithProcessArgs(entrypoint),
+		// Explicitly zero Windows.Network so the runhcs shim attaches
+		// no HNS endpoint and (under Hyper-V isolation) the utility VM
+		// is started with no synthetic NIC. The host ↔ container
+		// channel is HvSocket — agent.exe under hyperv, Task.Exec
+		// under process — neither needs IP. Asserting nil here keeps
+		// a future oci.WithImageConfig that learns to propagate
+		// image-level Windows.Network from silently re-attaching one.
+		withNoWindowsNIC,
 	}
 	if useAgent {
 		// Process isolation runs in a Windows Server silo on the host
