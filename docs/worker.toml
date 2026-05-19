@@ -63,6 +63,24 @@ uid             = 1000
 gid             = 1000
 # boot_args     = "console=ttyS0 reboot=k panic=1 pci=off init=/.hpcc/agent root=/dev/vda ro"
 
+# Required when handler = "runhcs-wcow-hypervisor" (Windows). Uses the
+# host's containerd + hcsshim Hyper-V runtime; isolation between hpcc
+# state and anything else on the host is containerd-namespace-level.
+# Each Start allocates <run_dir>/<container-id>/{src,out} as the host
+# backing for the per-Exec mounts the runtime injects at C:\src and
+# C:\out. Isolation "hyperv" is the production value (separate utility
+# VM per container, kernel boundary); "process" runs the container in
+# a Windows Server silo on the host kernel and is only valid where
+# nested virtualization isn't available (hosted CI runners, dev
+# laptops). Empty isolation falls back to "hyperv".
+# [runtime.hcsshim]
+# address     = "\\\\.\\pipe\\containerd-containerd"
+# namespace   = "hpcc"
+# run_dir     = "C:\\ProgramData\\hpcc\\run"
+# runtime     = "io.containerd.runhcs.v1"
+# snapshotter = "windows"
+# isolation   = "hyperv"   # or "process"
+
 # Per-tenant microVM sizing. The worker's total compile budget is
 # pool.max_active * vm.vcpus concurrent in-flight compiles.
 [vm]
@@ -74,12 +92,42 @@ session_timeout = "8h"    # hard cap on a tenant VM's lifetime
 [pool]
 max_active = 32   # upper bound on concurrent per-tenant VMs
 
-# Optional: pre-built pause binaries on disk. Empty → use the binaries
-# embedded at build time (built from /pause).
+# Pre-built binaries and image-catalogue knobs. The pause_* paths are
+# optional — empty falls back to the binaries embedded at build time
+# (built from /pause). The agent_* paths point at hpcc-agent builds:
+#
+#   agent_linux_amd64 / agent_linux_arm64 — required when
+#     handler = "firecracker". rootfs.Store injects the matching
+#     binary at /.hpcc/agent inside each prepared squashfs image, one
+#     path per arch the worker will pull for. Empty is fine for an
+#     arch the worker never pulls; PullImage fails fast at request
+#     time rather than at startup.
+#   agent_windows_amd64 — required when handler =
+#     "runhcs-wcow-hypervisor" AND hcsshim.isolation = "hyperv". The
+#     agent is bind-mounted alongside pause.exe (under C:\.hpcc) and
+#     becomes the OCI entrypoint so the host streams compile
+#     inputs/outputs over HvSocket gRPC instead of copyTree-ing every
+#     Exec. Not used by process-isolation containers.
+#
+# advertised_digests is a static list of image digests the worker
+# reports in RegisterWorker / Heartbeat in addition to whatever the
+# real ImageStore knows about. Useful with the dev-mode
+# "really_really_dangerous" handler (no containerd, no image store)
+# or to manually pin which toolchains this worker accepts.
+# AdvertisedDigests are exempt from idle-image eviction.
+#
+# idle_timeout is the maximum time an image entry may sit in the
+# local catalogue without being used by a Compile before eviction.
+# Empty disables eviction. The default is "24h".
 # [image]
 # pause_linux_amd64   = "/var/lib/hpcc/pause-linux-amd64"
 # pause_linux_arm64   = "/var/lib/hpcc/pause-linux-arm64"
 # pause_windows_amd64 = "/var/lib/hpcc/pause-windows-amd64.exe"
+# agent_linux_amd64   = "/var/lib/hpcc/hpcc-agent-linux-amd64"
+# agent_linux_arm64   = "/var/lib/hpcc/hpcc-agent-linux-arm64"
+# agent_windows_amd64 = "/var/lib/hpcc/hpcc-agent-windows-amd64.exe"
+# advertised_digests  = ["sha256:abc..."]
+# idle_timeout        = "24h"
 
 # Worker-side cache backends. Required when paranoid = true; in the
 # default mode this can be omitted and clients carry their own caches.
