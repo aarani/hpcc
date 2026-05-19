@@ -34,6 +34,20 @@ jobs:
     - name: Test
       run: go test -v ./...
 
+    - name: Cross-build release binaries
+      # Produces dist/<os>-<arch>/{hpcc,hpcc-agent,hpcc-pause}[.exe]
+      # for linux/windows/darwin × amd64/arm64. CGO is off in the
+      # Makefile so this works from the plain ubuntu runner with no
+      # extra cross-toolchain setup.
+      run: make dist
+
+    - name: Upload release binaries
+      uses: actions/upload-artifact@v4
+      with:
+        name: hpcc-binaries
+        path: dist/
+        if-no-files-found: error
+
   image-store:
     name: Image store integration
     runs-on: ubuntu-latest
