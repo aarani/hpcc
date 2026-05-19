@@ -61,6 +61,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
+	"github.com/aarani/hpcc/internal/auth"
 	"github.com/aarani/hpcc/internal/config"
 	"github.com/aarani/hpcc/internal/enum"
 	"github.com/aarani/hpcc/internal/logging"
@@ -362,9 +363,10 @@ func main() {
 	go func() { runDone <- w.Run(ctx) }()
 
 	// 8. Client TOML. Points at our scheduler over TLS (CAFile is
-	//    the same self-signed cert we used above), enables remote
-	//    dispatch, and supplies OAuth credentials the dispatcher
-	//    will exchange for a JWT at session-open time.
+	//    the same self-signed cert we used above) and enables remote
+	//    dispatch. The OAuth credentials live in a sibling token.json
+	//    that we mint below — keeping the bench in step with the
+	//    `hpcc auth login` flow real users go through.
 	clientToml := fmt.Sprintf(`# fcstack-generated hpcc client config — do not edit by hand
 source_mode = %q
 
@@ -377,16 +379,45 @@ image_digest = %q
 [remote.scheduler]
 url     = %q
 ca_file = %q
-
-[remote.oauth]
-client_secret = "unused"
-username      = "bench"
-password      = "unused"
 `, *sourceMode, tenantID, pinnedRef, digest, schedAddr, certPath)
 
 	if err := os.WriteFile(*clientCfg, []byte(clientToml), 0o600); err != nil {
 		zap.S().Fatalf("write client config: %v", err)
 	}
+
+	// 8b. Pre-minted access token. Real users get this via
+	//     `hpcc auth login`, but the bench skips the prompt by signing
+	//     a JWT directly with the IdP key and dropping it at the
+	//     daemon's default token path (XDG_CONFIG_HOME/hpcc/token.json
+	//     — the bench script exports XDG_CONFIG_HOME, so this lands
+	//     inside the per-run stack dir). No refresh_token: the bench
+	//     finishes well inside the 2h access-token lifetime.
+	tokenPath, err := auth.DefaultPath()
+	if err != nil {
+		zap.S().Fatalf("resolve token path: %v", err)
+	}
+	tokenExp := time.Now().Add(2 * time.Hour)
+	jwtClaims := jwt.MapClaims{
+		"iss": idpIssuer, "aud": idpAudience,
+		"sub": "bench",
+		"iat": time.Now().Unix(),
+		"nbf": time.Now().Unix(),
+		"exp": tokenExp.Unix(),
+	}
+	signed := jwt.NewWithClaims(jwt.SigningMethodRS256, jwtClaims)
+	signed.Header["kid"] = "fcstack-key-1"
+	accessToken, err := signed.SignedString(idpKey)
+	if err != nil {
+		zap.S().Fatalf("sign bench JWT: %v", err)
+	}
+	if err := auth.Save(tokenPath, auth.Token{
+		Username:    "bench",
+		AccessToken: accessToken,
+		ExpiresAt:   tokenExp,
+	}); err != nil {
+		zap.S().Fatalf("write token: %v", err)
+	}
+	zap.S().Infof("fcstack: wrote pre-minted token at %s (expires %s)", tokenPath, tokenExp.Format(time.RFC3339))
 
 	// Single-line, no-prefix print so the shell wrapper can capture
 	// it with `read CONFIG < <(...)` style. Everything else from

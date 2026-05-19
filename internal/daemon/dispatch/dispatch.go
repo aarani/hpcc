@@ -1,23 +1,20 @@
-// Package dispatch implements the daemon's remote-compile path: get a
-// JWT from the configured IdP via OAuth password grant, authenticate
-// against the scheduler, route each compile to a worker, and dial the
-// worker directly to invoke Compile. Lives in its own package so the
-// daemon doesn't grow a tangle of grpc/TLS/oauth wiring inline.
+// Package dispatch implements the daemon's remote-compile path: read
+// the cached JWT written by `hpcc auth login`, authenticate against
+// the scheduler, route each compile to a worker, and dial the worker
+// directly to invoke Compile. Lives in its own package so the daemon
+// doesn't grow a tangle of grpc/TLS/auth wiring inline.
 package dispatch
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +25,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
+	"github.com/aarani/hpcc/internal/auth"
 	"github.com/aarani/hpcc/internal/compiler"
 	"github.com/aarani/hpcc/internal/config"
 	"github.com/aarani/hpcc/internal/enum"
@@ -584,8 +582,13 @@ func hadWerror(args []string) bool {
 }
 
 // ensureSession returns nil when d.sessionToken is set. On a cold
-// session it fetches an OAuth access token via password grant and
-// trades it for a scheduler session token.
+// session it reads the access token written by `hpcc auth login`,
+// refreshes it if it's near expiry (and a refresh_token is on hand),
+// and trades it for a scheduler session token.
+//
+// A missing or unrecoverable token surfaces as a "run `hpcc auth
+// login`" error — the daemon never prompts on its own because it has
+// no controlling terminal.
 func (d *Dispatcher) ensureSession(ctx context.Context) error {
 	d.sessionMu.Lock()
 	defer d.sessionMu.Unlock()
@@ -594,29 +597,66 @@ func (d *Dispatcher) ensureSession(ctx context.Context) error {
 		return nil
 	}
 
-	// Discovery: ask the scheduler where this tenant's IdP lives,
-	// rather than hardcoding token_url in client config. Keeps the
-	// scheduler authoritative; lets ops rotate IdPs without editing
-	// every laptop. See docs/plan/multi-tenant.md "Identity discovery".
-	idp, err := d.sched.GetTenantIdP(ctx, &gen.GetTenantIdPRequest{TenantId: d.cfg.TenantID})
+	tokPath, err := auth.DefaultPath()
+	if err != nil {
+		return err
+	}
+	tok, err := auth.Load(tokPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("no cached token at %s — run `hpcc auth login`", tokPath)
+		}
+		return fmt.Errorf("load token %q: %w", tokPath, err)
+	}
+
+	// Discovery is needed both to refresh (for client_id/scope) and
+	// to know where the next login would go. Cheap RPC; we run it
+	// once per cold-session.
+	idpResp, err := d.sched.GetTenantIdP(ctx, &gen.GetTenantIdPRequest{TenantId: d.cfg.TenantID})
 	if err != nil {
 		return fmt.Errorf("scheduler GetTenantIdP for tenant %q: %w", d.cfg.TenantID, err)
 	}
+	idp := auth.IdP{
+		TokenURL: idpResp.TokenUrl,
+		ClientID: idpResp.ClientId,
+		Scope:    idpResp.Scope,
+	}
 
-	jwt, err := fetchOAuthToken(ctx, idp, d.cfg.OAuth)
-	if err != nil {
-		return fmt.Errorf("oauth password grant: %w", err)
+	// 30s skew: long enough that an in-flight compile won't watch the
+	// token expire mid-RPC, short enough that we don't churn the IdP
+	// on every cold session.
+	if tok.ExpiredWithin(30 * time.Second) {
+		if tok.RefreshToken == "" {
+			return fmt.Errorf("cached token at %s is expired and no refresh_token is available — run `hpcc auth login`", tokPath)
+		}
+		resp, err := auth.RefreshGrant(ctx, idp, tok.RefreshToken, tok.ClientSecret)
+		if err != nil {
+			return fmt.Errorf("oauth refresh failed (run `hpcc auth login` to re-authenticate): %w", err)
+		}
+		tok.AccessToken = resp.AccessToken
+		if resp.RefreshToken != "" {
+			tok.RefreshToken = resp.RefreshToken
+		}
+		if resp.ExpiresIn > 0 {
+			tok.ExpiresAt = time.Now().Add(time.Duration(resp.ExpiresIn) * time.Second)
+		} else {
+			tok.ExpiresAt = time.Time{}
+		}
+		// Persist the rotated token. Save failures are non-fatal —
+		// the in-memory copy is good for this session and the worst
+		// case is the next daemon start re-runs the refresh.
+		_ = auth.Save(tokPath, tok)
 	}
 
 	resp, err := d.sched.Authenticate(ctx, &gen.AuthRequest{
 		TenantId: d.cfg.TenantID,
-		Token:    &gen.AuthRequest_JwtToken{JwtToken: jwt},
+		Token:    &gen.AuthRequest_JwtToken{JwtToken: tok.AccessToken},
 	})
 	if err != nil {
 		return fmt.Errorf("scheduler Authenticate RPC: %w", err)
 	}
 	if !resp.Success || resp.SessionToken == "" {
-		return fmt.Errorf("scheduler rejected JWT")
+		return fmt.Errorf("scheduler rejected JWT — run `hpcc auth login`")
 	}
 	d.sessionToken = resp.SessionToken
 	return nil
@@ -691,69 +731,3 @@ func (d *Dispatcher) workerClient(addr string, fingerprint []byte) (gen.WorkerSe
 	return h.client, nil
 }
 
-// fetchOAuthToken runs an RFC 6749 §4.3 password grant. Form-encoded
-// POST, JSON response. We pull only access_token; refresh tokens
-// aren't useful here because the scheduler session token is what gets
-// reused — when it dies, we re-run the whole grant.
-func fetchOAuthToken(ctx context.Context, idp *gen.GetTenantIdPResponse, oc config.OAuthConfig) (string, error) {
-	if idp.TokenUrl == "" {
-		return "", fmt.Errorf("scheduler returned empty token_url for tenant")
-	}
-	form := url.Values{}
-	form.Set("grant_type", "password")
-	form.Set("username", oc.Username)
-	form.Set("password", oc.Password)
-	if idp.ClientId != "" {
-		form.Set("client_id", idp.ClientId)
-	}
-	if oc.ClientSecret != "" {
-		form.Set("client_secret", oc.ClientSecret)
-	}
-	if idp.Scope != "" {
-		form.Set("scope", idp.Scope)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, idp.TokenUrl, bytes.NewBufferString(form.Encode()))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("token endpoint returned %s: %s", resp.Status, truncate(body, 256))
-	}
-	var parsed struct {
-		AccessToken string `json:"access_token"`
-		Error       string `json:"error"`
-		ErrorDesc   string `json:"error_description"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return "", fmt.Errorf("decode token response: %w", err)
-	}
-	if parsed.AccessToken == "" {
-		if parsed.Error != "" {
-			return "", fmt.Errorf("oauth error %q: %s", parsed.Error, parsed.ErrorDesc)
-		}
-		return "", fmt.Errorf("token endpoint returned no access_token")
-	}
-	return parsed.AccessToken, nil
-}
-
-func truncate(b []byte, n int) string {
-	if len(b) <= n {
-		return string(b)
-	}
-	return string(b[:n]) + "..."
-}

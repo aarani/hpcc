@@ -207,9 +207,12 @@ replaces firecracker-containerd (stagnated upstream) with a small
 image→rootfs pipeline and a one-method gRPC agent we own.
 Route-only scheduler (signs JWTs, never touches payloads); client
 authenticates to the scheduler via OAuth2 password grant against
-any IdP (Okta / Keycloak / Auth0 / etc.), receives a short-lived
-routing token, and dials the worker directly with per-call zstd,
-that scheduler-signed token, and cancellation. Per-job audit log. See
+any IdP (Okta / Keycloak / Auth0 / etc.) — credentials are entered
+once via `hpcc auth login` and cached as a 0600 token file
+alongside the config (refresh tokens used silently when issued).
+The client then receives a short-lived routing token and dials the
+worker directly with per-call zstd, that scheduler-signed token,
+and cancellation. Per-job audit log. See
 [docs/plan/phase-4-distributed.md](docs/plan/phase-4-distributed.md)
 for the full design and the **Limitations** section below for
 known gaps.

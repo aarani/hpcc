@@ -31,13 +31,16 @@ type Config struct {
 // SourceMode lives on the parent Config, not here — it drives the
 // local cache key too, not just dispatch, and a daemon with no
 // [remote] block still needs a value for its cache key.
+//
+// OAuth credentials are NOT in this struct: `hpcc auth login` writes
+// them to a sibling token.json (0600). The daemon reads from there
+// and refreshes silently when the access token expires.
 type RemoteConfig struct {
 	Enabled     bool            `toml:"enabled"`
 	TenantID    string          `toml:"tenant_id"`
 	ImageRef    string          `toml:"image_ref"`
 	ImageDigest string          `toml:"image_digest"`
 	Scheduler   SchedulerConfig `toml:"scheduler"`
-	OAuth       OAuthConfig     `toml:"oauth"`
 }
 
 // SchedulerConfig is the dial info for the scheduler gRPC endpoint.
@@ -45,17 +48,6 @@ type RemoteConfig struct {
 type SchedulerConfig struct {
 	URL    string `toml:"url"`
 	CAFile string `toml:"ca_file"`
-}
-
-// OAuthConfig carries only the per-user credentials needed for the
-// OAuth2 password grant. Per-tenant fields (token_url, client_id,
-// scope) come from scheduler.GetTenantIdP at session start — ops can
-// rotate the IdP for a tenant by editing scheduler config alone, with
-// no client-side change. See docs/plan/multi-tenant.md.
-type OAuthConfig struct {
-	ClientSecret string `toml:"client_secret"`
-	Username     string `toml:"username"`
-	Password     string `toml:"password"`
 }
 
 // CacheConfig describes a single cache backend. The Type field selects
