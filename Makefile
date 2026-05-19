@@ -1,17 +1,17 @@
-# Repo-level Makefile. Today this exists for one job: regenerate the
-# protobuf Go bindings. Two proto trees with different layouts:
+# Repo-level Makefile. Three groups of targets:
 #
-#   internal/protocol/*.proto  →  internal/protocol/gen/*.pb.go
-#       (go_package = "./gen"; scheduler/worker/daemon wire schema)
+#   proto*  — regenerate protobuf Go bindings (two proto trees):
+#       internal/protocol/*.proto  →  internal/protocol/gen/*.pb.go
+#           (go_package = "./gen"; scheduler/worker/daemon wire schema)
+#       proto/agent/agent.proto    →  proto/agent/agent{,_grpc}.pb.go
+#           (go_package = ".../proto/agent;agent"; host↔in-VM agent stream)
+#     Requires protoc + protoc-gen-go + protoc-gen-go-grpc on PATH:
+#       go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+#       go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+#     (protoc itself from your package manager; libprotoc >= 3.20.)
 #
-#   proto/agent/agent.proto    →  proto/agent/agent{,_grpc}.pb.go
-#       (go_package = ".../proto/agent;agent"; host↔in-VM agent stream)
-#
-# Both invocations require protoc + protoc-gen-go + protoc-gen-go-grpc
-# on PATH. Install with:
-#   go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-#   go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-# (protoc itself from your package manager; libprotoc >= 3.20.)
+#   build*  — host-platform compile-only check, per workspace module.
+#   dist*   — cross-compiled release binaries for linux/windows/darwin.
 
 PROTOC ?= protoc
 
@@ -100,3 +100,60 @@ build-proto:
 
 build-squashfs:
 	cd squashfs && $(GO) build ./...
+
+# --- release / cross-platform binaries --------------------------------
+#
+# `dist` materialises every shippable binary for linux, windows, and
+# darwin (amd64 + arm64) under dist/<os>-<arch>/. Three binaries ship:
+#
+#   hpcc        — repo-root CLI (scheduler client, `hpcc explain`, etc.)
+#   hpcc-agent  — in-VM/Windows-container agent. Linux is the real
+#                 PID-1; windows owns the HvSocket server; darwin is
+#                 the "other" stub that compiles for dev parity only.
+#   hpcc-pause  — container PID-1 keep-alive. Linux reaps; the rest
+#                 just block on SIGTERM (reap_other.go).
+#
+# proto/ and squashfs/ are library-only modules and don't appear here.
+# CGO is off so cross-compilation works from any host without sysroots.
+
+DIST_DIR    ?= dist
+DIST_OSES   ?= linux windows darwin
+DIST_ARCHES ?= amd64 arm64
+
+# .exe suffix on windows, empty elsewhere. Used in the per-target
+# recipes below; $$ escapes for make so the shell sees a single $.
+dist_ext = $(if $(filter windows,$(1)),.exe,)
+
+.PHONY: dist dist-clean $(addprefix dist-,$(DIST_OSES))
+
+dist: $(addprefix dist-,$(DIST_OSES))
+
+dist-clean:
+	rm -rf $(DIST_DIR)
+
+# One phony per OS that fans out to every arch. Keeping the matrix
+# expanded (rather than a pattern rule) means `make dist-linux` works
+# and parallel `-j` builds get correct dependency tracking.
+define DIST_OS_template
+dist-$(1): $$(foreach arch,$$(DIST_ARCHES),dist-$(1)-$$(arch))
+.PHONY: dist-$(1)
+endef
+$(foreach os,$(DIST_OSES),$(eval $(call DIST_OS_template,$(os))))
+
+# Per-(os,arch) recipe: build the three binaries into dist/<os>-<arch>/.
+# Each module gets its own `go build` since the workspace doesn't link
+# sibling modules into a root `./...` build.
+define DIST_OSARCH_template
+dist-$(1)-$(2):
+	@mkdir -p $$(DIST_DIR)/$(1)-$(2)
+	GOOS=$(1) GOARCH=$(2) CGO_ENABLED=0 $$(GO) build \
+		-o $$(DIST_DIR)/$(1)-$(2)/hpcc$$(call dist_ext,$(1)) .
+	cd agent && GOOS=$(1) GOARCH=$(2) CGO_ENABLED=0 $$(GO) build \
+		-o ../$$(DIST_DIR)/$(1)-$(2)/hpcc-agent$$(call dist_ext,$(1)) .
+	cd pause && GOOS=$(1) GOARCH=$(2) CGO_ENABLED=0 $$(GO) build \
+		-o ../$$(DIST_DIR)/$(1)-$(2)/hpcc-pause$$(call dist_ext,$(1)) .
+.PHONY: dist-$(1)-$(2)
+endef
+$(foreach os,$(DIST_OSES),\
+	$(foreach arch,$(DIST_ARCHES),\
+		$(eval $(call DIST_OSARCH_template,$(os),$(arch)))))

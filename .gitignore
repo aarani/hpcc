@@ -13,3 +13,5 @@ bench/work/
 
 # macOS metadata files
 .DS_Store
+
+dist/
