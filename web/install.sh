@@ -66,6 +66,17 @@ ask_required() {
   done
 }
 
+# confirm <prompt> [default y|n]    → returns 0 on yes, 1 on no.
+confirm() {
+  local prompt="$1" default="${2:-y}" hint="[Y/n]"
+  [ "$default" = "n" ] && hint="[y/N]"
+  printf '%s%s%s %s: ' "$cyan" "$prompt" "$reset" "$hint" >/dev/tty
+  local ans
+  IFS= read -r ans </dev/tty
+  ans="${ans:-$default}"
+  case "$ans" in [Yy]*) return 0 ;; *) return 1 ;; esac
+}
+
 # ---- platform detection ----------------------------------------------
 uname_s=$(uname -s); uname_m=$(uname -m)
 case "$uname_s" in
