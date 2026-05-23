@@ -53,10 +53,26 @@ config:
   listen: ":9092"
   metricsListen: ":9192"   # set to "" to disable
 
-  # public_addr is built at pod start from $NODE_IP (downward API) so
-  # every DaemonSet pod advertises the IP of the node it runs on.
-  # Override `publicAddrPort` if `listen` uses a non-default port.
+  # public_addr is built at pod start from $NODE_IP so every DaemonSet
+  # pod advertises the IP of the node it runs on. Override
+  # `publicAddrPort` if `listen` uses a non-default port.
   publicAddrPort: 9092
+
+  # How to discover that node IP. Options:
+  #
+  #   externalIP   default. kubectl-queries the Node object for its
+  #                ExternalIP address; falls back to the downward API's
+  #                status.hostIP (the cluster-internal address) when
+  #                no ExternalIP is set, so private clusters keep
+  #                working. Requires the worker ServiceAccount to have
+  #                `get nodes` cluster-wide — see the rendered
+  #                ClusterRole/ClusterRoleBinding.
+  #
+  #   hostIP       legacy behaviour. Uses status.hostIP from the
+  #                downward API only. No RBAC needed; fine for clusters
+  #                whose nodes have a single addressable IP that
+  #                external clients can reach.
+  publicAddrSource: externalIP
 
   runtime:
     handler: firecracker

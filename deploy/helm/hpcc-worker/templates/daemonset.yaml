@@ -59,10 +59,18 @@ spec:
               mountPath: /dev/kvm
         {{- end }}
         - name: render-config
-          # Substitutes $NODE_IP (downward API → status.hostIP) into the
-          # worker.toml template so each pod advertises its node's IP
-          # as public_addr. Plain busybox sed; the chainguard wolfi
-          # base already ships it.
+          # Substitutes $NODE_IP into the worker.toml template so each
+          # pod advertises its node's IP as public_addr. The discovery
+          # path is governed by .Values.config.publicAddrSource:
+          #
+          #   externalIP — kubectl-queries the Node's status.addresses
+          #                for the ExternalIP entry, falling back to
+          #                the downward-API status.hostIP if absent.
+          #   hostIP     — downward API only (status.hostIP).
+          #
+          # The worker image is alpine-based, so `apk add kubectl`
+          # works from the in-cluster cache when needed; the
+          # community-repo kubectl is sufficient for jsonpath queries.
           image: {{ include "hpcc-worker.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
@@ -70,11 +78,26 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.hostIP
+            {{- if eq .Values.config.publicAddrSource "externalIP" }}
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            {{- end }}
           command:
             - sh
             - -c
             - |
               set -eu
+              {{- if eq .Values.config.publicAddrSource "externalIP" }}
+              apk add --no-cache --quiet kubectl
+              EXTERNAL_IP="$(kubectl get node "$NODE_NAME" \
+                -o jsonpath='{.status.addresses[?(@.type=="ExternalIP")].address}' \
+                2>/dev/null || true)"
+              if [ -n "$EXTERNAL_IP" ]; then
+                NODE_IP="$EXTERNAL_IP"
+              fi
+              {{- end }}
               sed "s|\${NODE_IP}|${NODE_IP}|g" /template/worker.toml.tmpl > /etc/hpcc/worker.toml
               chmod 0644 /etc/hpcc/worker.toml
           volumeMounts:

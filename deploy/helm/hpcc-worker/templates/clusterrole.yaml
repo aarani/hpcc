@@ -1,0 +1,34 @@
+{{- if and .Values.serviceAccount.create (eq .Values.config.publicAddrSource "externalIP") -}}
+# Granted only when publicAddrSource: externalIP — the render-config
+# init container needs `get nodes` to read .status.addresses for the
+# pod's host node. Cluster-scoped because the Node API is itself
+# cluster-scoped (a namespaced Role can't read it).
+#
+# Name is keyed off the release so multiple chart installations in the
+# same cluster don't collide on the binding.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "hpcc-worker.fullname" . }}-node-reader
+  labels:
+    {{- include "hpcc-worker.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "hpcc-worker.fullname" . }}-node-reader
+  labels:
+    {{- include "hpcc-worker.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "hpcc-worker.fullname" . }}-node-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "hpcc-worker.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
