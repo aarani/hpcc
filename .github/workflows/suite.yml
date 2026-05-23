@@ -34,6 +34,16 @@ jobs:
     - name: Test
       run: go test -v ./...
 
+    - name: Build-check e2e-tagged tests
+      # `//go:build e2e` files are invisible to the default `go build`
+      # / `go test` above, so a refactor that breaks their API (e.g.
+      # 561d6cc removing config.OAuthConfig) lands green and only
+      # surfaces when someone runs the suite locally with -tags=e2e.
+      # `-run=^$` skips execution — the e2e suite needs a host clang
+      # and live listeners we don't want in this fast job. We only
+      # care that it compiles.
+      run: go test -tags=e2e -count=1 -run=^$ ./internal/e2e/...
+
     - name: Cross-build release binaries
       # Produces dist/<os>-<arch>/{hpcc,hpcc-agent,hpcc-pause}[.exe]
       # for linux/windows/darwin × amd64/arm64. CGO is off in the

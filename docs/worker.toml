@@ -29,17 +29,28 @@ worker_id   = ""
 paranoid = false
 
 # TLS for the Compile gRPC server. The scheduler records the SHA-256
-# of cert_file at registration and hands that fingerprint to clients,
+# of the cert at registration and hands that fingerprint to clients,
 # which pin against it on dial — so a self-signed cert is fine.
+#
+# For each of the cert and the key, set EITHER cert_file/key_file (a
+# path on disk) OR cert_ref/key_ref (a secret reference). The two
+# forms are mutually exclusive per material. Supported reference
+# schemes are documented under [tls] in scheduler.toml.
 [tls]
 cert_file = "/etc/hpcc/worker.crt"
 key_file  = "/etc/hpcc/worker.key"
+# cert_ref = "aws-sm://hpcc/worker/tls#cert"
+# key_ref  = "aws-sm://hpcc/worker/tls#key"
 
 # Scheduler link. The worker_token is a shared secret with the
 # scheduler; rotate by editing both sides and bouncing the worker.
+# `worker_token` accepts the same secret-reference schemes the [tls]
+# block documents (aws-sm:, env:, file:). A bare string is used
+# verbatim.
 [scheduler]
 url          = "scheduler.internal:9091"
 worker_token = "replace-with-a-long-random-string"
+# worker_token = "aws-sm://hpcc/scheduler/worker-token"
 ca_file      = ""  # optional; pin the scheduler's CA cert (PEM)
 
 # Container runtime. Linux drives Firecracker directly via jailer;

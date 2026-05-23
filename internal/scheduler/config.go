@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
+	"github.com/aarani/hpcc/internal/secret"
 )
 
 type Config struct {
@@ -20,9 +22,15 @@ type Config struct {
 	Paranoid      bool      `toml:"paranoid"`
 }
 
+// TLSConfig points the gRPC server at a serving certificate. The cert
+// and key may live on disk (CertFile/KeyFile) or in a secret store
+// referenced by URI (CertRef/KeyRef). Exactly one form per material —
+// see internal/secret for supported schemes.
 type TLSConfig struct {
 	CertFile string `toml:"cert_file"`
 	KeyFile  string `toml:"key_file"`
+	CertRef  string `toml:"cert_ref"`
+	KeyRef   string `toml:"key_ref"`
 }
 
 type Auth struct {
@@ -83,12 +91,30 @@ func LoadConfig(path string) (Config, error) {
 	return cfg, nil
 }
 
-func (c Config) Validate() error {
-	if c.TLS.CertFile == "" {
-		return fmt.Errorf("tls.cert_file is required")
+// ResolveSecrets dereferences any URI-prefixed values in the config
+// against the default secret.Resolver. Run after LoadConfig and before
+// Validate so length checks see the resolved bytes, not the URI.
+func (c *Config) ResolveSecrets(ctx context.Context) error {
+	tok, err := secret.Default.ResolveString(ctx, c.Auth.WorkerToken)
+	if err != nil {
+		return fmt.Errorf("resolve auth.worker_token: %w", err)
 	}
-	if c.TLS.KeyFile == "" {
-		return fmt.Errorf("tls.key_file is required")
+	c.Auth.WorkerToken = tok
+	return nil
+}
+
+func (c Config) Validate() error {
+	if c.TLS.CertFile == "" && c.TLS.CertRef == "" {
+		return fmt.Errorf("one of tls.cert_file or tls.cert_ref is required")
+	}
+	if c.TLS.CertFile != "" && c.TLS.CertRef != "" {
+		return fmt.Errorf("tls.cert_file and tls.cert_ref are mutually exclusive")
+	}
+	if c.TLS.KeyFile == "" && c.TLS.KeyRef == "" {
+		return fmt.Errorf("one of tls.key_file or tls.key_ref is required")
+	}
+	if c.TLS.KeyFile != "" && c.TLS.KeyRef != "" {
+		return fmt.Errorf("tls.key_file and tls.key_ref are mutually exclusive")
 	}
 	if c.Auth.WorkerToken == "" {
 		return fmt.Errorf("auth.worker_token is required")

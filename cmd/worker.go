@@ -13,6 +13,7 @@ import (
 
 	"github.com/aarani/hpcc/internal/metrics"
 	"github.com/aarani/hpcc/internal/protocol/gen"
+	"github.com/aarani/hpcc/internal/secret"
 	"github.com/aarani/hpcc/internal/tracing"
 	"github.com/aarani/hpcc/internal/worker"
 	"github.com/spf13/cobra"
@@ -61,11 +62,20 @@ of the worker process with no isolation at all.`,
 		if err != nil {
 			return err
 		}
+
+		// Catch SIGINT/SIGTERM so a kill returns control to the deferred
+		// graceful-stop instead of dropping in-flight RPCs.
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+
+		if err := cfg.ResolveSecrets(ctx); err != nil {
+			return err
+		}
 		if err := cfg.Validate(); err != nil {
 			return err
 		}
 
-		cert, err := tls.LoadX509KeyPair(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+		cert, certPEM, err := secret.LoadTLSCertificate(ctx, secret.Default, cfg.TLS.CertFile, cfg.TLS.CertRef, cfg.TLS.KeyFile, cfg.TLS.KeyRef)
 		if err != nil {
 			return err
 		}
@@ -78,11 +88,7 @@ of the worker process with no isolation at all.`,
 		if err != nil {
 			return err
 		}
-
-		// Catch SIGINT/SIGTERM so a kill returns control to the deferred
-		// graceful-stop instead of dropping in-flight RPCs.
-		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-		defer stop()
+		w.CertPEM = certPEM
 
 		metrics.SetComponent("worker")
 		metricsResult, err := metrics.Init(ctx, metrics.Options{

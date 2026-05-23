@@ -19,15 +19,34 @@ metrics_listen = ":9191"
 # TLS for the gRPC server. Both clients and workers dial scheduler over
 # TLS; the CA must be reachable on their side (or pinned via ca_file in
 # their respective configs).
+#
+# For each of the cert and the key, set EITHER cert_file/key_file (a
+# path on disk) OR cert_ref/key_ref (a secret reference). The two
+# forms are mutually exclusive per material. Supported reference
+# schemes:
+#   aws-sm://<secret-id>[?region=<r>][#<json-key>]
+#     AWS Secrets Manager. Region falls back to the SDK default chain
+#     (env, ~/.aws, IMDS, IRSA) when ?region= is omitted. Use
+#     #<json-key> when the SM secret is a JSON object and the cert /
+#     key live under a named field.
+#   env:<NAME>     — read process env var NAME.
+#   file:<path>    — same as <_file>, spelled as a URI.
 [tls]
 cert_file = "/etc/hpcc/scheduler.crt"
 key_file  = "/etc/hpcc/scheduler.key"
+# cert_ref = "aws-sm://hpcc/scheduler/tls#cert"
+# key_ref  = "aws-sm://hpcc/scheduler/tls#key"
 
 # Worker authentication. Shared static token workers present at
 # `Authenticate`. Must be the same string set in worker.toml under
 # `[scheduler] worker_token`. Min length 16.
+#
+# `worker_token` accepts the same secret-reference schemes the [tls]
+# block documents (aws-sm:, env:, file:). A bare string is used
+# verbatim — existing inline tokens keep working.
 [auth]
 worker_token = "replace-with-a-long-random-string"
+# worker_token = "aws-sm://hpcc/scheduler/worker-token"
 
 # Tenants. Each `[[tenant]]` entry is one namespace boundary. The
 # client sends `tenant_id` on AuthRequest; the scheduler picks the

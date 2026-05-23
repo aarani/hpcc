@@ -109,6 +109,13 @@ type Worker struct {
 	workerID        string
 	certFingerprint []byte // sha256 of the worker's serving cert; clients pin this
 
+	// CertPEM is the serving certificate's PEM bytes. cmd/worker sets
+	// this after secret.LoadTLSCertificate resolves cert_file or
+	// cert_ref. bootstrap falls back to reading cfg.TLS.CertFile when
+	// nil, which keeps tests that construct Worker directly with a
+	// cert path on disk working.
+	CertPEM []byte
+
 	sessionMu       sync.RWMutex
 	sessionToken    string
 	schedulerPubKey []byte // ed25519 pubkey for verifying client-presented task JWTs
@@ -953,7 +960,7 @@ func (w *Worker) bootstrap() error {
 		}
 	}
 
-	fp, err := loadCertFingerprint(w.Config.TLS.CertFile)
+	fp, err := loadCertFingerprintFromConfig(w.CertPEM, w.Config.TLS.CertFile)
 	if err != nil {
 		return fmt.Errorf("compute cert fingerprint: %w", err)
 	}
@@ -1275,9 +1282,24 @@ func loadCertFingerprint(certFile string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return fingerprintPEM(data, certFile)
+}
+
+// loadCertFingerprintFromConfig prefers in-memory PEM bytes (set by
+// cmd/worker after a cert_ref resolve) and falls back to reading
+// certFile from disk. Returns nil when both are empty, matching the
+// pre-secret-ref behaviour for unit tests that never set TLS.
+func loadCertFingerprintFromConfig(pemBytes []byte, certFile string) ([]byte, error) {
+	if len(pemBytes) > 0 {
+		return fingerprintPEM(pemBytes, "<config>")
+	}
+	return loadCertFingerprint(certFile)
+}
+
+func fingerprintPEM(data []byte, source string) ([]byte, error) {
 	block, _ := pem.Decode(data)
 	if block == nil {
-		return nil, fmt.Errorf("no PEM block in %q", certFile)
+		return nil, fmt.Errorf("no PEM block in %q", source)
 	}
 	sum := sha256.Sum256(block.Bytes)
 	return sum[:], nil

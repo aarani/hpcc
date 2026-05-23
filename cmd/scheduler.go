@@ -14,6 +14,7 @@ import (
 	"github.com/aarani/hpcc/internal/metrics"
 	"github.com/aarani/hpcc/internal/protocol/gen"
 	"github.com/aarani/hpcc/internal/scheduler"
+	"github.com/aarani/hpcc/internal/secret"
 	"github.com/aarani/hpcc/internal/tracing"
 	"github.com/spf13/cobra"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -52,11 +53,18 @@ Requires TLS (cert_file, key_file) and at least one auth method
 		if err != nil {
 			return err
 		}
+
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+
+		if err := cfg.ResolveSecrets(ctx); err != nil {
+			return err
+		}
 		if err := cfg.Validate(); err != nil {
 			return err
 		}
 
-		cert, err := tls.LoadX509KeyPair(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+		cert, _, err := secret.LoadTLSCertificate(ctx, secret.Default, cfg.TLS.CertFile, cfg.TLS.CertRef, cfg.TLS.KeyFile, cfg.TLS.KeyRef)
 		if err != nil {
 			return err
 		}
@@ -69,9 +77,6 @@ Requires TLS (cert_file, key_file) and at least one auth method
 		if err != nil {
 			return err
 		}
-
-		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-		defer stop()
 
 		metrics.SetComponent("scheduler")
 		metricsResult, err := metrics.Init(ctx, metrics.Options{

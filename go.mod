@@ -52,6 +52,7 @@ require (
 )
 
 require (
+	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.41.7 // indirect
 	github.com/aws/aws-sdk-go-v2/service/signin v1.0.11 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect

@@ -37,6 +37,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/aarani/hpcc/internal/auth"
 	"github.com/aarani/hpcc/internal/compiler"
 	"github.com/aarani/hpcc/internal/config"
 	"github.com/aarani/hpcc/internal/daemon/dispatch"
@@ -191,7 +192,43 @@ func TestE2E_DispatchClientToSchedulerToWorker(t *testing.T) {
 	runDone := make(chan error, 1)
 	go func() { runDone <- w.Run(runCtx) }()
 
-	// 5. Dispatcher — what `hpcc start` would build at daemon startup
+	// 5. Pre-minted access token at the daemon's default token path.
+	// Since 561d6cc the dispatcher no longer does an OAuth password
+	// grant — it reads a JWT written by `hpcc auth login`. We bypass
+	// the prompt the same way bench/cmd/fcstack does: sign a JWT
+	// directly with the IdP key and drop it at auth.DefaultPath().
+	// Redirecting HOME and XDG_CONFIG_HOME lands the file under tmp
+	// on both macOS (Library/Application Support) and Linux (.config).
+	tokenHome := t.TempDir()
+	t.Setenv("HOME", tokenHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tokenHome, ".config"))
+	tokenPath, err := auth.DefaultPath()
+	if err != nil {
+		t.Fatalf("auth.DefaultPath: %v", err)
+	}
+	tokenExp := time.Now().Add(10 * time.Minute)
+	jwtTok := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+		"iss": testIssuer,
+		"aud": testAudience,
+		"sub": "alice",
+		"iat": time.Now().Unix(),
+		"nbf": time.Now().Unix(),
+		"exp": tokenExp.Unix(),
+	})
+	jwtTok.Header["kid"] = idpKID
+	signed, err := jwtTok.SignedString(idpKey)
+	if err != nil {
+		t.Fatalf("sign test JWT: %v", err)
+	}
+	if err := auth.Save(tokenPath, auth.Token{
+		Username:    "alice",
+		AccessToken: signed,
+		ExpiresAt:   tokenExp,
+	}); err != nil {
+		t.Fatalf("auth.Save: %v", err)
+	}
+
+	// 6. Dispatcher — what `hpcc start` would build at daemon startup
 	// when remote.enabled = true.
 	dispCfg := config.RemoteConfig{
 		Enabled:     true,
@@ -202,11 +239,6 @@ func TestE2E_DispatchClientToSchedulerToWorker(t *testing.T) {
 			URL:    schedAddr,
 			CAFile: schedCertFile,
 		},
-		OAuth: config.OAuthConfig{
-			ClientSecret: "test-secret",
-			Username:     "alice",
-			Password:     "p4ssw0rd",
-		},
 	}
 	disp, err := dispatch.New(dispCfg, enum.SourceModePreprocessed)
 	if err != nil {
@@ -214,7 +246,7 @@ func TestE2E_DispatchClientToSchedulerToWorker(t *testing.T) {
 	}
 	defer disp.Close()
 
-	// 6. Wait for the worker's scheduler-side register to complete.
+	// 7. Wait for the worker's scheduler-side register to complete.
 	// We don't have a direct hook, so probe by trying to compile in
 	// a retry loop — Route returns "no available worker" until the
 	// worker has registered with the right image digest.
@@ -255,7 +287,7 @@ func TestE2E_DispatchClientToSchedulerToWorker(t *testing.T) {
 		t.Fatalf("Dispatch never succeeded within deadline: %v", lastErr)
 	}
 
-	// 7. Verify the round-trip produced a real object file.
+	// 8. Verify the round-trip produced a real object file.
 	if result.ExitCode != 0 {
 		t.Fatalf("ExitCode = %d; stderr=%q stdout=%q", result.ExitCode, result.Stderr, result.Stdout)
 	}
