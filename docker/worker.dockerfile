@@ -70,11 +70,14 @@ ARG TARGETARCH
 # to 0666 (see chart docs).
 # alpine-baselayout already provides a `kvm` group at gid 36 (the same
 # Debian/Ubuntu convention), so only create it if it's somehow missing.
-# The test on the gid is paranoia: if a future alpine release renumbers
+# The gid assertion is paranoia: if a future alpine release renumbers
 # the group, the chart's hardcoded `runtime.firecracker.gid: 36` would
 # silently disagree with the image — better to fail the build loudly.
-RUN { getent group kvm >/dev/null || addgroup -S -g 36 kvm; } && \
-    test "$(getent group kvm | cut -d: -f3)" = "36" && \
+#
+# /etc/group reads instead of `getent` because busybox/musl doesn't
+# ship getent.
+RUN { grep -q '^kvm:' /etc/group || addgroup -S -g 36 kvm; } && \
+    test "$(awk -F: '$1=="kvm"{print $3}' /etc/group)" = "36" && \
     adduser  -S -D -H -h /var/lib/hpcc -s /sbin/nologin -G kvm -u 1000 hpcc && \
     install -d -o hpcc -g kvm -m 0755 /var/lib/hpcc /var/lib/hpcc/rootfs /srv/jailer && \
     install -d -m 0755 /etc/hpcc
