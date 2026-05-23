@@ -16,6 +16,19 @@ is the live design.
    `__FILE__` paths and other locals even with `-ffile-prefix-map`.
    CAS keys are computed from canonical, server-side-derived bytes,
    so two developers building the same tree converge on the same key.
+3. **PREPROCESSED dispatch demotes `-Werror[=*]`.** A two-step compile
+   (client `gcc -E`, worker `gcc -x cpp-output -c`) loses gcc's
+   macro-context warning-suppression heuristic — diagnostics that
+   would have been silenced on a one-step compile fire on the
+   cpp-output pass and, under `-Werror`, become hard build failures.
+   The PREPROCESSED rewrite compensates by stripping `-Werror` at
+   dispatch time so the worker's compile matches what local-mode gcc
+   one-step would have produced; the daemon emits a one-shot yellow
+   notice when this fires so the user sees that warnings still emit
+   but errors don't. CAS sidesteps the whole thing: a CAS dispatch is
+   a one-step compile on the worker (image gcc preprocesses + compiles
+   in the same invocation), so the heuristic runs and `-Werror`
+   survives intact.
 
 ## Trust model (centerpiece — everything else follows from this)
 
