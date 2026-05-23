@@ -29,13 +29,14 @@ RUN make dist-linux-${TARGETARCH}
 # Fetcher stage downloads everything that we don't build ourselves.
 # Splitting it out keeps the final image free of curl/tar and lets
 # buildx cache the (usually-unchanged) downloads independently from
-# the go build above.
-FROM cgr.dev/chainguard/wolfi-base:latest AS fetcher
+# the go build above. Alpine over chainguard/wolfi-base here because
+# the chainguard apk repo doesn't ship a tar package — wolfi expects
+# tar via busybox, which complicates the pipe-into-tar one-liner below.
+FROM alpine:3.20 AS fetcher
 ARG TARGETARCH
 ARG FC_VERSION
 ARG HPCC_VERSION
 ARG KERNEL_VERSION
-USER root
 RUN apk add --no-cache curl tar
 WORKDIR /staging
 # firecracker uses x86_64/aarch64 in its tarball naming; the rest of
@@ -53,19 +54,22 @@ RUN case "$TARGETARCH" in \
     curl -fsSL -o vmlinux "https://github.com/aarani/hpcc/releases/download/${HPCC_VERSION}/vmlinux-${KERNEL_VERSION}-${TARGETARCH}" && \
     chmod 0644 vmlinux
 
-FROM cgr.dev/chainguard/wolfi-base:latest AS final
+FROM alpine:3.20 AS final
 ARG TARGETARCH
+# Alpine over chainguard/wolfi-base because the helm chart's init
+# containers (`kvm-perms`, `render-config`) exec sed/chmod via this
+# same image, and alpine ships busybox + a real /bin/sh out of the
+# box. The image runs privileged anyway, so wolfi-base's hardening
+# wouldn't buy much here.
+#
 # Jailer requires a non-root (uid, gid) to drop to before exec'ing
 # firecracker; we bake one in so the default worker.toml shipped by
 # the helm chart works out of the box. GID 36 matches the de-facto
 # kvm group on Debian/Ubuntu hosts — operators running a host with a
 # different kvm gid should add an initContainer that chmods /dev/kvm
 # to 0666 (see chart docs).
-USER root
-RUN apk add --no-cache shadow && \
-    groupadd -r -g 36 kvm && \
-    useradd  -r -g kvm -u 1000 -d /var/lib/hpcc -s /sbin/nologin hpcc && \
-    apk del shadow && \
+RUN addgroup -S -g 36 kvm && \
+    adduser  -S -D -H -h /var/lib/hpcc -s /sbin/nologin -G kvm -u 1000 hpcc && \
     install -d -o hpcc -g kvm -m 0755 /var/lib/hpcc /var/lib/hpcc/rootfs /srv/jailer && \
     install -d -m 0755 /etc/hpcc
 
