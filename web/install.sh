@@ -121,11 +121,17 @@ if [ "$VERSION" = "latest" ]; then
   # /releases/latest skips prereleases; the project only ships
   # prereleases today, so take the first entry from /releases (most
   # recent overall, prerelease included).
+  #
+  # Capture curl output first instead of piping straight into grep:
+  # `grep -m1` closes stdin as soon as it matches, which races with
+  # curl's writes and gives curl a SIGPIPE → non-zero exit → the
+  # pipefail-enabled pipeline fails even though the data was fine.
   api="https://api.github.com/repos/${REPO}/releases"
-  VERSION=$(curl -fsSL "$api" \
+  releases_json=$(curl -fsSL "$api") \
+    || die "couldn't query GitHub releases for $REPO (network or rate-limit?)"
+  VERSION=$(printf '%s' "$releases_json" \
               | grep -m1 '"tag_name":' \
-              | sed 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/') \
-    || die "couldn't query GitHub releases for $REPO"
+              | sed 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/') || true
   [ -n "$VERSION" ] || die "no releases found for $REPO"
 fi
 note "Using release ${VERSION}"
