@@ -46,7 +46,7 @@ description: >-
     <dl class="hero-meta">
       <div>
         <dt>Isolation</dt>
-        <dd>Firecracker · KVM</dd>
+        <dd>Firecracker · KVM · Hyper-V</dd>
       </div>
       <div>
         <dt>Network</dt>
@@ -82,10 +82,10 @@ description: >-
           <p>The worker is <span class="hl" style="background:transparent;color:var(--fg);border-bottom:1px solid var(--mute-2)">trusted shared-kernel infrastructure</span>. Isolation is best-effort: a bubblewrap namespace, a Linux user, a chroot. Defensible on a laptop, indefensible in a regulated multi-tenant environment.</p>
         </div>
         <div class="thesis-quote">
-          <em>// gVisor was considered and rejected:</em><br/>
-          it's a userspace kernel intercepting<br/>
-          syscalls — not the kernel+KVM boundary<br/>
-          a security review actually recognises.
+          <em>// what auditors recognise:</em><br/>
+          a kernel + KVM boundary they can<br/>
+          point at on a slide. Namespaces and<br/>
+          chroots don't survive the review.
         </div>
       </div>
       <div class="thesis-pair">
