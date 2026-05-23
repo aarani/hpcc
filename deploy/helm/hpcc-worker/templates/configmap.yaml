@@ -56,4 +56,14 @@ data:
 
     [pool]
     max_active = {{ .Values.config.runtime.firecracker.pool.maxActive }}
+    {{- if .Values.config.cache.enabled }}
+
+    # Disk cache required for CAS-mode dispatch — without a
+    # [[cache]] block the worker rejects upload probes and clients
+    # fall back to local compilation.
+    [[cache]]
+    type     = "disk"
+    location = {{ .Values.config.cache.location | quote }}
+    max_size = {{ .Values.config.cache.maxSize | quote }}
+    {{- end }}
 {{- end }}

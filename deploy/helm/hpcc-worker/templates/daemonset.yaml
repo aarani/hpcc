@@ -150,6 +150,10 @@ spec:
               mountPath: /var/lib/hpcc/rootfs
             - name: run
               mountPath: /srv/jailer
+            {{- if .Values.config.cache.enabled }}
+            - name: cache
+              mountPath: {{ .Values.config.cache.location }}
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -205,6 +209,16 @@ spec:
             {{- with .Values.volumes.run.medium }}
             medium: {{ . }}
             {{- end }}
+        {{- if .Values.config.cache.enabled }}
+        - name: cache
+          emptyDir:
+            {{- with .Values.volumes.cache.sizeLimit }}
+            sizeLimit: {{ . }}
+            {{- end }}
+            {{- with .Values.volumes.cache.medium }}
+            medium: {{ . }}
+            {{- end }}
+        {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

@@ -81,6 +81,17 @@ config:
   #                external clients can reach.
   publicAddrSource: externalIP
 
+  # Per-worker disk cache. Required for CAS-mode dispatch — without it
+  # the worker rejects upload probes with FailedPrecondition and the
+  # client falls back to local compilation. emptyDir backing means the
+  # cache evaporates on pod restart; for warm cache survival across
+  # restarts, replace with a hostPath or PVC and bump `sizeLimit` to
+  # match.
+  cache:
+    enabled: true
+    location: /var/cache/hpcc
+    maxSize: "10G"
+
   runtime:
     handler: firecracker
     firecracker:
@@ -141,6 +152,10 @@ volumes:
     medium: ""              # "" or "Memory"
   run:
     sizeLimit: ""
+    medium: ""
+  cache:
+    sizeLimit: ""           # match config.cache.maxSize if you want
+                            # the cgroup to enforce the cap
     medium: ""
 
 # Mount extra files/secrets into the worker container (e.g. a CA bundle
