@@ -110,11 +110,14 @@ sharedSecrets:
   # required by hpcc; 32 hex chars (128 bits) is a safe demo default.
   workerTokenBits: 128
 
-  # Self-signed TLS validity in days. The stack only regenerates
-  # certs when the existing Secret is missing — bumping this number
-  # on an already-installed release is a no-op until you delete the
-  # Secret manually.
-  tlsValidityDays: 3650
+  # Self-signed TLS validity in days. macOS Security rejects certs with
+  # validity > 825 days as "not standards compliant" since macOS 10.15
+  # (regardless of CA trust), so 398 (the current CA/Browser Forum web
+  # cert standard) is the safe default. The stack only regenerates
+  # certs when the existing Secret is missing — bumping this number on
+  # an already-installed release is a no-op until you delete the
+  # hpcc-stack-ca / hpcc-{scheduler,worker}-tls Secrets manually.
+  tlsValidityDays: 398
 
 # ---------------------------------------------------------------------
 # Observability backends.
