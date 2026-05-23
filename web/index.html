@@ -1,110 +1,439 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>hpcc — distributed compiler cache</title>
-  <meta name="description" content="A distributed compiler cache that a regulated security team will actually approve. Sandboxed remote compilation · per-tenant KVM boundary · auditable by row.">
-  <style>
-    :root {
-      --bg: #0e1014;
-      --fg: #e8eaed;
-      --dim: #8b9099;
-      --accent: #6cb6ff;
-      --code-bg: #1a1d23;
-      --border: #2a2e36;
-    }
-    * { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
-    body {
-      font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      max-width: 720px;
-      margin: 0 auto;
-      padding: 48px 24px 96px;
-    }
-    h1 { font-size: 28px; margin: 24px 0 8px; }
-    h2 { font-size: 18px; margin: 36px 0 12px; color: var(--accent); font-weight: 600; }
-    p { margin: 12px 0; }
-    a { color: var(--accent); text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    .tagline { color: var(--dim); font-style: italic; margin-top: 0; }
-    .badge {
-      display: inline-block;
-      background: #6b1d1d;
-      color: #ffd6d6;
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 12px;
-      font-weight: 600;
-      letter-spacing: 0.5px;
-      margin-bottom: 16px;
-    }
-    pre {
-      background: var(--code-bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 14px 16px;
-      overflow-x: auto;
-      font: 13px/1.5 "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-    }
-    code {
-      background: var(--code-bg);
-      border: 1px solid var(--border);
-      padding: 1px 6px;
-      border-radius: 3px;
-      font: 13px/1 "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-    }
-    pre code { background: none; border: none; padding: 0; }
-    .copy {
-      position: relative;
-    }
-    .copy button {
-      position: absolute;
-      top: 8px;
-      right: 8px;
-      background: var(--border);
-      color: var(--fg);
-      border: none;
-      border-radius: 4px;
-      padding: 4px 10px;
-      font: inherit;
-      font-size: 11px;
-      cursor: pointer;
-    }
-    .copy button:hover { background: #353a44; }
-    .links { color: var(--dim); margin-top: 32px; }
-    .links a { margin-right: 16px; }
-  </style>
-</head>
-<body>
+---
+layout: default
+title: home
+description: >-
+  A distributed compiler cache that a regulated enterprise's security team will
+  actually approve. One Firecracker microVM per tenant. KVM boundary, no NIC,
+  full audit trail.
+---
 
-<span class="badge">PRE-ALPHA</span>
+<!-- ─────── hero ─────── -->
+<section class="hero" data-screen-label="01 Hero">
+  <div class="shell">
+    <h1>
+      A distributed compiler cache<br/>
+      an auditor will <em>actually approve</em>.
+    </h1>
+    <p class="hero-lede">
+      <code style="font-family:var(--mono);background:var(--bg-1);padding:2px 6px;border:1px solid var(--line)">ccache</code>
+      is great on your laptop.
+      <code style="font-family:var(--mono);background:var(--bg-1);padding:2px 6px;border:1px solid var(--line)">sccache</code>
+      adds a daemon and a remote cache.
+      <code style="font-family:var(--mono);background:var(--bg-1);padding:2px 6px;border:1px solid var(--line)">distcc</code>
+      farms compiles across machines. They all assume the worker is trusted shared-kernel infrastructure. hpcc assumes it isn't.
+    </p>
 
-<h1>hpcc</h1>
-<p class="tagline">A distributed compiler cache that a regulated security team will actually approve.<br>
-Sandboxed remote compilation · per-tenant KVM boundary · auditable by row.</p>
+    <div class="hero-install">
+      <div class="hero-install-row">
+        <code id="install-cmd">curl -fsSL https://hpcc.dev/install.sh | bash</code>
+        <button type="button" class="copy-btn" data-copy="install-cmd" aria-label="Copy install command">copy</button>
+      </div>
+      <p class="hero-install-note">
+        Linux &amp; macOS · interactive · pins a release via <code>HPCC_VERSION=v0.1.0-alpha bash</code>.
+        Windows worker setup: <a href="{{ site.github_repo }}/blob/main/tools/userdata/install-worker.ps1">tools/userdata/install-worker.ps1</a>.
+      </p>
+    </div>
 
-<h2>Install</h2>
-<p>Run this on any Linux or macOS host. It downloads the right binary for your platform, walks you through configuring as a client / worker / scheduler, and runs <code>hpcc init</code> with your answers.</p>
+    <div class="hero-cta">
+      <a class="btn btn-primary" href="{{ site.github_repo }}">
+        ☆ Star on GitHub <span class="arrow">→</span>
+      </a>
+      <a class="btn" href="{{ site.github_repo }}/releases">Releases</a>
+      <a class="btn" href="#why">Read the thesis</a>
+      <a class="btn" href="{{ site.github_repo }}/blob/main/docs/plan.md">docs/plan.md</a>
+    </div>
 
-<div class="copy">
-<pre><code id="install-cmd">curl -fsSL https://hpcc.dev/install.sh | bash</code></pre>
-<button onclick="navigator.clipboard.writeText(document.getElementById('install-cmd').textContent)">Copy</button>
-</div>
+    <dl class="hero-meta">
+      <div>
+        <dt>Isolation</dt>
+        <dd>Firecracker · KVM</dd>
+      </div>
+      <div>
+        <dt>Network</dt>
+        <dd>vsock only · no NIC</dd>
+      </div>
+      <div>
+        <dt>Identity</dt>
+        <dd>OCI image digest</dd>
+      </div>
+      <div>
+        <dt>Wire</dt>
+        <dd>gRPC · zstd · 5–10×</dd>
+      </div>
+    </dl>
+  </div>
+</section>
 
-<p>To pin a specific release instead of the latest:</p>
-<pre><code>curl -fsSL https://hpcc.dev/install.sh | HPCC_VERSION=v0.1.0-alpha bash</code></pre>
+<!-- ─────── thesis ─────── -->
+<section class="thesis" id="why" data-screen-label="02 Why">
+  <div class="shell">
+    <div class="kicker">§ 01 · Why hpcc exists</div>
+    <h2 class="section-title">A security review isn't asking
+      <em style="color:var(--accent);font-style:normal">"is namespace isolation technically sufficient?"</em>
+      They're asking
+      <em style="color:var(--accent);font-style:normal">"is this a boundary auditors recognize?"</em>
+    </h2>
+    <p class="section-lede">A bwrap sandbox is not. A KVM boundary is. That single distinction is the entire reason hpcc exists — and the reason every existing OSS distributed compiler stalls at the regulated-enterprise door.</p>
 
-<h2>What it does</h2>
-<p>The installer is plain bash with no dependencies beyond <code>curl</code> and <code>unzip</code> (or <code>bsdtar</code>). It reads input from <code>/dev/tty</code> so the curl pipe doesn't eat your answers. Source is on <a href="https://github.com/aarani/hpcc/blob/main/web/install.sh">GitHub</a> — feel free to read it before piping into bash.</p>
+    <div class="thesis-grid">
+      <div class="thesis-pair">
+        <div class="thesis-card assumed">
+          <h3>ccache · sccache · distcc</h3>
+          <p>The worker is <span class="hl" style="background:transparent;color:var(--fg);border-bottom:1px solid var(--mute-2)">trusted shared-kernel infrastructure</span>. Isolation is best-effort: a bubblewrap namespace, a Linux user, a chroot. Defensible on a laptop, indefensible in a regulated multi-tenant environment.</p>
+        </div>
+        <div class="thesis-quote">
+          <em>// gVisor was considered and rejected:</em><br/>
+          it's a userspace kernel intercepting<br/>
+          syscalls — not the kernel+KVM boundary<br/>
+          a security review actually recognises.
+        </div>
+      </div>
+      <div class="thesis-pair">
+        <div class="thesis-card shipped">
+          <h3>hpcc</h3>
+          <p>The worker is <span class="hl">hostile-by-default, multi-tenant, and on the audit trail.</span> One Firecracker microVM per tenant session. Separate kernel. KVM boundary. <span class="hl">No NIC.</span> Every compile produces a single audit row reproducible from one line of a TSV.</p>
+        </div>
+        <div class="thesis-quote" style="border-left-color:var(--accent)">
+          <em>// the host↔guest channel is</em><br/>
+          one vsock device carrying a single<br/>
+          bidirectional gRPC stream.<br/>
+          <em>// there is no exfiltration argument to have.</em>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
 
-<h2>Docs</h2>
-<p class="links">
-  <a href="https://github.com/aarani/hpcc">GitHub</a>
-  <a href="https://github.com/aarani/hpcc#readme">README</a>
-  <a href="https://github.com/aarani/hpcc/blob/main/docs/plan.md">Design plan</a>
-  <a href="https://github.com/aarani/hpcc/releases">Releases</a>
-</p>
+<!-- ─────── compare ─────── -->
+<section class="compare" id="compare" data-screen-label="03 Compare">
+  <div class="shell">
+    <div class="kicker">§ 02 · Where the conversation usually ends</div>
+    <h2 class="section-title">No competing OSS distributed compiler ships hardware-virtualised per-tenant isolation.</h2>
+    <p class="section-lede">A cell-by-cell view of the boundary your auditor can recognise — and the operational pieces that fall out of it.</p>
 
-</body>
-</html>
+    <table class="compare-table">
+      <thead>
+        <tr>
+          <th></th>
+          <th>ccache</th>
+          <th>sccache-dist</th>
+          <th>distcc</th>
+          <th class="us">hpcc</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th>Worker isolation</th>
+          <td><span class="badge b-none">none</span><br/>local user, no remote</td>
+          <td><span class="badge b-soft">bwrap</span><br/>shared kernel namespace</td>
+          <td><span class="badge b-none">none</span><br/>worker is the host</td>
+          <td class="us"><span class="badge b-strong">Firecracker · KVM</span><br/>per-tenant microVM, separate kernel</td>
+        </tr>
+        <tr>
+          <th>Network on worker</th>
+          <td>—</td>
+          <td>full NIC</td>
+          <td>full NIC</td>
+          <td class="us">no NIC · vsock only</td>
+        </tr>
+        <tr>
+          <th>Toolchain identity</th>
+          <td>compiler binary hash</td>
+          <td>compiler binary hash</td>
+          <td>operator-managed</td>
+          <td class="us">OCI image digest</td>
+        </tr>
+        <tr>
+          <th>Source staging</th>
+          <td>client preprocess</td>
+          <td>client preprocess</td>
+          <td>client preprocess</td>
+          <td class="us">PREPROCESSED <em>or</em> CAS · content-addressed manifest · 1-RPC cache hit · cross-developer sharing via <code>.hpcc</code> marker</td>
+        </tr>
+        <tr>
+          <th>Audit trail</th>
+          <td>—</td>
+          <td>logs</td>
+          <td>logs</td>
+          <td class="us">per-job row · 9-tuple · reproducible</td>
+        </tr>
+        <tr>
+          <th>Reproducibility</th>
+          <td>by ceremony</td>
+          <td>by ceremony</td>
+          <td>by ceremony</td>
+          <td class="us">auto-injected flags · pinned env</td>
+        </tr>
+        <tr>
+          <th>Cache poisoning</th>
+          <td>laptop-trusted</td>
+          <td>client writes cache</td>
+          <td>—</td>
+          <td class="us">paranoid mode · worker-only writes</td>
+        </tr>
+        <tr>
+          <th>Windows path</th>
+          <td>—</td>
+          <td>—</td>
+          <td>—</td>
+          <td class="us">Hyper-V isolated · hpcc-agent over HvSocket · <em>no SMB</em> across the partition boundary</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ─────── features ─────── -->
+<section class="features" id="features" data-screen-label="04 Features">
+  <div class="shell">
+    <div class="kicker">§ 03 · What ships in the box</div>
+    <h2 class="section-title">Eleven decisions that fall out of "the worker is hostile-by-default."</h2>
+
+    <div class="feat-grid">
+      <div class="feat">
+        <div class="feat-num">F.01</div>
+        <h3>One Firecracker microVM per tenant session</h3>
+        <p>Driven directly by hpcc — no <code>firecracker-containerd</code> dependency. The VM stays warm across compiles in a per-tenant pool, torn down on idle. Separate kernel. KVM boundary.</p>
+      </div>
+      <div class="feat">
+        <div class="feat-num">F.02</div>
+        <h3>The VM has no NIC</h3>
+        <p>There is no exfiltration argument to have, because there is no network device. <span class="mono">Full stop.</span> Host↔guest is one vsock device carrying a single bidirectional gRPC stream.</p>
+      </div>
+      <div class="feat">
+        <div class="feat-num">F.03</div>
+        <h3>Container image digest <span class="mono">is</span> the toolchain identity</h3>
+        <p>No "hash the gcc binary" dance. 50 developers sharing one image produce one cache bucket. CI and laptops cannot silently diverge.</p>
+      </div>
+      <div class="feat">
+        <div class="feat-num">F.04</div>
+        <h3>Route-only scheduler</h3>
+        <p>The scheduler is a lookup service — never touches compile payloads or artifact bytes. The client dials the worker directly. No proxy hop, no bottleneck, no scheduler holding cache keys it doesn't need.</p>
+      </div>
+      <div class="feat">
+        <div class="feat-num">F.05</div>
+        <h3>Reproducibility by default</h3>
+        <p>Auto-injected per family: GCC/Clang get <code>-ffile-prefix-map=/src=.</code> + <code>-Werror=date-time</code>; MSVC gets <code>/d1trimfile:/src</code> + <code>/PDBSourcePath:/src</code>. The per-Exec staging dir is stripped from <code>.o</code>/<code>.obj</code>/<code>.pdb</code> embedded paths so two Execs of the same source produce byte-identical outputs. Pinned locale, timezone, hostname inside the VM round it out.</p>
+      </div>
+      <div class="feat">
+        <div class="feat-num">F.06</div>
+        <h3>Per-job audit row</h3>
+        <p><code>(image_digest, source_digest, flags, output_digest, tenant, worker, vm, duration, exit)</code> — every compile, reproducible from a single line. The table format auditors want to see.</p>
+      </div>
+      <div class="feat">
+        <div class="feat-num">F.07</div>
+        <h3>CAS dispatch &amp; cross-developer cache hits</h3>
+        <p>Default <code>source_mode = "cas"</code>: client ships a content-addressed manifest, the worker probes its compile cache by manifest digest — 1 RPC, ~32 bytes, .o back. A <code>.hpcc</code> project marker normalises paths so two developers' identical checkouts hash to the same key. Bazel's <code>ActionCache.GetActionResult</code>, without the rest of REAPI's surface. <code>"preprocessed"</code> remains selectable as a fallback.</p>
+      </div>
+      <div class="feat">
+        <div class="feat-num">F.08</div>
+        <h3>Per-call zstd on the wire</h3>
+        <p>Preprocessed C++ compresses 5–10×. The single largest perf lever, and it's on by default.</p>
+      </div>
+      <div class="feat">
+        <div class="feat-num">F.09</div>
+        <h3>Paranoid mode</h3>
+        <p>Cache reads and writes happen <em>only</em> on the worker. Clients never touch cache stores, never hold remote-store credentials. A compromised laptop cannot poison the cache.</p>
+      </div>
+      <div class="feat">
+        <div class="feat-num">F.10</div>
+        <h3>Per-tenant OAuth2 IdP</h3>
+        <p>Each tenant in the scheduler config declares its own IdP (Okta, Keycloak, Auth0, anything OAuth2-compliant). Clients know only their <code>tenant_id</code> + scheduler URL; an unauthenticated <code>GetTenantIdP</code> RPC returns the OAuth endpoints for that tenant so laptops never hardcode IdP coordinates. The scheduler validates the password-grant JWT against the named tenant's JWKS — an IdP configured for tenant A is never asked to verify a token labeled as tenant B — then signs a short-lived routing token tenant-, image-, and worker-scoped. The same <code>tenant_id</code> scopes the storage namespace, the per-job audit row, and (when wired) the per-tenant upload quota.</p>
+      </div>
+      <div class="feat">
+        <div class="feat-num">F.11</div>
+        <h3>Windows: no SMB across the partition boundary</h3>
+        <p>The default Microsoft path for sharing host directories into a Hyper-V isolated container is <span class="hl">VSMB</span> — the same SMB protocol family that's absorbed EternalBlue and a two-decade tail of kernel-mode RCEs. Stapling an SMB parser across a boundary whose pitch is "auditors recognise this kernel+VM line" gives the threat model back. hpcc mirrors the Linux side instead: <code>hpcc-agent.exe</code> as PID 1, listening on <span class="mono">HvSocket</span> (the Hyper-V analogue of vsock). One bidi <code>AgentService.Exec</code> stream carries header + input file chunks in, stdio + result + output file chunks out. Wire protocol we own — not an industry-standard filesystem protocol with a CVE-of-the-month history.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────── architecture ─────── -->
+<section class="arch" id="architecture" data-screen-label="05 Architecture">
+  <div class="shell">
+    <div class="kicker">§ 04 · Architecture</div>
+    <h2 class="section-title">Route-only scheduler. Workers dispatch into per-tenant VMs over vsock.</h2>
+    <p class="section-lede">The scheduler returns a worker address and TLS trust info — it never touches compile payloads. The client dials the worker directly. The worker dispatches into a tenant-pinned Firecracker VM via a single bidirectional gRPC stream over a vsock device. No NIC ever appears in the guest.</p>
+
+    <div class="arch-stage">
+      <svg class="arch-svg" viewBox="0 0 1000 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="hpcc architecture: client → scheduler → worker → Firecracker VM via vsock">
+        <defs>
+          <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="var(--line)" stroke-width="0.5" opacity="0.6"/>
+          </pattern>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--mute)"/>
+          </marker>
+          <marker id="arrow-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+          </marker>
+        </defs>
+        <rect width="1000" height="420" fill="url(#grid)" opacity="0.3"/>
+
+        <!-- Client -->
+        <g>
+          <rect x="40" y="160" width="160" height="100" fill="var(--bg-1)" stroke="var(--line-2)" />
+          <text x="56" y="184" font-family="Geist Mono" font-size="11" fill="var(--mute)" letter-spacing="1.5">CLIENT</text>
+          <text x="56" y="210" font-family="Geist" font-size="15" fill="var(--fg)">hpcc wrap</text>
+          <text x="56" y="230" font-family="Geist Mono" font-size="11" fill="var(--mute)">→ gcc / clang / cl</text>
+          <text x="56" y="248" font-family="Geist Mono" font-size="11" fill="var(--mute)">+ daemon over loopback</text>
+        </g>
+
+        <!-- Scheduler -->
+        <g>
+          <rect x="290" y="60" width="180" height="80" fill="var(--bg-1)" stroke="var(--line-2)" />
+          <text x="306" y="84" font-family="Geist Mono" font-size="11" fill="var(--mute)" letter-spacing="1.5">SCHEDULER</text>
+          <text x="306" y="108" font-family="Geist" font-size="14" fill="var(--fg)">route-only</text>
+          <text x="306" y="126" font-family="Geist Mono" font-size="11" fill="var(--mute)">never sees payload</text>
+        </g>
+
+        <!-- Cache (S3) -->
+        <g>
+          <rect x="290" y="280" width="180" height="80" fill="var(--bg-1)" stroke="var(--line-2)" />
+          <text x="306" y="304" font-family="Geist Mono" font-size="11" fill="var(--mute)" letter-spacing="1.5">REMOTE CACHE</text>
+          <text x="306" y="328" font-family="Geist" font-size="14" fill="var(--fg)">S3 / MinIO / R2</text>
+          <text x="306" y="346" font-family="Geist Mono" font-size="11" fill="var(--mute)">cache/ prefix · LRU</text>
+        </g>
+
+        <!-- Worker -->
+        <g>
+          <rect x="560" y="120" width="400" height="220" fill="var(--bg-1)" stroke="var(--line-2)" />
+          <text x="578" y="144" font-family="Geist Mono" font-size="11" fill="var(--mute)" letter-spacing="1.5">WORKER · linux host</text>
+          <line x1="578" y1="156" x2="942" y2="156" stroke="var(--line)" stroke-dasharray="2 3"/>
+
+          <!-- VM inside worker -->
+          <rect x="600" y="180" width="320" height="140" fill="var(--bg-2)" stroke="var(--accent)" stroke-dasharray="0"/>
+          <text x="618" y="204" font-family="Geist Mono" font-size="11" fill="var(--accent)" letter-spacing="1.5">FIRECRACKER µVM · TENANT-PINNED</text>
+          <text x="618" y="232" font-family="Geist" font-size="15" fill="var(--fg)">hpcc-agent</text>
+          <text x="618" y="250" font-family="Geist Mono" font-size="11" fill="var(--mute)">PID 1 · OCI rootfs (squashfs · streamed)</text>
+          <text x="618" y="278" font-family="Geist Mono" font-size="11" fill="var(--mute)">— no NIC</text>
+          <text x="618" y="294" font-family="Geist Mono" font-size="11" fill="var(--mute)">— vsock cid:3</text>
+          <text x="618" y="310" font-family="Geist Mono" font-size="11" fill="var(--mute)">— bidi gRPC: AgentService.Exec</text>
+        </g>
+
+        <!-- Lines: client → scheduler -->
+        <path d="M 200 190 Q 245 190 245 110 L 290 100" fill="none" stroke="var(--mute)" stroke-width="1" marker-end="url(#arrow)"/>
+        <text x="220" y="138" font-family="Geist Mono" font-size="10" fill="var(--mute)">1. route?</text>
+
+        <!-- scheduler → client (returns worker addr) -->
+        <path d="M 290 120 L 245 120 Q 200 120 200 200" fill="none" stroke="var(--mute)" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#arrow)"/>
+        <text x="218" y="160" font-family="Geist Mono" font-size="10" fill="var(--mute)">2. signed JWT</text>
+
+        <!-- Client → Worker (direct, accent) -->
+        <path d="M 200 220 L 560 220" fill="none" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#arrow-acc)"/>
+        <text x="320" y="212" font-family="Geist Mono" font-size="10.5" fill="var(--accent)">3. gRPC · zstd · per-call</text>
+
+        <!-- Worker → Cache -->
+        <path d="M 660 340 L 660 360 L 380 360" fill="none" stroke="var(--mute)" stroke-width="1" marker-end="url(#arrow)"/>
+        <text x="406" y="354" font-family="Geist Mono" font-size="10" fill="var(--mute)">4. paranoid mode: worker-only</text>
+
+        <!-- vsock channel inside worker (host↔guest) -->
+        <line x1="580" y1="250" x2="600" y2="250" stroke="var(--accent)" stroke-width="2">
+          <animate attributeName="opacity" values="0.3;1;0.3" dur="1.8s" repeatCount="indefinite"/>
+        </line>
+        <text x="540" y="270" font-family="Geist Mono" font-size="9" fill="var(--accent)">vsock</text>
+      </svg>
+
+      <div class="arch-legend">
+        <span><span class="sw" style="background:var(--accent)"></span> direct payload path · zstd · per-call</span>
+        <span><span class="sw" style="background:var(--mute)"></span> control / cache plane</span>
+        <span><span class="sw" style="border-top:1px dashed var(--mute);background:transparent;height:0"></span> response</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────── audit ─────── -->
+<section class="audit" data-screen-label="06 Audit">
+  <div class="shell">
+    <div class="kicker">§ 05 · The audit row</div>
+    <h2 class="section-title">A reproducible compile is one line of a table.</h2>
+    <p class="section-lede">Every job emits a 9-tuple. <code style="font-family:var(--mono);background:var(--bg);padding:2px 6px;border:1px solid var(--line)">hpcc inspect &lt;hash&gt;</code> reads it back. <code style="font-family:var(--mono);background:var(--bg);padding:2px 6px;border:1px solid var(--line)">hpcc explain &lt;file&gt;</code> tells you which header or flag broke the key — not a log to grep.</p>
+
+    <div class="audit-block">
+      <div>
+        <div class="audit-row">
+          <div class="ar-head">
+            <span><span class="dot"></span>job · audit row</span>
+            <span>2026-05-10T14:22:08Z</span>
+          </div>
+          <dl class="ar-body">
+            <dt>image_digest</dt>
+            <dd><span class="hl">sha256:</span>3f7c…ba12</dd>
+            <dt>source_digest</dt>
+            <dd><span class="hl">sha256:</span>9ea1…44d0</dd>
+            <dt>flags</dt>
+            <dd>-O2 -std=c++20 -fPIC<br/>+<span class="hl">-Werror=date-time</span><br/>+<span class="hl">-ffile-prefix-map</span></dd>
+            <dt>output_digest</dt>
+            <dd><span class="hl">sha256:</span>1d8f…cc7a</dd>
+            <dt>tenant</dt>
+            <dd>fixed-income.eq-deriv</dd>
+            <dt>worker</dt>
+            <dd>w-eu-w1-04 · 7.5 GiB</dd>
+            <dt>vm</dt>
+            <dd>fc-7831 · cid:3 · warm</dd>
+            <dt>duration</dt>
+            <dd>1.84s · cache miss → store</dd>
+            <dt>exit</dt>
+            <dd style="color:var(--good)">0 · ok</dd>
+          </dl>
+          <div class="audit-foot">
+            <span>byte-identical reproducible</span>
+            <span>tsv · 1 line</span>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <p style="font-size:14px;color:var(--fg-1);margin:0 0 14px;line-height:1.6">When a build that should have hit the cache misses, the question stops being "where do I start?" and starts being "what changed?" hpcc answers the second question directly.</p>
+        <div class="explain">
+          <div class="explain-head">terminal · hpcc explain MarketRiskBook.cpp.o</div>
+          <div class="explain-body">
+            <div><span class="prompt">$</span> hpcc explain build/MarketRiskBook.cpp.o</div>
+            <div class="dim">scanning 142 inputs against last hit (2026-05-09T11:08Z)…</div>
+            <br/>
+            <div><span class="ok">✓</span> source hash unchanged    <span class="dim">(MarketRiskBook.cpp · 9ea1…44d0)</span></div>
+            <div><span class="ok">✓</span> image digest unchanged   <span class="dim">(toolchain:gcc-13.3 · 3f7c…ba12)</span></div>
+            <div><span class="ok">✓</span> 138 of 140 transitive headers identical</div>
+            <br/>
+            <div><span class="miss">✗</span> <span style="color:var(--fg)">flag changed</span> · cache key broken here</div>
+            <div class="dim">    was:  -DRISK_BUILD=2026.05.08-rc3</div>
+            <div class="dim">    now:  -DRISK_BUILD=2026.05.09-rc1</div>
+            <br/>
+            <div><span class="miss">✗</span> <span style="color:var(--fg)">header changed</span> · vendored/curve_solver.hpp</div>
+            <div class="dim">    @line 41 · added: constexpr int kMaxIters = 256;</div>
+            <br/>
+            <div class="dim">// 1 missed compile · 7m 12s spent · 4 follow-on misses suppressed</div>
+            <div><span class="prompt">$</span> <span style="color:var(--fg)">_</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────── maintainer ─────── -->
+<section class="maint" data-screen-label="07 Maintainer">
+  <div class="shell">
+    <div class="kicker">§ 06 · Maintainer</div>
+    <div class="signoff">
+      <div class="signoff-line">
+        <span class="so-key">Signed-off-by:</span>
+        <span class="so-name">Afshin Arani</span>
+        <span class="so-mid">&lt;<a href="https://github.com/aarani">@aarani</a>&gt;</span>
+      </div>
+      <p class="signoff-bio">
+        Senior software engineer. Spends his days inside the kind of environments hpcc was built for — which is the short answer to <em>"why does this exist?"</em> Reviews, issues, and well-formed bug reports are welcome on
+        <a href="{{ site.github_repo }}/issues">github</a>.
+      </p>
+      <div class="signoff-meta">
+        <span>solo maintainer</span>
+        <span>·</span>
+        <span>AGPL licensed</span>
+        <span>·</span>
+        <span>no external funding</span>
+      </div>
+    </div>
+  </div>
+</section>

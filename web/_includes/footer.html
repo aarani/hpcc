@@ -1,0 +1,28 @@
+<footer>
+  <div class="shell foot-row">
+    <div>
+      <div style="display:flex; gap:14px; align-items:flex-start;">
+        <svg class="vault-mark" width="40" height="40" viewBox="0 0 64 64" fill="none" aria-hidden="true" style="color:var(--mute);flex:0 0 40px">
+          <g class="wire">
+            <path d="M32 6 L56 19 L56 45 L32 58 L8 45 L8 19 Z" />
+            <path d="M32 6 L32 32 M8 19 L32 32 M56 19 L32 32" />
+          </g>
+          <g class="face">
+            <path d="M32 22 L44 28.5 L32 35 L20 28.5 Z" />
+            <path d="M20 28.5 L32 35 L32 48 L20 41.5 Z" opacity=".75" />
+            <path d="M44 28.5 L32 35 L32 48 L44 41.5 Z" opacity=".55" />
+          </g>
+        </svg>
+        <div style="font-family:var(--mono);font-size:11.5px;line-height:1.5;color:var(--mute)">{{ site.title }} · {{ site.tagline }}<br/>for environments with auditors</div>
+      </div>
+      <div style="margin-top:18px;color:var(--mute-2)">© {{ 'now' | date: "%Y" }} · AGPL-3.0 · built on Firecracker, gRPC, vsock, S3</div>
+    </div>
+    <div class="foot-meta">
+      <a href="{{ site.github_repo }}">github.com/aarani/hpcc</a>
+      <a href="{{ site.github_repo }}/blob/main/docs/plan.md">docs/plan.md</a>
+      <a href="{{ site.github_repo }}/issues">issues</a>
+      <a href="{{ '/blog/' | relative_url }}">blog</a>
+      <a href="{{ '/feed.xml' | relative_url }}">rss</a>
+    </div>
+  </div>
+</footer>

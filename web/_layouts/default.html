@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+{%- include head.html -%}
+</head>
+<body>
+
+{%- include nav.html -%}
+
+{{ content }}
+
+{%- include footer.html -%}
+{%- include tweaks.html -%}
+
+<script src="{{ '/assets/js/main.js' | relative_url }}"></script>
+</body>
+</html>

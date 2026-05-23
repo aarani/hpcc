@@ -1,0 +1,12 @@
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{% if page.title %}{{ page.title }} — {{ site.title }}{% else %}{{ site.title }} — {{ site.tagline }} for regulated environments{% endif %}</title>
+<meta name="description" content="{{ page.description | default: site.description }}" />
+<link rel="canonical" href="{{ page.url | absolute_url }}" />
+<link rel="icon" type="image/svg+xml" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><g stroke="%23807868" stroke-width="2" stroke-linejoin="round" fill="none" opacity="0.6"><path d="M32 6 L56 19 L56 45 L32 58 L8 45 L8 19 Z"/><path d="M32 6 L32 32 M8 19 L32 32 M56 19 L32 32"/></g><g fill="%23d4a04a"><path d="M32 22 L44 28.5 L32 35 L20 28.5 Z"/><path d="M20 28.5 L32 35 L32 48 L20 41.5 Z" opacity=".75"/><path d="M44 28.5 L32 35 L32 48 L44 41.5 Z" opacity=".55"/></g></svg>' />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="{{ '/assets/css/style.css' | relative_url }}" />
+{%- feed_meta -%}
+{%- seo -%}

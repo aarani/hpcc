@@ -1,0 +1,33 @@
+---
+layout: default
+title: blog
+permalink: /blog/
+description: Notes and updates from the hpcc project.
+---
+<section class="blog-index">
+  <div class="shell">
+    <div class="kicker">§ blog</div>
+    <h1 class="section-title">Notes from the project.</h1>
+    <p class="section-lede">Release notes, design rationales, and the occasional postmortem. RSS at <a href="{{ '/feed.xml' | relative_url }}" style="color:var(--accent);border-bottom:1px solid var(--accent)">/feed.xml</a>.</p>
+
+    {% if site.posts.size > 0 %}
+      <ul class="blog-list">
+        {% for post in site.posts %}
+          <li class="blog-item">
+            <time datetime="{{ post.date | date_to_xmlschema }}">{{ post.date | date: "%Y-%m-%d" }}</time>
+            <div>
+              <h2><a href="{{ post.url | relative_url }}">{{ post.title }}</a></h2>
+              {% if post.description %}
+                <p>{{ post.description }}</p>
+              {% else %}
+                <p>{{ post.excerpt | strip_html | truncate: 200 }}</p>
+              {% endif %}
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="blog-empty">no posts yet — check back soon.</div>
+    {% endif %}
+  </div>
+</section>

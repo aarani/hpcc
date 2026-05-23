@@ -39,10 +39,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Upload web/
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Build Jekyll
+        # web/ is a Jekyll site (_config.yml, _layouts, _includes,
+        # _posts). jekyll-build-pages applies GitHub Pages' allow-listed
+        # plugin set (jekyll-feed, -seo-tag, -sitemap) and writes the
+        # rendered site to web/_site.
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./web
+          destination: ./web/_site
+
+      - name: Upload built site
         uses: actions/upload-pages-artifact@v3
         with:
-          path: web
+          path: web/_site
 
       - name: Deploy
         id: deploy

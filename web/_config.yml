@@ -1,0 +1,45 @@
+title: hpcc
+tagline: distributed compiler cache
+description: >-
+  A distributed compiler cache that a regulated enterprise's security team will
+  actually approve. One Firecracker microVM per tenant. KVM boundary, no NIC,
+  full audit trail.
+author: Afshin Arani
+url: "https://hpcc.dev"
+baseurl: ""
+
+github_repo: https://github.com/aarani/hpcc
+
+# Jekyll
+markdown: kramdown
+highlighter: rouge
+permalink: /blog/:year/:month/:day/:title/
+future: true   # publish posts even if their date is ahead of the build clock
+
+# Collections / posts
+paginate: 10
+paginate_path: "/blog/page:num/"
+
+# Build
+exclude:
+  - README.md
+  - Gemfile
+  - Gemfile.lock
+  - node_modules
+  - vendor
+  - .gitignore
+  - .claude
+  - "*.log"
+
+# Safe-mode plugin allowlist (GH Pages default)
+plugins:
+  - jekyll-feed
+  - jekyll-seo-tag
+  - jekyll-sitemap
+
+defaults:
+  - scope:
+      path: ""
+      type: "posts"
+    values:
+      layout: post

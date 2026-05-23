@@ -1,0 +1,30 @@
+<header class="nav">
+  <div class="shell nav-row">
+    <a class="brand" href="{{ '/' | relative_url }}">
+      <svg class="brand-mark" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+        <g class="wire">
+          <path d="M32 6 L56 19 L56 45 L32 58 L8 45 L8 19 Z" />
+          <path d="M32 6 L32 32 M8 19 L32 32 M56 19 L32 32" />
+        </g>
+        <g class="face">
+          <path d="M32 22 L44 28.5 L32 35 L20 28.5 Z" />
+          <path d="M20 28.5 L32 35 L32 48 L20 41.5 Z" opacity=".75" />
+          <path d="M44 28.5 L32 35 L32 48 L44 41.5 Z" opacity=".55" />
+        </g>
+      </svg>
+      <span class="brand-name">{{ site.title }}</span>
+      <span class="brand-tag">{{ site.tagline }}</span>
+    </a>
+    <nav class="nav-links">
+      <a href="{{ '/#why' | relative_url }}">why</a>
+      <a href="{{ '/#compare' | relative_url }}">vs.</a>
+      <a href="{{ '/#features' | relative_url }}">features</a>
+      <a href="{{ '/#architecture' | relative_url }}">architecture</a>
+      <a href="{{ '/#roadmap' | relative_url }}">roadmap</a>
+      <a href="{{ '/blog/' | relative_url }}">blog</a>
+      <a class="nav-cta" href="{{ site.github_repo }}">
+        github →
+      </a>
+    </nav>
+  </div>
+</header>
