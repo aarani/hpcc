@@ -79,10 +79,18 @@ hpcc init worker \
   --public-addr worker-1.internal:9092
 
 # Host prerequisites (the init command tells you exactly these):
-#   apt install firecracker                        # /usr/bin/firecracker, /usr/bin/jailer
-#   curl -o /var/lib/hpcc/vmlinux <kernel-url>     # kernel image
-#   curl -o /var/lib/hpcc/hpcc-agent-linux-amd64 \
-#        <release-url>                             # in-VM agent
+#
+#   # firecracker + jailer — no distro package; grab the upstream tarball.
+#   # arm64 hosts: swap x86_64 → aarch64 in both URL and unpacked names.
+#   FC=v1.15.1
+#   curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/${FC}/firecracker-${FC}-x86_64.tgz \
+#     | sudo tar -xz -C /tmp
+#   sudo install /tmp/release-${FC}-x86_64/firecracker-${FC}-x86_64 /usr/bin/firecracker
+#   sudo install /tmp/release-${FC}-x86_64/jailer-${FC}-x86_64      /usr/bin/jailer
+#
+#   sudo mkdir -p /var/lib/hpcc
+#   sudo curl -o /var/lib/hpcc/vmlinux               <kernel-url>
+#   sudo curl -o /var/lib/hpcc/hpcc-agent-linux-amd64 <release-url>
 
 hpcc worker
 ```

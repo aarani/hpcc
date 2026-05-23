@@ -294,7 +294,9 @@ func runInitWorker(cmd *cobra.Command, _ []string) error {
 	switch runtimeHandler {
 	case "firecracker":
 		fmt.Fprintf(out, "\nfirecracker runtime selected. Before `hpcc worker` starts, the host needs:\n")
-		fmt.Fprintf(out, "  /usr/bin/firecracker and /usr/bin/jailer    (apt install firecracker)\n")
+		fmt.Fprintf(out, "  /usr/bin/firecracker and /usr/bin/jailer    (no distro package; download\n")
+		fmt.Fprintf(out, "                                               the upstream tarball — see\n")
+		fmt.Fprintf(out, "                                               README's worker section)\n")
 		fmt.Fprintf(out, "  /var/lib/hpcc/vmlinux                       (kernel image)\n")
 		fmt.Fprintf(out, "  /var/lib/hpcc/hpcc-agent-linux-amd64        (agent binary)\n")
 		fmt.Fprintf(out, "If your layout differs, edit [runtime.firecracker] / [image] in %s.\n", path)
