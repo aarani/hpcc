@@ -1,0 +1,231 @@
+{{- $listenPort := .Values.config.listen | trimAll "[]" | splitList ":" | last | int -}}
+{{- $metricsPort := .Values.config.metricsListen | trimAll "[]" | splitList ":" | last | int -}}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "hpcc-worker.fullname" . }}
+  labels:
+    {{- include "hpcc-worker.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "hpcc-worker.selectorLabels" . | nindent 6 }}
+  {{- with .Values.updateStrategy }}
+  updateStrategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "hpcc-worker.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        {{- if not .Values.config.existingConfigMap }}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if or .Values.tls.cert .Values.auth.workerToken }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "hpcc-worker.serviceAccountName" . }}
+      hostNetwork: {{ .Values.hostNetwork }}
+      dnsPolicy: {{ .Values.dnsPolicy }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        {{- if .Values.kvm.fixOwnership }}
+        - name: kvm-perms
+          # /dev/kvm typically ships as root:kvm 0660 with a host-side
+          # kvm GID that won't match the image's. Loosening to 0666 is
+          # the simplest way to let jailer-after-drop open it. Skip
+          # this init by setting kvm.fixOwnership=false if the host
+          # already exposes it world-accessible or a device plugin
+          # handles permissions.
+          image: {{ include "hpcc-worker.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["chmod", "0666", "/dev/kvm"]
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          volumeMounts:
+            - name: dev-kvm
+              mountPath: /dev/kvm
+        {{- end }}
+        - name: render-config
+          # Substitutes $NODE_IP (downward API → status.hostIP) into the
+          # worker.toml template so each pod advertises its node's IP
+          # as public_addr. Plain busybox sed; the chainguard wolfi
+          # base already ships it.
+          image: {{ include "hpcc-worker.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              sed "s|\${NODE_IP}|${NODE_IP}|g" /template/worker.toml.tmpl > /etc/hpcc/worker.toml
+              chmod 0644 /etc/hpcc/worker.toml
+          volumeMounts:
+            - name: config-tmpl
+              mountPath: /template
+              readOnly: true
+            - name: config-rendered
+              mountPath: /etc/hpcc
+      containers:
+        - name: worker
+          image: {{ include "hpcc-worker.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            # jailer needs CAP_SYS_ADMIN + the ability to manipulate
+            # cgroups, mount tmpfs, and pivot_root. privileged is the
+            # blunt-but-correct switch; finer cap drops break jailer.
+            privileged: true
+            runAsUser: 0
+          ports:
+            - name: grpc
+              containerPort: {{ $listenPort }}
+              hostPort: {{ $listenPort }}
+              protocol: TCP
+            {{- if .Values.config.metricsListen }}
+            - name: metrics
+              containerPort: {{ $metricsPort }}
+              hostPort: {{ $metricsPort }}
+              protocol: TCP
+            {{- end }}
+          env:
+            - name: {{ include "hpcc-worker.authSecretKey" . }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "hpcc-worker.authSecretName" . }}
+                  key: {{ include "hpcc-worker.authSecretKey" . }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: config-rendered
+              mountPath: /etc/hpcc/worker.toml
+              subPath: worker.toml
+              readOnly: true
+            - name: tls
+              mountPath: /etc/hpcc/tls
+              readOnly: true
+            - name: dev-kvm
+              mountPath: /dev/kvm
+            - name: rootfs
+              mountPath: /var/lib/hpcc/rootfs
+            - name: run
+              mountPath: /srv/jailer
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if .Values.probes.liveness.enabled }}
+          livenessProbe:
+            grpc:
+              port: {{ $listenPort }}
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+          {{- end }}
+          {{- if .Values.probes.readiness.enabled }}
+          readinessProbe:
+            grpc:
+              port: {{ $listenPort }}
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: config-tmpl
+          configMap:
+            name: {{ include "hpcc-worker.configMapName" . }}
+        - name: config-rendered
+          emptyDir: {}
+        - name: tls
+          secret:
+            secretName: {{ include "hpcc-worker.tlsSecretName" . }}
+        - name: dev-kvm
+          hostPath:
+            path: /dev/kvm
+            type: CharDevice
+        - name: rootfs
+          emptyDir:
+            {{- with .Values.volumes.rootfs.sizeLimit }}
+            sizeLimit: {{ . }}
+            {{- end }}
+            {{- with .Values.volumes.rootfs.medium }}
+            medium: {{ . }}
+            {{- end }}
+        - name: run
+          emptyDir:
+            {{- with .Values.volumes.run.sizeLimit }}
+            sizeLimit: {{ . }}
+            {{- end }}
+            {{- with .Values.volumes.run.medium }}
+            medium: {{ . }}
+            {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if .Values.serviceMonitor.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ printf "%s-metrics" (include "hpcc-worker.fullname" .) }}
+  labels:
+    {{- include "hpcc-worker.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: {{ $metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    {{- include "hpcc-worker.selectorLabels" . | nindent 4 }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "hpcc-worker.fullname" . }}
+  labels:
+    {{- include "hpcc-worker.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "hpcc-worker.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
+{{- end }}

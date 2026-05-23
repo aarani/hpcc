@@ -1,0 +1,32 @@
+hpcc-worker {{ .Chart.AppVersion }} installed as release {{ .Release.Name }}.
+
+Each pod runs privileged with hostNetwork on its node and advertises
+<NODE_IP>:{{ .Values.config.publicAddrPort }} to the scheduler.
+
+Verify pods landed and registered:
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }} -o wide
+  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/instance={{ .Release.Name }} -c worker --tail=50
+
+{{- if not .Values.auth.workerToken }}
+{{- if not .Values.auth.existingSecret }}
+
+WARNING: auth.workerToken is empty and no existingSecret was provided.
+Workers will fail to register with the scheduler. Either set
+auth.workerToken in values, or point auth.existingSecret at the same
+Secret the scheduler chart created.
+{{- end }}
+{{- end }}
+{{- if and (not .Values.tls.existingSecret) (not .Values.tls.cert) }}
+
+WARNING: no TLS material configured. The worker will refuse to start.
+Generate with `hpcc init worker` or any TLS toolchain and either set
+tls.cert/tls.key in values, or create a tls Secret and point
+tls.existingSecret at it.
+{{- end }}
+{{- if not .Values.nodeSelector }}
+
+NOTE: nodeSelector is empty — pods will schedule on every node in the
+cluster. Nodes without /dev/kvm will CrashLoopBackOff. Label your
+KVM-capable nodes (e.g. `kubectl label node <name> hpcc.io/kvm=true`)
+and set values.nodeSelector accordingly.
+{{- end }}

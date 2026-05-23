@@ -1,0 +1,68 @@
+apiVersion: v2
+name: hpcc-stack
+description: |
+  Demo umbrella chart for hpcc — pairs hpcc-scheduler + hpcc-worker
+  with a Grafana-flavoured observability stack (Prometheus, Tempo,
+  Loki) wired together via an OpenTelemetry Collector. Keycloak is
+  available for OIDC demos, gated off by default.
+
+  Not for production. Use it to evaluate hpcc in one command; for
+  production, run the hpcc-scheduler / hpcc-worker charts directly
+  against your existing platform.
+type: application
+version: 0.1.0
+appVersion: "v0.1.0-alpha"
+home: https://github.com/aarani/hpcc
+sources:
+  - https://github.com/aarani/hpcc
+maintainers:
+  - name: aarani
+    url: https://github.com/aarani
+kubeVersion: ">=1.24.0-0"
+
+dependencies:
+  # The two hpcc charts ship in-tree; the file:// repository works
+  # with `helm dependency update` and copies them under charts/.
+  - name: hpcc-scheduler
+    version: 0.1.0
+    repository: "file://../hpcc-scheduler"
+  - name: hpcc-worker
+    version: 0.1.0
+    repository: "file://../hpcc-worker"
+
+  # Metrics + Grafana. Includes prometheus-operator CRDs that the
+  # ServiceMonitor objects in the hpcc subcharts can target.
+  - name: kube-prometheus-stack
+    version: "*"
+    repository: https://prometheus-community.github.io/helm-charts
+    condition: kube-prometheus-stack.enabled
+
+  # Traces.
+  - name: tempo
+    version: "*"
+    repository: https://grafana.github.io/helm-charts
+    condition: tempo.enabled
+
+  # Logs (backend + shipper).
+  - name: loki
+    version: "*"
+    repository: https://grafana.github.io/helm-charts
+    condition: loki.enabled
+  - name: promtail
+    version: "*"
+    repository: https://grafana.github.io/helm-charts
+    condition: promtail.enabled
+
+  # OTLP fan-out: receives traces+metrics from hpcc, exports to
+  # Tempo + Prometheus remote-write.
+  - name: opentelemetry-collector
+    version: "*"
+    repository: https://open-telemetry.github.io/opentelemetry-helm-charts
+    condition: opentelemetry-collector.enabled
+
+  # OIDC IdP. Off by default — requires realm/client/user setup that
+  # this chart deliberately doesn't bake in.
+  - name: keycloak
+    version: "*"
+    repository: https://charts.bitnami.com/bitnami
+    condition: keycloak.enabled

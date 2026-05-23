@@ -1,0 +1,27 @@
+dependencies:
+- name: hpcc-scheduler
+  repository: file://../hpcc-scheduler
+  version: 0.1.0
+- name: hpcc-worker
+  repository: file://../hpcc-worker
+  version: 0.1.0
+- name: kube-prometheus-stack
+  repository: https://prometheus-community.github.io/helm-charts
+  version: 85.3.0
+- name: tempo
+  repository: https://grafana.github.io/helm-charts
+  version: 1.24.4
+- name: loki
+  repository: https://grafana.github.io/helm-charts
+  version: 7.0.0
+- name: promtail
+  repository: https://grafana.github.io/helm-charts
+  version: 6.17.1
+- name: opentelemetry-collector
+  repository: https://open-telemetry.github.io/opentelemetry-helm-charts
+  version: 0.156.2
+- name: keycloak
+  repository: https://charts.bitnami.com/bitnami
+  version: 25.2.0
+digest: sha256:2061ec13f0b91146eeeb46b8b2c3ed2330f4d09f84dd5ce29d30be9e92362865
+generated: "2026-05-23T18:19:48.653764+02:00"

@@ -1,0 +1,14 @@
+{{- if and (index .Values "keycloak" "enabled") (index .Values "keycloak" "keycloakConfigCli" "enabled") -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hpcc-demo-realm
+  labels:
+    {{- include "hpcc-stack.labels" . | nindent 4 }}
+data:
+  # Loaded by bitnami's keycloak-config-cli job after Keycloak is up.
+  # The job is idempotent — re-runs on `helm upgrade` reconcile against
+  # the existing state.
+  hpcc-demo-realm.json: |-
+    {{- .Files.Get "files/hpcc-demo-realm.json" | nindent 4 }}
+{{- end }}

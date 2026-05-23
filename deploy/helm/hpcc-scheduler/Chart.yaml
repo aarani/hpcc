@@ -1,0 +1,17 @@
+apiVersion: v2
+name: hpcc-scheduler
+description: hpcc scheduler — gRPC control plane that routes Compile RPCs from clients to workers.
+type: application
+# version is the chart version (bump on any chart change); appVersion
+# is the default hpcc release tag the deployment pulls if image.tag is
+# left empty. Keep appVersion in lock-step with the hpcc release that
+# the workflow pushes images for.
+version: 0.1.0
+appVersion: "v0.1.0-alpha"
+home: https://github.com/aarani/hpcc
+sources:
+  - https://github.com/aarani/hpcc
+maintainers:
+  - name: aarani
+    url: https://github.com/aarani
+kubeVersion: ">=1.24.0-0"

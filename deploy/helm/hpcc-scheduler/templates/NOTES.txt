@@ -1,0 +1,30 @@
+hpcc-scheduler {{ .Chart.AppVersion }} installed as release {{ .Release.Name }}.
+
+In-cluster endpoint (workers + clients dial this):
+  {{ include "hpcc-scheduler.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.grpcPort }}
+
+{{- if .Values.config.metricsListen }}
+Prometheus metrics:
+  {{ include "hpcc-scheduler.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.metricsPort }}/metrics
+{{- end }}
+
+Worker pairing token (paste into hpcc-worker values.auth.workerToken or
+mount as a Secret):
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "hpcc-scheduler.authSecretName" . }} \
+    -o jsonpath='{.data.{{ include "hpcc-scheduler.authSecretKey" . }}}' | base64 -d ; echo
+
+{{- if not .Values.auth.workerToken }}
+{{- if not .Values.auth.existingSecret }}
+
+WARNING: auth.workerToken is empty and no existingSecret was provided.
+Workers will fail to register. Set auth.workerToken (chart-managed) or
+auth.existingSecret (your own Secret) and re-apply.
+{{- end }}
+{{- end }}
+{{- if and (not .Values.tls.existingSecret) (not .Values.tls.cert) }}
+
+WARNING: no TLS material configured. The scheduler will refuse to start.
+Generate with `hpcc init scheduler` (or any TLS toolchain) and either
+set tls.cert/tls.key in values, or create a tls Secret and point
+tls.existingSecret at it.
+{{- end }}

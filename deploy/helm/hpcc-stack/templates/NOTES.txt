@@ -1,0 +1,60 @@
+hpcc-stack {{ .Chart.AppVersion }} installed as release {{ .Release.Name }}.
+
+Pods coming up:
+  kubectl -n {{ .Release.Namespace }} get pods -w
+
+Access the demo:
+
+  Grafana (admin / admin)
+    kubectl -n {{ .Release.Namespace }} port-forward svc/kps-grafana 3000:80
+    open http://localhost:3000
+
+  Prometheus
+    kubectl -n {{ .Release.Namespace }} port-forward svc/kps-prometheus 9090:9090
+
+  hpcc scheduler (TLS — workers and clients dial this)
+    in-cluster: scheduler.{{ .Release.Namespace }}.svc:9091
+    out of cluster: kubectl -n {{ .Release.Namespace }} port-forward svc/scheduler 9091:9091
+
+Recover the auto-generated worker_token (shared between scheduler and worker):
+  kubectl -n {{ .Release.Namespace }} get secret hpcc-shared-auth \
+    -o jsonpath='{.data.WORKER_TOKEN}' | base64 -d ; echo
+
+Recover the self-signed CA — clients dialing the scheduler/workers
+need to trust this:
+  kubectl -n {{ .Release.Namespace }} get secret hpcc-stack-ca \
+    -o jsonpath='{.data.ca\.crt}' | base64 -d > hpcc-stack-ca.pem
+
+{{- if index .Values "keycloak" "enabled" }}
+
+The `hpcc-demo` realm is auto-seeded with one client and one user:
+  client_id     = hpcc-cli
+  client_secret = hpcc-demo-secret-change-me   (rotate before exposing!)
+  user          = demo / demo
+  audience      = hpcc
+  tenant_id     = hpcc-demo
+
+Grab an access token (run from inside the cluster so the issuer URL
+matches what hpcc-scheduler validates against):
+
+  kubectl -n {{ .Release.Namespace }} run -it --rm token --image=curlimages/curl --restart=Never -- \
+    sh -c 'curl -s -X POST http://keycloak/realms/hpcc-demo/protocol/openid-connect/token \
+      -d grant_type=password -d username=demo -d password=demo \
+      -d client_id=hpcc-cli -d client_secret=hpcc-demo-secret-change-me \
+      | sed -n "s/.*\"access_token\":\"\\([^\"]*\\)\".*/\\1/p"'
+{{- end }}
+
+In Grafana → Explore, the Loki and Tempo datasources are pre-wired.
+Filter for {app_kubernetes_io_instance="{{ .Release.Name }}"} in Loki
+to scope logs to this release.
+
+{{- if not (index .Values "hpcc-worker" "nodeSelector") }}
+
+NOTE: hpcc-worker.nodeSelector is empty — pods land on every node.
+Nodes without /dev/kvm will CrashLoopBackOff. Label your KVM-capable
+nodes (kubectl label node <name> hpcc.io/kvm=true) and override
+hpcc-worker.nodeSelector accordingly.
+{{- end }}
+
+This is a demo umbrella. For production, deploy hpcc-scheduler and
+hpcc-worker directly against your existing observability platform.

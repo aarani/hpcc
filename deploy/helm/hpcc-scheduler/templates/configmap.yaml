@@ -1,0 +1,45 @@
+{{- if not .Values.config.existingConfigMap -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "hpcc-scheduler.configMapName" . }}
+  labels:
+    {{- include "hpcc-scheduler.labels" . | nindent 4 }}
+data:
+  # The scheduler reads this at /etc/hpcc/scheduler.toml. TLS material
+  # and the worker_token come in via `*_ref` indirection so the
+  # ConfigMap stays non-secret.
+  scheduler.toml: |
+    listen = {{ .Values.config.listen | quote }}
+    {{- if .Values.config.metricsListen }}
+    metrics_listen = {{ .Values.config.metricsListen | quote }}
+    {{- end }}
+    {{- if .Values.config.paranoid }}
+    paranoid = true
+    {{- end }}
+
+    [tls]
+    cert_ref = "file:/etc/hpcc/tls/tls.crt"
+    key_ref  = "file:/etc/hpcc/tls/tls.key"
+
+    [auth]
+    worker_token = "env:{{ include "hpcc-scheduler.authSecretKey" . }}"
+    {{- range $tenant := .Values.config.tenants }}
+
+    [[tenant]]
+    id        = {{ $tenant.id | quote }}
+    issuer    = {{ $tenant.issuer | quote }}
+    jwks_url  = {{ $tenant.jwksUrl | quote }}
+    token_url = {{ $tenant.tokenUrl | quote }}
+    audience  = {{ $tenant.audience | quote }}
+    {{- if $tenant.clientId }}
+    client_id = {{ $tenant.clientId | quote }}
+    {{- end }}
+    {{- if $tenant.scope }}
+    scope     = {{ $tenant.scope | quote }}
+    {{- end }}
+    {{- end }}
+
+    [routing]
+    sticky_tenants = {{ .Values.config.routing.stickyTenants }}
+{{- end }}

@@ -1,0 +1,156 @@
+# Default values for hpcc-worker.
+#
+# This chart runs the worker as a DaemonSet on nodes that have /dev/kvm.
+# Each pod runs privileged with hostNetwork enabled so jailer/firecracker
+# can manipulate cgroups and so the worker can advertise the node's IP
+# as its public address (clients dial workers directly after scheduler
+# routing).
+#
+# Target only KVM-capable nodes by setting nodeSelector or tolerations
+# below — running on a node without /dev/kvm will leave the pod stuck
+# in CrashLoopBackOff.
+
+image:
+  repository: ghcr.io/aarani/hpcc-worker
+  tag: ""                         # empty → Chart.AppVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# --- Worker ↔ scheduler pairing --------------------------------------
+scheduler:
+  # In-cluster: <release>.<namespace>.svc:<port>. Cross-cluster: an
+  # external hostname:port. Workers dial this for registration and
+  # heartbeats.
+  url: "hpcc-scheduler.hpcc.svc:9091"
+
+  # When the scheduler is signed by a private CA, set caFile to the
+  # in-pod path of the CA bundle (mount it via extraVolumes/Mounts).
+  # Leave empty to trust the system store.
+  caFile: ""
+
+# --- Auth (worker_token) ---------------------------------------------
+# Either set the value directly (chart-managed Secret) or point at an
+# existing Secret. The latter pairs naturally with the scheduler chart's
+# auth.existingSecret — both releases can share one Secret.
+auth:
+  workerToken: ""
+  existingSecret: ""
+  existingSecretKey: WORKER_TOKEN
+
+# --- TLS material (worker's own cert) --------------------------------
+# Worker presents this to the scheduler and to inbound client calls.
+# Provide either an existing Secret with tls.crt/tls.key or paste the
+# PEM material.
+tls:
+  existingSecret: ""
+  cert: ""
+  key: ""
+
+# --- Worker config ----------------------------------------------------
+config:
+  existingConfigMap: ""
+
+  listen: ":9092"
+  metricsListen: ":9192"   # set to "" to disable
+
+  # public_addr is built at pod start from $NODE_IP (downward API) so
+  # every DaemonSet pod advertises the IP of the node it runs on.
+  # Override `publicAddrPort` if `listen` uses a non-default port.
+  publicAddrPort: 9092
+
+  runtime:
+    handler: firecracker
+    firecracker:
+      uid: 1000
+      gid: 36                       # matches kvm group baked into the worker image
+      vm:
+        memory: "2GB"
+        vcpus: 4
+        idleTimeout: "10m"
+        sessionTimeout: "8h"
+      pool:
+        maxActive: 32
+
+# --- /dev/kvm handling -----------------------------------------------
+# Most nodes ship /dev/kvm as root:kvm 0660 with kvm at an arbitrary
+# GID. The worker image's hpcc user is in gid 36 (Debian/Ubuntu kvm
+# group); on other distros the GIDs won't match and jailer-after-drop
+# can't open the device. Easiest fix: an initContainer chmods it 0666.
+# Disable if your nodes already mount /dev/kvm world-accessible or if
+# you use a device plugin that handles permissions.
+kvm:
+  fixOwnership: true
+
+# --- Networking -------------------------------------------------------
+# hostNetwork is required so clients can dial the worker at the node's
+# routable IP. hostPID stays false — jailer doesn't need it.
+hostNetwork: true
+dnsPolicy: ClusterFirstWithHostNet
+
+# --- Scheduling -------------------------------------------------------
+# Restrict to bare-metal / nested-virt nodes. The chart can't probe
+# /dev/kvm presence; label nodes with `hpcc.io/kvm=true` (or similar)
+# and select on that. Defaults are empty so this stays opt-in.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+resources: {}
+  # requests: { cpu: 500m, memory: 1Gi }
+  # limits:   { cpu: 4,    memory: 8Gi }
+
+podAnnotations: {}
+podLabels: {}
+
+# Extra environment variables for the worker container. The OTel
+# umbrella chart (hpcc-stack) uses this to inject OTEL_EXPORTER_OTLP_*.
+extraEnv: []
+  # - name: OTEL_EXPORTER_OTLP_ENDPOINT
+  #   value: http://otel-collector:4317
+
+# --- Storage ---------------------------------------------------------
+# Per-pod scratch space for jailer chroots and rootfs squashfs cache.
+# emptyDir is fine for ephemeral state — the worker re-stages on every
+# microvm launch. Override sizeLimit and medium per node capacity.
+volumes:
+  rootfs:
+    sizeLimit: ""
+    medium: ""              # "" or "Memory"
+  run:
+    sizeLimit: ""
+    medium: ""
+
+# Mount extra files/secrets into the worker container (e.g. a CA bundle
+# for scheduler.caFile).
+extraVolumes: []
+extraVolumeMounts: []
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# --- Probes ----------------------------------------------------------
+probes:
+  liveness:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 15
+  readiness:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+# --- Metrics --------------------------------------------------------
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+
+# Update strategy. RollingUpdate w/ maxUnavailable=1 by default — bump
+# to a percentage on larger fleets.
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1

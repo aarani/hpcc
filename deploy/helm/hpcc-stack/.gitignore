@@ -1,0 +1,5 @@
+# Helm fetches dependency charts into here on `helm dependency build`.
+# Chart.lock pins versions so the directory can be regenerated; keeping
+# the tarballs out of git avoids inflating the repo with binary blobs
+# that drift on every external chart upgrade.
+charts/

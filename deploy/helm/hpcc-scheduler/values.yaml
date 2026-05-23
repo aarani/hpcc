@@ -1,0 +1,130 @@
+# Default values for hpcc-scheduler.
+#
+# The scheduler is a stateless gRPC control plane. Workers register
+# inbound, clients call it to discover a worker, then call the worker
+# directly. One replica is enough for non-prod; scaling out works once
+# the deployment moves off in-memory routing state (see ROADMAP).
+
+image:
+  repository: ghcr.io/aarani/hpcc-scheduler
+  # Empty → chart's appVersion. Override to pin a specific tag or
+  # use a sha-prefixed snapshot.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+replicaCount: 1
+
+# --- scheduler.toml ---------------------------------------------------
+# Rendered into a ConfigMap and mounted at /etc/hpcc/scheduler.toml.
+# Set `existingConfigMap` to bypass and mount a pre-existing one
+# (must contain a key named `scheduler.toml`).
+config:
+  existingConfigMap: ""
+
+  listen: ":9091"
+  metricsListen: ":9191"   # set to "" to disable metrics endpoint
+  paranoid: false          # tightens RPC auth; see docs/scheduler.toml
+
+  routing:
+    stickyTenants: true
+
+  # Per-tenant OIDC config. Each entry becomes a [[tenant]] block.
+  # The example below is illustrative; replace or empty out.
+  tenants: []
+  # - id: default
+  #   issuer: "https://issuer.example.com/"
+  #   jwksUrl: "https://issuer.example.com/.well-known/jwks.json"
+  #   tokenUrl: "https://issuer.example.com/oauth/token"
+  #   audience: "hpcc"
+  #   clientId: ""        # optional
+  #   scope: ""           # optional
+
+# --- TLS material -----------------------------------------------------
+# The scheduler terminates TLS on its gRPC port. Either provide an
+# existing Secret (preferred — keeps secret material out of values),
+# or paste PEM and let the chart manage the Secret.
+#
+# The mounted Secret must have keys `tls.crt` and `tls.key`. When the
+# chart creates the Secret, that layout is automatic.
+tls:
+  existingSecret: ""
+  cert: ""    # PEM, only used when existingSecret is empty
+  key: ""
+
+# --- Auth (worker_token) ---------------------------------------------
+# The shared static token workers present to register. The CLI's
+# `hpcc init scheduler` prints one suitable value. Generate with
+# `openssl rand -hex 32` if rolling your own.
+#
+# Either set the value here (chart-managed Secret), or point at an
+# existing Secret with the token under `existingSecretKey`.
+auth:
+  workerToken: ""
+  existingSecret: ""
+  existingSecretKey: WORKER_TOKEN
+
+# --- Networking -------------------------------------------------------
+service:
+  type: ClusterIP
+  grpcPort: 9091
+  metricsPort: 9191
+  annotations: {}
+
+# Optional Prometheus ServiceMonitor (requires prometheus-operator CRDs).
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+
+# --- Pod scheduling ---------------------------------------------------
+resources: {}
+  # requests: { cpu: 100m, memory: 128Mi }
+  # limits:   { cpu: 1,    memory: 512Mi }
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+podAnnotations: {}
+podLabels: {}
+
+# Extra environment variables for the scheduler container. The OTel
+# umbrella chart (hpcc-stack) uses this to inject OTEL_EXPORTER_OTLP_*.
+extraEnv: []
+  # - name: OTEL_EXPORTER_OTLP_ENDPOINT
+  #   value: http://otel-collector:4317
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532          # chainguard nonroot
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# --- Probes -----------------------------------------------------------
+# gRPC liveness/readiness via the k8s grpc probe (1.24+). Set
+# enabled: false to disable, or override port if listen changes.
+probes:
+  liveness:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  readiness:
+    enabled: true
+    initialDelaySeconds: 2
+    periodSeconds: 5

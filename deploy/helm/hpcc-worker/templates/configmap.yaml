@@ -1,0 +1,59 @@
+{{- if not .Values.config.existingConfigMap -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "hpcc-worker.configMapName" . }}
+  labels:
+    {{- include "hpcc-worker.labels" . | nindent 4 }}
+data:
+  # Stored as a *template* — the init container renders it into
+  # /etc/hpcc/worker.toml with $NODE_IP substituted from the downward
+  # API. Everything else is plain TOML; secrets come in via `env:` /
+  # `file:` URI indirection so this ConfigMap holds no secret material.
+  worker.toml.tmpl: |
+    listen      = {{ .Values.config.listen | quote }}
+    {{- if .Values.config.metricsListen }}
+    metrics_listen = {{ .Values.config.metricsListen | quote }}
+    {{- end }}
+    public_addr = "${NODE_IP}:{{ .Values.config.publicAddrPort }}"
+
+    [tls]
+    cert_ref = "file:/etc/hpcc/tls/tls.crt"
+    key_ref  = "file:/etc/hpcc/tls/tls.key"
+
+    [scheduler]
+    url          = {{ .Values.scheduler.url | quote }}
+    worker_token = "env:{{ include "hpcc-worker.authSecretKey" . }}"
+    {{- if .Values.scheduler.caFile }}
+    ca_file      = {{ .Values.scheduler.caFile | quote }}
+    {{- end }}
+
+    [runtime]
+    handler = {{ .Values.config.runtime.handler | quote }}
+
+    {{- if eq .Values.config.runtime.handler "firecracker" }}
+    [runtime.firecracker]
+    firecracker_bin = "/usr/bin/firecracker"
+    jailer_bin      = "/usr/bin/jailer"
+    kernel_image    = "/var/lib/hpcc/vmlinux"
+    rootfs_dir      = "/var/lib/hpcc/rootfs"
+    run_dir         = "/srv/jailer"
+    uid             = {{ .Values.config.runtime.firecracker.uid }}
+    gid             = {{ .Values.config.runtime.firecracker.gid }}
+
+    [image]
+    # Both keys safe to set — the worker only opens the binary
+    # matching its own architecture at microvm-launch time.
+    agent_linux_amd64 = "/var/lib/hpcc/hpcc-agent-linux-amd64"
+    agent_linux_arm64 = "/var/lib/hpcc/hpcc-agent-linux-arm64"
+    {{- end }}
+
+    [vm]
+    memory          = {{ .Values.config.runtime.firecracker.vm.memory | quote }}
+    vcpus           = {{ .Values.config.runtime.firecracker.vm.vcpus }}
+    idle_timeout    = {{ .Values.config.runtime.firecracker.vm.idleTimeout | quote }}
+    session_timeout = {{ .Values.config.runtime.firecracker.vm.sessionTimeout | quote }}
+
+    [pool]
+    max_active = {{ .Values.config.runtime.firecracker.pool.maxActive }}
+{{- end }}
