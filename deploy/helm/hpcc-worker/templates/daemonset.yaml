@@ -130,16 +130,21 @@ spec:
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- /*
+            tcpSocket over grpc: the worker doesn't register the
+            grpc.health.v1 service yet, and its listener terminates TLS
+            while the k8s gRPC probe speaks plaintext.
+          */}}
           {{- if .Values.probes.liveness.enabled }}
           livenessProbe:
-            grpc:
+            tcpSocket:
               port: {{ $listenPort }}
             initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
           {{- end }}
           {{- if .Values.probes.readiness.enabled }}
           readinessProbe:
-            grpc:
+            tcpSocket:
               port: {{ $listenPort }}
             initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}

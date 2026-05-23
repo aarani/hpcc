@@ -73,16 +73,23 @@ spec:
             - name: tls
               mountPath: /etc/hpcc/tls
               readOnly: true
+          {{- /*
+            tcpSocket over grpc: the scheduler doesn't register the
+            grpc.health.v1 service yet, and its listener terminates TLS
+            while the k8s gRPC probe speaks plaintext. Either alone
+            would fail the probe and kill the pod; TCP just checks that
+            the listener accepts connections.
+          */}}
           {{- if .Values.probes.liveness.enabled }}
           livenessProbe:
-            grpc:
+            tcpSocket:
               port: {{ $listenPort }}
             initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
           {{- end }}
           {{- if .Values.probes.readiness.enabled }}
           readinessProbe:
-            grpc:
+            tcpSocket:
               port: {{ $listenPort }}
             initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
