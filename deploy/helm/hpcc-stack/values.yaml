@@ -303,6 +303,16 @@ keycloak:
   proxy: edge
   service:
     type: ClusterIP
+  # Broadcom moved bitnami's free container images to docker.io/bitnamilegacy
+  # in August 2025; anything left under docker.io/bitnami requires a paid
+  # subscription. The chart still defaults to bitnami/* and 404s on
+  # `docker pull`, so redirect each component (keycloak, the realm-import
+  # job, and the bundled postgres) to bitnamilegacy. Long-term, hpcc
+  # should switch off bitnami — see https://github.com/aarani/hpcc/issues
+  # for tracking.
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/keycloak
   # KC_HOSTNAME stamps a stable issuer into every token. Without this
   # the issuer varies by request Host header, which breaks scheduler
   # token validation when internal and external clients use different
@@ -314,6 +324,9 @@ keycloak:
       value: "false"
   postgresql:
     enabled: true
+    image:
+      registry: docker.io
+      repository: bitnamilegacy/postgresql
     auth:
       postgresPassword: keycloak
     primary:
@@ -325,6 +338,9 @@ keycloak:
   keycloakConfigCli:
     enabled: true
     existingConfigmap: hpcc-demo-realm
+    image:
+      registry: docker.io
+      repository: bitnamilegacy/keycloak-config-cli
     # Re-run on every upgrade so realm edits flow through.
     cleanupAfterFinished:
       enabled: true
