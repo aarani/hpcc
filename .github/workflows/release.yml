@@ -1,0 +1,83 @@
+name: Release
+
+# Tag-driven release pipeline. Push a vX.Y.Z tag to main (after the
+# regular Build & Test Suite has gone green on the same commit) and
+# this workflow cross-builds every release binary, zips them per
+# (os, arch), and attaches the result to a new GitHub Release marked
+# as a pre-alpha. hpcc has not been audited; the pre-alpha flag is
+# the user-facing signal that operators should not pin production
+# deployments to these artifacts.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # create the Release + upload assets
+
+jobs:
+  release:
+    name: Build and publish pre-alpha release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.26.3'
+
+      - name: Cross-build release binaries
+        # Produces dist/<os>-<arch>/{hpcc,hpcc-agent,hpcc-pause}[.exe]
+        # for linux/windows/darwin × amd64/arm64. Same matrix the
+        # main suite cross-builds; we just package its output here
+        # instead of uploading it as a per-run artifact.
+        run: make dist
+
+      - name: Package per-platform zips
+        # One archive per (os, arch). Operators run e.g.
+        #   gh release download <tag> --pattern '*linux-amd64.zip'
+        # so per-platform naming is the friendly shape. -j strips
+        # the dist/<os>-<arch>/ directory prefix so the zip has the
+        # bare binaries at its root.
+        run: |
+          set -eu
+          mkdir -p out
+          for d in dist/*/; do
+            platform="${d#dist/}"; platform="${platform%/}"
+            zip -j -9 "out/hpcc-${GITHUB_REF_NAME}-${platform}.zip" "${d}"*
+          done
+          ls -lh out
+
+      - name: Compose release notes
+        # gh release create --generate-notes and --notes-file are
+        # mutually exclusive, so we ask the API for the auto-generated
+        # commit log between this tag and the previous one and
+        # prepend the pre-alpha warning ourselves.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          {
+            cat <<'EOF'
+          > ⚠️ **Pre-alpha.** hpcc is under active development and has not been audited.
+          > Do not rely on it for security-sensitive or production workloads yet.
+
+          ---
+
+          EOF
+            gh api "repos/${{ github.repository }}/releases/generate-notes" \
+              -f tag_name="${GITHUB_REF_NAME}" \
+              -q .body
+          } > /tmp/release-body.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --prerelease \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file /tmp/release-body.md \
+            out/*.zip
