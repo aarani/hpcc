@@ -295,10 +295,13 @@ func runInitWorker(cmd *cobra.Command, _ []string) error {
 	case "firecracker":
 		fmt.Fprintf(out, "\nfirecracker runtime selected. Before `hpcc worker` starts, the host needs:\n")
 		fmt.Fprintf(out, "  /usr/bin/firecracker and /usr/bin/jailer    (no distro package; download\n")
-		fmt.Fprintf(out, "                                               the upstream tarball — see\n")
-		fmt.Fprintf(out, "                                               README's worker section)\n")
-		fmt.Fprintf(out, "  /var/lib/hpcc/vmlinux                       (kernel image)\n")
-		fmt.Fprintf(out, "  /var/lib/hpcc/hpcc-agent-linux-amd64        (agent binary)\n")
+		fmt.Fprintf(out, "                                               the upstream tarball)\n")
+		fmt.Fprintf(out, "  /var/lib/hpcc/vmlinux                       (microvm kernel — ships as\n")
+		fmt.Fprintf(out, "                                               vmlinux-<6.1|5.10>-<arch> in\n")
+		fmt.Fprintf(out, "                                               every hpcc release)\n")
+		fmt.Fprintf(out, "  /var/lib/hpcc/hpcc-agent-linux-amd64        (ships as a standalone\n")
+		fmt.Fprintf(out, "                                               release artifact)\n")
+		fmt.Fprintf(out, "See the README's worker section for the exact install commands.\n")
 		fmt.Fprintf(out, "If your layout differs, edit [runtime.firecracker] / [image] in %s.\n", path)
 	case "runhcs-wcow-hypervisor":
 		fmt.Fprintf(out, "\nrunhcs (Windows Hyper-V) runtime selected. Before `hpcc worker` starts:\n")

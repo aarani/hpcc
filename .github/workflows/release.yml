@@ -3,9 +3,10 @@ name: Release
 # Tag-driven release pipeline. Push a vX.Y.Z tag to main (after the
 # regular Build & Test Suite has gone green on the same commit) and
 # this workflow cross-builds every release binary, zips them per
-# (os, arch), and attaches the result to a new GitHub Release marked
-# as a pre-alpha. hpcc has not been audited; the pre-alpha flag is
-# the user-facing signal that operators should not pin production
+# (os, arch), builds the four microvm-compatible vmlinux variants from
+# amazonlinux/linux, and attaches everything to a new GitHub Release
+# marked as a pre-alpha. hpcc has not been audited; the pre-alpha flag
+# is the user-facing signal that operators should not pin production
 # deployments to these artifacts.
 
 on:
@@ -17,9 +18,60 @@ permissions:
   contents: write   # create the Release + upload assets
 
 jobs:
+  kernels:
+    # Matrix builds the four microvm vmlinux variants the worker can
+    # pin via `[runtime.firecracker] kernel_image`. Configs come from
+    # firecracker/kernel-configs/ (carbon copies of firecracker
+    # upstream); source from amazonlinux/linux at a microvm-kernel-*
+    # tag that matches firecracker CI's assumptions for that version.
+    # The release job downloads every artifact this matrix uploads
+    # and attaches it to the Release.
+    name: Kernel ${{ matrix.version }} / ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false   # one broken config shouldn't hide the others
+      matrix:
+        version: ['5.10', '6.1']
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free up runner disk
+        # The Linux source tree at --depth 1 is ~1.5 GiB; the build
+        # tree adds another ~5 GiB. The standard ubuntu-latest runner
+        # ships with ~14 GiB free, which is close to the edge once
+        # apt downloads pile in. Drop the preinstalled Android SDK,
+        # .NET, Haskell, etc. — none of which we use.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - name: Install kernel build deps
+        # gcc-aarch64-linux-gnu is only needed for aarch64; installing
+        # unconditionally keeps the YAML simple and adds ~30 s to the
+        # amd64 jobs.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex \
+            libelf-dev libssl-dev libncurses-dev \
+            gcc-aarch64-linux-gnu
+
+      - name: Build vmlinux
+        run: scripts/build-kernel.sh ${{ matrix.version }} ${{ matrix.arch }} out
+
+      - name: Upload vmlinux
+        uses: actions/upload-artifact@v4
+        with:
+          name: vmlinux-${{ matrix.version }}-${{ matrix.arch }}
+          path: out/vmlinux-${{ matrix.version }}-${{ matrix.arch }}
+          if-no-files-found: error
+
   release:
     name: Build and publish pre-alpha release
     runs-on: ubuntu-latest
+    needs: kernels
     steps:
       - uses: actions/checkout@v4
 
@@ -50,6 +102,36 @@ jobs:
           done
           ls -lh out
 
+      - name: Stage Linux agents as standalone release artifacts
+        # The agent is consumed at /var/lib/hpcc/hpcc-agent-linux-<arch>
+        # by the worker's firecracker rootfs builder. Publishing it
+        # as a standalone file (alongside its copy inside the
+        # per-platform zip) lets the worker install snippet be a
+        # one-line curl instead of an unzip-and-rename dance.
+        run: |
+          set -eu
+          cp dist/linux-amd64/hpcc-agent out/hpcc-agent-linux-amd64
+          cp dist/linux-arm64/hpcc-agent out/hpcc-agent-linux-arm64
+
+      - name: Download vmlinux artifacts
+        # actions/download-artifact with no `name` pulls every artifact
+        # this run produced; each kernel job uploaded its vmlinux under
+        # vmlinux-<version>-<arch>, so we end up with one directory per
+        # variant containing one file. Flatten them next to the zips.
+        uses: actions/download-artifact@v4
+        with:
+          path: out/kernels
+
+      - name: Flatten kernel artifacts
+        # download-artifact preserves the per-artifact directory; the
+        # release files glob expects flat paths, so move the bare
+        # vmlinux files next to the zips.
+        run: |
+          set -eu
+          find out/kernels -type f -name 'vmlinux-*' -exec mv {} out/ \;
+          rm -rf out/kernels
+          ls -lh out
+
       - name: Compose release notes
         # gh release create --generate-notes and --notes-file are
         # mutually exclusive, so we ask the API for the auto-generated
@@ -63,6 +145,16 @@ jobs:
             cat <<'EOF'
           > ⚠️ **Pre-alpha.** hpcc is under active development and has not been audited.
           > Do not rely on it for security-sensitive or production workloads yet.
+
+          **Artifacts.** Per-platform zips contain the three hpcc
+          binaries (`hpcc`, `hpcc-agent`, `hpcc-pause`). The
+          `vmlinux-<version>-<arch>` files are microvm-compatible
+          Linux kernels (GPL-2.0) built from
+          [amazonlinux/linux](https://github.com/amazonlinux/linux)
+          with the matching firecracker reference config — use one
+          as the worker's `kernel_image`. 6.1 is the default
+          recommendation; 5.10 ships as the alternative for shops
+          stuck on it.
 
           ---
 
@@ -80,4 +172,4 @@ jobs:
             --prerelease \
             --title "${GITHUB_REF_NAME}" \
             --notes-file /tmp/release-body.md \
-            out/*.zip
+            out/*.zip out/vmlinux-* out/hpcc-agent-linux-*

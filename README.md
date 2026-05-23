@@ -78,19 +78,25 @@ hpcc init worker \
   --token      <paste from init scheduler> \
   --public-addr worker-1.internal:9092
 
-# Host prerequisites (the init command tells you exactly these):
+# Host prerequisites:
 #
-#   # firecracker + jailer — no distro package; grab the upstream tarball.
-#   # arm64 hosts: swap x86_64 → aarch64 in both URL and unpacked names.
+#   # firecracker + jailer — no distro package; grab the upstream
+#   # tarball. arm64 hosts: swap x86_64 → aarch64 in URL + filenames.
 #   FC=v1.15.1
 #   curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/${FC}/firecracker-${FC}-x86_64.tgz \
 #     | sudo tar -xz -C /tmp
 #   sudo install /tmp/release-${FC}-x86_64/firecracker-${FC}-x86_64 /usr/bin/firecracker
 #   sudo install /tmp/release-${FC}-x86_64/jailer-${FC}-x86_64      /usr/bin/jailer
 #
+#   # microvm kernel + agent ship with every hpcc release. Pin HPCC
+#   # to whichever release you installed; K=6.1 is the recommended
+#   # kernel (5.10 ships as the alternative); A=amd64 or arm64.
+#   HPCC=v0.1.0-alpha; K=6.1; A=amd64
 #   sudo mkdir -p /var/lib/hpcc
-#   sudo curl -o /var/lib/hpcc/vmlinux               <kernel-url>
-#   sudo curl -o /var/lib/hpcc/hpcc-agent-linux-amd64 <release-url>
+#   sudo curl -fsSL -o /var/lib/hpcc/vmlinux \
+#     https://github.com/aarani/hpcc/releases/download/${HPCC}/vmlinux-${K}-${A}
+#   sudo curl -fsSL -o /var/lib/hpcc/hpcc-agent-linux-${A} \
+#     https://github.com/aarani/hpcc/releases/download/${HPCC}/hpcc-agent-linux-${A}
 
 hpcc worker
 ```
