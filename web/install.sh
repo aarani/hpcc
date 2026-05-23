@@ -215,6 +215,50 @@ if [ "$role" = "skip" ]; then
   exit 0
 fi
 
+# ---- systemd opt-in (worker/scheduler only) -------------------------
+# Client is interactive (`hpcc start` runs in the foreground); only
+# the server roles want supervision. /run/systemd/system existing is
+# the standard test that systemd is the active init (not just a
+# systemctl binary lying around on a non-systemd host like WSL).
+systemd_unit=""
+if [ "$role" = "worker" ] || [ "$role" = "scheduler" ]; then
+  if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+    if confirm "Register hpcc $role as a systemd service (root, system-wide config)?" "y"; then
+      systemd_unit=1
+      sysconf_dir=/etc/hpcc
+      sysconf_path="${sysconf_dir}/${role}.toml"
+      sudo install -d -m 0755 "$sysconf_dir"
+    fi
+  fi
+fi
+
+# write_systemd_unit <role> <config-path>
+write_systemd_unit() {
+  local r="$1" cfg="$2" unit="/etc/systemd/system/hpcc-${1}.service"
+  sudo tee "$unit" >/dev/null <<UNIT
+[Unit]
+Description=hpcc $r
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$HPCC $r --config $cfg
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+# Worker's jailer needs CAP_SYS_ADMIN + /dev/kvm; simplest is root.
+# Scheduler doesn't strictly need root but matches the worker unit
+# for consistency — edit User= if you have a dedicated service user.
+User=root
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now "hpcc-${r}.service"
+}
+
 say
 hd "Configuring as: $role"
 say
@@ -332,11 +376,18 @@ EOF
       say
     fi
 
-    "$HPCC" init worker \
-      --scheduler  "$sched" \
-      --token      "$token" \
-      --public-addr "$pub" \
-      --runtime    "$rt"
+    init_args=( init worker
+                --scheduler  "$sched"
+                --token      "$token"
+                --public-addr "$pub"
+                --runtime    "$rt" )
+    if [ -n "$systemd_unit" ]; then
+      init_args+=( --config "$sysconf_path" --force )
+      sudo "$HPCC" "${init_args[@]}"
+      write_systemd_unit worker "$sysconf_path"
+    else
+      "$HPCC" "${init_args[@]}"
+    fi
 
     say
     hd "Next steps"
@@ -345,7 +396,12 @@ EOF
       note "user holds 1000 on this host (e.g. ec2-user on AL2023), edit [runtime.firecracker]"
       note "uid/gid in the generated config to a user that can read /dev/kvm."
     fi
-    say "  hpcc worker"
+    if [ -n "$systemd_unit" ]; then
+      say "  systemctl status hpcc-worker    # service is enabled + started"
+      say "  journalctl -u hpcc-worker -f    # tail logs"
+    else
+      say "  hpcc worker"
+    fi
     ;;
 
   scheduler)
@@ -360,14 +416,26 @@ EOF
     tok_url=$(ask_required "Token URL")
     aud=$(ask              "Audience" "hpcc")
 
-    "$HPCC" init scheduler \
-      --cert-file "$cert" --key-file "$key" \
-      --tenant-id "$tenant" --issuer "$issuer" --jwks-url "$jwks" \
-      --token-url "$tok_url" --audience "$aud"
+    init_args=( init scheduler
+                --cert-file "$cert" --key-file "$key"
+                --tenant-id "$tenant" --issuer "$issuer" --jwks-url "$jwks"
+                --token-url "$tok_url" --audience "$aud" )
+    if [ -n "$systemd_unit" ]; then
+      init_args+=( --config "$sysconf_path" --force )
+      sudo "$HPCC" "${init_args[@]}"
+      write_systemd_unit scheduler "$sysconf_path"
+    else
+      "$HPCC" "${init_args[@]}"
+    fi
 
     say
     hd "Next steps"
-    say "  hpcc scheduler"
+    if [ -n "$systemd_unit" ]; then
+      say "  systemctl status hpcc-scheduler    # service is enabled + started"
+      say "  journalctl -u hpcc-scheduler -f    # tail logs"
+    else
+      say "  hpcc scheduler"
+    fi
     note "Copy the worker_token printed above onto each worker host."
     ;;
 esac
