@@ -48,6 +48,50 @@ See [`docs/plan.md`](docs/plan.md) for the full design and roadmap, and
 [`docs/scheduler.toml`](docs/scheduler.toml) /
 [`docs/worker.toml`](docs/worker.toml) for example configs.
 
+## Server quick start
+
+Bring up the distributed pieces — one scheduler, N workers — without
+hand-editing TOML. `hpcc init` writes the configs for you; the
+generated files validate immediately.
+
+**Scheduler.** Needs a TLS cert clients can trust (public CA or your
+org's internal CA) and one tenant's IdP coordinates:
+
+```sh
+hpcc init scheduler \
+  --cert-file /etc/hpcc/scheduler.crt \
+  --key-file  /etc/hpcc/scheduler.key \
+  --tenant-id acme \
+  --issuer    https://idp.acme.example/ \
+  --jwks-url  https://idp.acme.example/.well-known/jwks.json \
+  --token-url https://idp.acme.example/oauth/token \
+  --audience  hpcc
+
+hpcc scheduler
+```
+
+The command prints a freshly-generated `worker_token`; copy it.
+
+**Workers.** On each worker host, paste the token from above and point
+at the scheduler. TLS material is self-signed and minted in place — the
+scheduler pins by SHA-256 fingerprint at registration, so a real CA
+isn't needed here:
+
+```sh
+hpcc init worker \
+  --scheduler  scheduler.internal:9091 \
+  --token      <paste from init scheduler> \
+  --public-addr worker-1.internal:9092
+
+hpcc worker
+```
+
+For Linux/Firecracker workers, fill in `[runtime.firecracker]` and
+`[image] agent_linux_*` in the generated `worker.toml` before starting —
+see [`docs/worker.toml`](docs/worker.toml) for the full reference. For a
+zero-isolation dev box, pass `--runtime really_really_dangerous` (never
+production).
+
 ---
 
 ## Why?
