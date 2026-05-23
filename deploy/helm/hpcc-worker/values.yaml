@@ -50,13 +50,20 @@ tls:
 config:
   existingConfigMap: ""
 
-  listen: ":9092"
-  metricsListen: ":9192"   # set to "" to disable
+  # Default to ports inside the Kubernetes NodePort range
+  # (30000-32767). Managed Kubernetes providers (OVH, scaleway,
+  # some on-prem distros) leave that range open through their
+  # perimeter firewalls by default but block arbitrary high ports,
+  # so binding workers there is the easiest way to make them
+  # reachable from outside the cluster without per-cluster firewall
+  # tweaks.
+  listen: ":30092"
+  metricsListen: ":30192"   # set to "" to disable
 
   # public_addr is built at pod start from $NODE_IP so every DaemonSet
-  # pod advertises the IP of the node it runs on. Override
-  # `publicAddrPort` if `listen` uses a non-default port.
-  publicAddrPort: 9092
+  # pod advertises the IP of the node it runs on. Keep this in sync
+  # with `listen`.
+  publicAddrPort: 30092
 
   # How to discover that node IP. Options:
   #

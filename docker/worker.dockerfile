@@ -85,9 +85,12 @@ COPY --from=fetcher /staging/firecracker /usr/bin/firecracker
 COPY --from=fetcher /staging/jailer      /usr/bin/jailer
 COPY --from=fetcher /staging/vmlinux     /var/lib/hpcc/vmlinux
 
-# gRPC (clients/scheduler) and Prometheus /metrics. Defaults match
-# the worker.toml template emitted by `hpcc init worker`.
-EXPOSE 9092 9192
+# gRPC (clients/scheduler) and Prometheus /metrics. The helm chart's
+# default worker config binds inside the Kubernetes NodePort range
+# (30000-32767) so managed clusters' perimeter firewalls let traffic
+# through; bare metal deploys can still bind anywhere by overriding
+# `listen` in worker.toml.
+EXPOSE 30092 30192
 
 # Runs as root: jailer manipulates cgroups and pivot_roots before
 # dropping privileges itself. The pod's securityContext must allow

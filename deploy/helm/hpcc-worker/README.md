@@ -50,12 +50,14 @@ Clients dial workers directly (the scheduler just routes). Each pod
 needs to advertise an address its clients can reach. The chart uses:
 
 - `hostNetwork: true` and `hostPort` on the container — the worker
-  listens on the node's IP at port 9092.
+  listens on the node's IP at port 30092 (inside the Kubernetes
+  NodePort range, which managed K8s providers like OVH leave open
+  through their perimeter firewalls by default).
 - An init container that renders `worker.toml` from a template at pod
   start, substituting `$NODE_IP` (downward-API `status.hostIP`) into the
   `public_addr` field.
 
-If clients live inside the cluster they can reach `<node-ip>:9092`
+If clients live inside the cluster they can reach `<node-ip>:30092`
 directly. If they live outside, expose the worker's host port at the
 node level (firewall, security group, or LoadBalancer-per-node).
 
