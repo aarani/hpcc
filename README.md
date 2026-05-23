@@ -92,6 +92,25 @@ see [`docs/worker.toml`](docs/worker.toml) for the full reference. For a
 zero-isolation dev box, pass `--runtime really_really_dangerous` (never
 production).
 
+**Clients.** On each developer machine, point the client at the
+scheduler and authenticate against the tenant IdP. OAuth credentials
+live in a sibling `token.json` (0600), not in the config:
+
+```sh
+hpcc init client \
+  --scheduler    scheduler.internal:9091 \
+  --tenant       acme \
+  --image-digest sha256:abc...
+
+hpcc auth login   # prompts for username + password
+hpcc start        # daemon; supervise with systemd / launchd
+```
+
+Then point your build at `hpcc wrap cc` / `hpcc wrap c++` as in the
+Quick start above. The daemon falls back to local execution on any
+remote failure and prints a red warning, so a misconfigured client
+never blocks a build.
+
 ---
 
 ## Why?

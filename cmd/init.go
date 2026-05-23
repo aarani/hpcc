@@ -14,6 +14,7 @@ import (
 	"text/template"
 
 	"github.com/aarani/hpcc/internal/bootstrap"
+	"github.com/aarani/hpcc/internal/config"
 	"github.com/aarani/hpcc/internal/scheduler"
 	"github.com/aarani/hpcc/internal/worker"
 	"github.com/spf13/cobra"
@@ -23,13 +24,14 @@ func newInitCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
 		Short: "Bootstrap config files for distributed components",
-		Long: `Generate a working scheduler or worker config so an operator
-doesn't have to hand-edit TOML on first install.
+		Long: `Generate a working scheduler, worker, or client config so an
+operator doesn't have to hand-edit TOML on first install.
 
-Each subcommand writes ~/.config/hpcc/{scheduler,worker}.toml with sane
-defaults plus the bits that can't be defaulted (TLS material, scheduler
-URL, tenant IdP). See docs/{scheduler,worker}.toml for the full
-annotated reference of every knob.`,
+Each subcommand writes ~/.config/hpcc/{scheduler,worker,config}.toml
+with sane defaults plus the bits that can't be defaulted (TLS material,
+scheduler URL, tenant IdP, image digest). See
+docs/{scheduler,worker,client}.toml for the full annotated reference of
+every knob.`,
 	}
 }
 
@@ -305,6 +307,101 @@ func runInitWorker(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+// --- client ----------------------------------------------------------
+
+func newInitClientCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "client",
+		Short: "Write config.toml pointed at a scheduler",
+		Long: `Write config.toml at ~/.config/hpcc/config.toml (or --config
+<path>). The generated file enables [remote] dispatch against the
+given scheduler/tenant/image and configures one local disk cache.
+
+OAuth credentials are NOT written here — after init, run
+` + "`hpcc auth login`" + ` to cache an access token at token.json. The
+daemon refreshes it silently.
+
+--image-digest is the SHA-256 the worker will pull the toolchain image
+under. --image-ref is the optional human-readable name (e.g.
+ghcr.io/example/toolchain@sha256:...). Both come from your image
+registry; the digest is the source of truth, the ref is for humans.`,
+		RunE: runInitClient,
+	}
+	cmd.Flags().String("config", "", "path to config.toml (default: $XDG_CONFIG_HOME/hpcc/config.toml)")
+	cmd.Flags().Bool("force", false, "overwrite existing config")
+	cmd.Flags().String("scheduler", "", "scheduler URL host:port (required)")
+	cmd.Flags().String("tenant", "", "tenant ID, must match a [[tenant]] on the scheduler (required)")
+	cmd.Flags().String("image-digest", "", "toolchain image digest, e.g. sha256:abc... (required)")
+	cmd.Flags().String("image-ref", "", "optional human-readable image reference")
+	cmd.Flags().String("scheduler-ca-file", "", "optional: pin the scheduler's CA cert (PEM); empty = system trust store")
+	cmd.Flags().String("source-mode", "cas", "cache-key derivation: cas | preprocessed")
+	cmd.Flags().String("cache-dir", "/tmp/hpcc", "local disk cache directory")
+	cmd.Flags().String("cache-size", "10G", "local disk cache size limit")
+	return cmd
+}
+
+func runInitClient(cmd *cobra.Command, _ []string) error {
+	path, err := cmd.Flags().GetString("config")
+	if err != nil {
+		return err
+	}
+	if path == "" {
+		p, err := config.DefaultConfigPath()
+		if err != nil {
+			return err
+		}
+		path = p
+	}
+	force, _ := cmd.Flags().GetBool("force")
+
+	schedulerURL, _ := cmd.Flags().GetString("scheduler")
+	tenant, _ := cmd.Flags().GetString("tenant")
+	imageDigest, _ := cmd.Flags().GetString("image-digest")
+	for name, v := range map[string]string{
+		"--scheduler":    schedulerURL,
+		"--tenant":       tenant,
+		"--image-digest": imageDigest,
+	} {
+		if v == "" {
+			return fmt.Errorf("%s is required", name)
+		}
+	}
+
+	imageRef, _ := cmd.Flags().GetString("image-ref")
+	caFile, _ := cmd.Flags().GetString("scheduler-ca-file")
+	sourceMode, _ := cmd.Flags().GetString("source-mode")
+	cacheDir, _ := cmd.Flags().GetString("cache-dir")
+	cacheSize, _ := cmd.Flags().GetString("cache-size")
+
+	data := clientTemplateData{
+		SourceMode:   sourceMode,
+		CacheDir:     cacheDir,
+		CacheSize:    cacheSize,
+		Tenant:       tenant,
+		ImageRef:     imageRef,
+		ImageDigest:  imageDigest,
+		SchedulerURL: schedulerURL,
+		CAFile:       caFile,
+	}
+	var buf bytes.Buffer
+	if err := clientTemplate.Execute(&buf, data); err != nil {
+		return fmt.Errorf("render config: %w", err)
+	}
+	if err := writeConfigFile(path, buf.Bytes(), 0o600, force); err != nil {
+		return err
+	}
+	if _, err := config.LoadConfig(path); err != nil {
+		return fmt.Errorf("generated config failed to parse: %w", err)
+	}
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "wrote %s\n", path)
+	fmt.Fprintf(out, "\nNext: cache an OAuth token, then start the daemon:\n")
+	fmt.Fprintf(out, "  hpcc auth login\n")
+	fmt.Fprintf(out, "  hpcc start\n")
+	return nil
+}
+
 // --- helpers ---------------------------------------------------------
 
 type schedulerTemplateData struct {
@@ -324,6 +421,17 @@ type schedulerTemplateData struct {
 	Scope         string
 	StickyTenants bool
 	Paranoid      bool
+}
+
+type clientTemplateData struct {
+	SourceMode   string
+	CacheDir     string
+	CacheSize    string
+	Tenant       string
+	ImageRef     string
+	ImageDigest  string
+	SchedulerURL string
+	CAFile       string
 }
 
 type workerTemplateData struct {
@@ -417,6 +525,28 @@ session_timeout = "8h"
 max_active = 32
 `))
 
+var clientTemplate = template.Must(template.New("client").Parse(
+	`# hpcc client config — generated by ` + "`hpcc init client`" + `.
+# See docs/client.toml for the full annotated reference.
+
+source_mode = {{printf "%q" .SourceMode}}
+
+[[cache]]
+type     = "disk"
+location = {{printf "%q" .CacheDir}}
+max_size = {{printf "%q" .CacheSize}}
+
+[remote]
+enabled      = true
+tenant_id    = {{printf "%q" .Tenant}}
+{{if .ImageRef}}image_ref    = {{printf "%q" .ImageRef}}
+{{end}}image_digest = {{printf "%q" .ImageDigest}}
+
+[remote.scheduler]
+url     = {{printf "%q" .SchedulerURL}}
+{{if .CAFile}}ca_file = {{printf "%q" .CAFile}}
+{{end}}`))
+
 func writeConfigFile(path string, body []byte, mode os.FileMode, force bool) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -501,5 +631,6 @@ func init() {
 	root := newInitCmd()
 	root.AddCommand(newInitSchedulerCmd())
 	root.AddCommand(newInitWorkerCmd())
+	root.AddCommand(newInitClientCmd())
 	rootCmd.AddCommand(root)
 }

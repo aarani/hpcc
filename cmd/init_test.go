@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aarani/hpcc/internal/config"
+	"github.com/aarani/hpcc/internal/enum"
 	"github.com/aarani/hpcc/internal/scheduler"
 	"github.com/aarani/hpcc/internal/worker"
 )
@@ -44,6 +46,17 @@ func runSchedulerInit(t *testing.T, args ...string) (string, error) {
 func runWorkerInit(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	cmd := newInitWorkerCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	return out.String(), err
+}
+
+func runClientInit(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	cmd := newInitClientCmd()
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
@@ -196,6 +209,82 @@ func TestInitWorker_GeneratesUsableTLSAndConfig(t *testing.T) {
 	}
 	if cfg.TLS.CertFile != certPath {
 		t.Errorf("tls.cert_file = %q, want %q", cfg.TLS.CertFile, certPath)
+	}
+}
+
+func TestInitClient_WritesParseableConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+
+	out, err := runClientInit(t,
+		"--config", cfgPath,
+		"--scheduler", "scheduler.internal:9091",
+		"--tenant", "acme",
+		"--image-digest", "sha256:deadbeefcafe",
+		"--image-ref", "ghcr.io/example/toolchain",
+	)
+	if err != nil {
+		t.Fatalf("init client failed: %v\noutput:\n%s", err, out)
+	}
+
+	info, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("config.toml perm = %o, want 0600", perm)
+	}
+
+	cfg, err := config.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !cfg.Remote.Enabled {
+		t.Error("expected remote.enabled = true")
+	}
+	if cfg.Remote.TenantID != "acme" {
+		t.Errorf("tenant_id = %q, want acme", cfg.Remote.TenantID)
+	}
+	if cfg.Remote.Scheduler.URL != "scheduler.internal:9091" {
+		t.Errorf("scheduler.url = %q", cfg.Remote.Scheduler.URL)
+	}
+	if cfg.Remote.ImageDigest != "sha256:deadbeefcafe" {
+		t.Errorf("image_digest = %q", cfg.Remote.ImageDigest)
+	}
+	if len(cfg.Caches) != 1 || cfg.Caches[0].Type != enum.CacheDisk {
+		t.Errorf("expected one disk cache, got %#v", cfg.Caches)
+	}
+}
+
+func TestInitClient_RejectsMissingScheduler(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+
+	_, err := runClientInit(t,
+		"--config", cfgPath,
+		"--tenant", "acme",
+		"--image-digest", "sha256:deadbeefcafe",
+	)
+	if err == nil || !strings.Contains(err.Error(), "scheduler") {
+		t.Fatalf("expected --scheduler required error, got %v", err)
+	}
+}
+
+func TestInitClient_RefusesOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("existing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := runClientInit(t,
+		"--config", cfgPath,
+		"--scheduler", "scheduler.internal:9091",
+		"--tenant", "acme",
+		"--image-digest", "sha256:deadbeefcafe",
+	)
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected refusal to overwrite, got %v", err)
 	}
 }
 
