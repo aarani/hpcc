@@ -293,12 +293,17 @@ func runInitWorker(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(out, "wrote %s\n", keyPath)
 	switch runtimeHandler {
 	case "firecracker":
-		fmt.Fprintf(out, "\nfirecracker runtime selected; before `hpcc worker` starts you must populate\n")
-		fmt.Fprintf(out, "[runtime.firecracker]: firecracker_bin, jailer_bin, kernel_image, rootfs_dir,\n")
-		fmt.Fprintf(out, "agent_linux_{amd64,arm64}. See docs/worker.toml for the full reference.\n")
+		fmt.Fprintf(out, "\nfirecracker runtime selected. Before `hpcc worker` starts, the host needs:\n")
+		fmt.Fprintf(out, "  /usr/bin/firecracker and /usr/bin/jailer    (apt install firecracker)\n")
+		fmt.Fprintf(out, "  /var/lib/hpcc/vmlinux                       (kernel image)\n")
+		fmt.Fprintf(out, "  /var/lib/hpcc/hpcc-agent-linux-amd64        (agent binary)\n")
+		fmt.Fprintf(out, "If your layout differs, edit [runtime.firecracker] / [image] in %s.\n", path)
 	case "runhcs-wcow-hypervisor":
-		fmt.Fprintf(out, "\nrunhcs runtime selected; populate [runtime.hcsshim] (address, namespace,\n")
-		fmt.Fprintf(out, "run_dir) and [image] agent_windows_amd64 in %s before starting.\n", path)
+		fmt.Fprintf(out, "\nrunhcs (Windows Hyper-V) runtime selected. Before `hpcc worker` starts:\n")
+		fmt.Fprintf(out, "  containerd running on \\\\.\\pipe\\containerd-containerd\n")
+		fmt.Fprintf(out, "  C:\\ProgramData\\hpcc\\hpcc-agent.exe                  (agent binary)\n")
+		fmt.Fprintf(out, "  Hyper-V Windows feature installed, vmcompute service running\n")
+		fmt.Fprintf(out, "If your layout differs, edit [runtime.hcsshim] / [image] in %s.\n", path)
 	case "really_really_dangerous":
 		fmt.Fprintf(out, "\ndev-mode runtime selected — compiles run as worker child processes with\n")
 		fmt.Fprintf(out, "no isolation. Never use outside a throwaway environment.\n")
@@ -501,7 +506,8 @@ worker_token = {{printf "%q" .WorkerToken}}
 [runtime]
 handler = {{printf "%q" .RuntimeHandler}}
 {{if eq .RuntimeHandler "firecracker"}}
-# Populate before starting; see docs/worker.toml for the full reference.
+# Standard host paths; stage the binaries here (or edit to match where
+# you have them) before starting the worker.
 [runtime.firecracker]
 firecracker_bin = "/usr/bin/firecracker"
 jailer_bin      = "/usr/bin/jailer"
@@ -514,6 +520,21 @@ gid             = 1000
 [image]
 agent_linux_amd64 = "/var/lib/hpcc/hpcc-agent-linux-amd64"
 # agent_linux_arm64 = "/var/lib/hpcc/hpcc-agent-linux-arm64"
+{{end}}{{if eq .RuntimeHandler "runhcs-wcow-hypervisor"}}
+# Standard Windows paths; stage hpcc-agent.exe at the agent path and
+# make sure containerd is running on the named pipe before starting the
+# worker. Hyper-V isolation is the production value; "process" loses
+# the kernel boundary and is only for hosts without nested virt.
+[runtime.hcsshim]
+address     = "\\\\.\\pipe\\containerd-containerd"
+namespace   = "hpcc"
+run_dir     = "C:\\ProgramData\\hpcc\\run"
+runtime     = "io.containerd.runhcs.v1"
+snapshotter = "windows"
+isolation   = "hyperv"
+
+[image]
+agent_windows_amd64 = "C:\\ProgramData\\hpcc\\hpcc-agent.exe"
 {{end}}
 [vm]
 memory          = "2GB"

@@ -288,6 +288,45 @@ func TestInitClient_RefusesOverwrite(t *testing.T) {
 	}
 }
 
+func TestInitWorker_RunhcsRendersHcsshimDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "worker.toml")
+
+	out, err := runWorkerInit(t,
+		"--config", cfgPath,
+		"--scheduler", "scheduler.test:9091",
+		"--token", "this-is-a-sufficiently-long-token-abc123",
+		"--public-addr", "worker-win-1.internal:9092",
+		"--runtime", "runhcs-wcow-hypervisor",
+	)
+	if err != nil {
+		t.Fatalf("init worker failed: %v\noutput:\n%s", err, out)
+	}
+
+	cfg, err := worker.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("generated worker.toml did not Validate: %v", err)
+	}
+	// Backslash escaping in the template is fragile — verify the
+	// pipe address and Windows paths round-trip through TOML
+	// decoding to their actual values, not to the escaped form.
+	if got, want := cfg.Runtime.Hcsshim.Address, `\\.\pipe\containerd-containerd`; got != want {
+		t.Errorf("hcsshim.address = %q, want %q", got, want)
+	}
+	if got, want := cfg.Runtime.Hcsshim.RunDir, `C:\ProgramData\hpcc\run`; got != want {
+		t.Errorf("hcsshim.run_dir = %q, want %q", got, want)
+	}
+	if cfg.Runtime.Hcsshim.Isolation != "hyperv" {
+		t.Errorf("hcsshim.isolation = %q, want hyperv", cfg.Runtime.Hcsshim.Isolation)
+	}
+	if got, want := cfg.Image.AgentWindowsAmd64, `C:\ProgramData\hpcc\hpcc-agent.exe`; got != want {
+		t.Errorf("image.agent_windows_amd64 = %q, want %q", got, want)
+	}
+}
+
 func TestInitWorker_RejectsShortToken(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "worker.toml")

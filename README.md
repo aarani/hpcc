@@ -67,10 +67,10 @@ hpcc scheduler
 
 The command prints a freshly-generated `worker_token`; copy it.
 
-**Workers.** On each worker host, paste the token from above and point
-at the scheduler. TLS material is self-signed and minted in place — the
-scheduler pins by SHA-256 fingerprint at registration, so a real CA
-isn't needed here:
+**Workers (Linux / Firecracker).** On each worker host, paste the
+token from above and point at the scheduler. TLS material is
+self-signed and minted in place — the scheduler pins by SHA-256
+fingerprint at registration, so a real CA isn't needed worker-side:
 
 ```sh
 hpcc init worker \
@@ -78,14 +78,44 @@ hpcc init worker \
   --token      <paste from init scheduler> \
   --public-addr worker-1.internal:9092
 
+# Host prerequisites (the init command tells you exactly these):
+#   apt install firecracker                        # /usr/bin/firecracker, /usr/bin/jailer
+#   curl -o /var/lib/hpcc/vmlinux <kernel-url>     # kernel image
+#   curl -o /var/lib/hpcc/hpcc-agent-linux-amd64 \
+#        <release-url>                             # in-VM agent
+
 hpcc worker
 ```
 
-For Linux/Firecracker workers, fill in `[runtime.firecracker]` and
-`[image] agent_linux_*` in the generated `worker.toml` before starting
-— see [`docs/worker.toml`](docs/worker.toml) for the full reference. For
-a zero-isolation dev box, pass `--runtime really_really_dangerous`
-(never production).
+The generated `worker.toml` points at the standard paths above; if you
+have firecracker installed somewhere else, edit
+`[runtime.firecracker]` to match. For a zero-isolation dev box, pass
+`--runtime really_really_dangerous` (never production).
+
+**Workers (Windows / Hyper-V).** Same paste-the-token flow, with the
+hcsshim runtime selected:
+
+```pwsh
+hpcc init worker `
+  --scheduler   scheduler.internal:9091 `
+  --token       <paste from init scheduler> `
+  --public-addr worker-win-1.internal:9092 `
+  --runtime     runhcs-wcow-hypervisor
+
+# Host prerequisites (the init command tells you exactly these):
+#   Install-WindowsFeature Hyper-V -IncludeManagementTools  # reboot once
+#   Start-Service vmcompute                                  # HCS
+#   # containerd listening on \\.\pipe\containerd-containerd
+#   # hpcc-agent.exe staged at C:\ProgramData\hpcc\hpcc-agent.exe
+
+hpcc worker
+```
+
+Hyper-V isolation is the production value — each container runs in
+its own utility VM, the kernel boundary a regulated security review
+recognises. For hosts without nested virt (GitHub-hosted CI runners,
+dev laptops), edit `runtime.hcsshim.isolation = "process"` in the
+generated file; you lose the kernel boundary, so this is dev-only.
 
 **Clients.** On each developer machine, point the client at the
 scheduler and authenticate against the tenant IdP:
