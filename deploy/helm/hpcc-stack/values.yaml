@@ -43,7 +43,7 @@ hpcc-scheduler:
   # the same data even if the collector is disabled.
   extraEnv:
     - name: OTEL_EXPORTER_OTLP_ENDPOINT
-      value: http://otel-collector-opentelemetry-collector:4317
+      value: http://otel-collector:4317
     - name: OTEL_SERVICE_NAME
       value: hpcc-scheduler
 
@@ -85,7 +85,7 @@ hpcc-worker:
 
   extraEnv:
     - name: OTEL_EXPORTER_OTLP_ENDPOINT
-      value: http://otel-collector-opentelemetry-collector:4317
+      value: http://otel-collector:4317
     - name: OTEL_SERVICE_NAME
       value: hpcc-worker
 
