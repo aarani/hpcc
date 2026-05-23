@@ -11,16 +11,20 @@
 # pipe doesn't eat the answers.
 #
 # Env overrides (set before piping into bash):
-#   HPCC_REPO     — override the GitHub repo (default: aarani/hpcc)
-#   HPCC_VERSION  — pin a specific release tag (default: latest)
-#   HPCC_PREFIX   — install dir (default: /usr/local/bin, falls back
-#                   to ~/.local/bin if not writable and no sudo)
+#   HPCC_REPO       — override the GitHub repo (default: aarani/hpcc)
+#   HPCC_VERSION    — pin a specific release tag (default: latest)
+#   HPCC_PREFIX     — install dir (default: /usr/local/bin, falls back
+#                     to ~/.local/bin if not writable and no sudo)
+#   HPCC_KERNEL     — worker only: kernel version (5.10|6.1, default 6.1)
+#   HPCC_FC_VERSION — worker only: firecracker tag (default v1.15.1)
 
 set -euo pipefail
 
 REPO="${HPCC_REPO:-aarani/hpcc}"
 VERSION="${HPCC_VERSION:-latest}"
 PREFIX="${HPCC_PREFIX:-}"
+KERNEL="${HPCC_KERNEL:-6.1}"
+FC_VERSION="${HPCC_FC_VERSION:-v1.15.1}"
 
 # ---- TTY plumbing ----------------------------------------------------
 # When run as `curl … | bash`, stdin is the pipe — read blocks against
@@ -227,6 +231,56 @@ case "$role" in
     pub=$(ask_required   "Public address this worker advertises (host:port)")
     rt=$(ask "Runtime [firecracker | really_really_dangerous]" "firecracker")
 
+    if [ "$rt" = "firecracker" ]; then
+      KERNEL=$(ask "Kernel version [5.10 | 6.1]" "$KERNEL")
+      case "$KERNEL" in 5.10|6.1) ;; *) die "unknown kernel version: $KERNEL" ;; esac
+
+      # firecracker uses x86_64/aarch64 in its asset names; hpcc uses
+      # amd64/arm64. Map across once.
+      case "$arch" in
+        amd64) fc_arch=x86_64  ;;
+        arm64) fc_arch=aarch64 ;;
+      esac
+
+      say
+      hd "Staging firecracker runtime prereqs"
+      note "These match \`hpcc init worker\`'s default paths so the generated"
+      note "config validates as-is. Sudo may be requested."
+      say
+
+      # Working dir under the existing tmp (auto-cleaned by EXIT trap).
+      stage="$tmp/stage"; mkdir -p "$stage"
+
+      # /var/lib/hpcc holds the kernel + the agent. /var/lib/hpcc/rootfs
+      # is the prepared-rootfs cache. /srv/jailer is jailer's chroot
+      # base. All four paths are init worker's defaults.
+      sudo install -d -m 0755 /var/lib/hpcc /var/lib/hpcc/rootfs /srv/jailer
+
+      # firecracker + jailer ----------------------------------------
+      hd "  firecracker ${FC_VERSION} (${fc_arch})"
+      fc_url="https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}/firecracker-${FC_VERSION}-${fc_arch}.tgz"
+      curl -fsSL --progress-bar -o "$stage/fc.tgz" "$fc_url" \
+        || die "firecracker download failed (asset name = firecracker-${FC_VERSION}-${fc_arch}.tgz)"
+      tar -xzf "$stage/fc.tgz" -C "$stage"
+      sudo install -m 0755 "$stage/release-${FC_VERSION}-${fc_arch}/firecracker-${FC_VERSION}-${fc_arch}" /usr/bin/firecracker
+      sudo install -m 0755 "$stage/release-${FC_VERSION}-${fc_arch}/jailer-${FC_VERSION}-${fc_arch}"      /usr/bin/jailer
+
+      # microvm kernel ----------------------------------------------
+      hd "  vmlinux ${KERNEL} (${arch})"
+      sudo curl -fsSL --progress-bar -o /var/lib/hpcc/vmlinux \
+        "https://github.com/${REPO}/releases/download/${VERSION}/vmlinux-${KERNEL}-${arch}" \
+        || die "kernel download failed (asset = vmlinux-${KERNEL}-${arch})"
+      sudo chmod 0644 /var/lib/hpcc/vmlinux
+
+      # in-VM agent --------------------------------------------------
+      hd "  hpcc-agent-linux-${arch}"
+      sudo curl -fsSL --progress-bar -o "/var/lib/hpcc/hpcc-agent-linux-${arch}" \
+        "https://github.com/${REPO}/releases/download/${VERSION}/hpcc-agent-linux-${arch}" \
+        || die "agent download failed"
+      sudo chmod 0755 "/var/lib/hpcc/hpcc-agent-linux-${arch}"
+      say
+    fi
+
     "$HPCC" init worker \
       --scheduler  "$sched" \
       --token      "$token" \
@@ -236,7 +290,9 @@ case "$role" in
     say
     hd "Next steps"
     if [ "$rt" = "firecracker" ]; then
-      say "  Stage host prereqs (firecracker + jailer + kernel + agent) — see README."
+      note "init worker's defaults assume uid=1000/gid=1000 for jailer — if a different"
+      note "user holds 1000 on this host (e.g. ec2-user on AL2023), edit [runtime.firecracker]"
+      note "uid/gid in the generated config to a user that can read /dev/kvm."
     fi
     say "  hpcc worker"
     ;;
