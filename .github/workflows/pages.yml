@@ -1,0 +1,49 @@
+name: Pages
+
+# Publishes web/ to GitHub Pages. The contents (install.sh + landing
+# page + CNAME) drive hpcc.dev — the curl-piped install command in
+# README and on the site points here. Triggers on every push to main
+# that touches web/, plus a manual dispatch for when only this
+# workflow changes.
+#
+# One-time setup the workflow can't do for you:
+#   1. Settings → Pages → Source: GitHub Actions
+#   2. DNS: point hpcc.dev's A/ALIAS at GitHub Pages
+#      (185.199.108.153 / .109.153 / .110.153 / .111.153)
+#      or CNAME the www subdomain at aarani.github.io.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Avoid overlapping deploys: a fresh push cancels in-flight runs.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Upload web/
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+      - name: Deploy
+        id: deploy
+        uses: actions/deploy-pages@v4

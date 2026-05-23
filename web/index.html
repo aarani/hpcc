@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>hpcc — distributed compiler cache</title>
+  <meta name="description" content="A distributed compiler cache that a regulated security team will actually approve. Sandboxed remote compilation · per-tenant KVM boundary · auditable by row.">
+  <style>
+    :root {
+      --bg: #0e1014;
+      --fg: #e8eaed;
+      --dim: #8b9099;
+      --accent: #6cb6ff;
+      --code-bg: #1a1d23;
+      --border: #2a2e36;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
+    body {
+      font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 48px 24px 96px;
+    }
+    h1 { font-size: 28px; margin: 24px 0 8px; }
+    h2 { font-size: 18px; margin: 36px 0 12px; color: var(--accent); font-weight: 600; }
+    p { margin: 12px 0; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .tagline { color: var(--dim); font-style: italic; margin-top: 0; }
+    .badge {
+      display: inline-block;
+      background: #6b1d1d;
+      color: #ffd6d6;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      margin-bottom: 16px;
+    }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px 16px;
+      overflow-x: auto;
+      font: 13px/1.5 "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    }
+    code {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      padding: 1px 6px;
+      border-radius: 3px;
+      font: 13px/1 "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    }
+    pre code { background: none; border: none; padding: 0; }
+    .copy {
+      position: relative;
+    }
+    .copy button {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: var(--border);
+      color: var(--fg);
+      border: none;
+      border-radius: 4px;
+      padding: 4px 10px;
+      font: inherit;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .copy button:hover { background: #353a44; }
+    .links { color: var(--dim); margin-top: 32px; }
+    .links a { margin-right: 16px; }
+  </style>
+</head>
+<body>
+
+<span class="badge">PRE-ALPHA</span>
+
+<h1>hpcc</h1>
+<p class="tagline">A distributed compiler cache that a regulated security team will actually approve.<br>
+Sandboxed remote compilation · per-tenant KVM boundary · auditable by row.</p>
+
+<h2>Install</h2>
+<p>Run this on any Linux or macOS host. It downloads the right binary for your platform, walks you through configuring as a client / worker / scheduler, and runs <code>hpcc init</code> with your answers.</p>
+
+<div class="copy">
+<pre><code id="install-cmd">curl -fsSL https://hpcc.dev/install.sh | bash</code></pre>
+<button onclick="navigator.clipboard.writeText(document.getElementById('install-cmd').textContent)">Copy</button>
+</div>
+
+<p>To pin a specific release instead of the latest:</p>
+<pre><code>curl -fsSL https://hpcc.dev/install.sh | HPCC_VERSION=v0.1.0-alpha bash</code></pre>
+
+<h2>What it does</h2>
+<p>The installer is plain bash with no dependencies beyond <code>curl</code> and <code>unzip</code> (or <code>bsdtar</code>). It reads input from <code>/dev/tty</code> so the curl pipe doesn't eat your answers. Source is on <a href="https://github.com/aarani/hpcc/blob/main/web/install.sh">GitHub</a> — feel free to read it before piping into bash.</p>
+
+<h2>Docs</h2>
+<p class="links">
+  <a href="https://github.com/aarani/hpcc">GitHub</a>
+  <a href="https://github.com/aarani/hpcc#readme">README</a>
+  <a href="https://github.com/aarani/hpcc/blob/main/docs/plan.md">Design plan</a>
+  <a href="https://github.com/aarani/hpcc/releases">Releases</a>
+</p>
+
+</body>
+</html>
