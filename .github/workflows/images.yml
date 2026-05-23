@@ -1,0 +1,126 @@
+name: Container images
+
+# Builds the scheduler and worker container images and pushes them to
+# ghcr.io/<owner>/hpcc-{scheduler,worker}. Multi-arch (linux/amd64 +
+# linux/arm64) via buildx + QEMU.
+#
+# Triggers:
+#   - push to main          → :main, :sha-<short>            (snapshot)
+#   - workflow_run release  → :vX.Y.Z, :X.Y, :X, :latest     (release)
+#   - workflow_dispatch     → :manual-<short>                (manual)
+#
+# Tag images are gated on Release succeeding because the worker image
+# embeds the matching vmlinux as a release asset; building the image
+# on the bare tag push would race release.yml's kernel upload.
+
+on:
+  push:
+    branches: [main]
+  workflow_run:
+    workflows: ['Release']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    # Skip workflow_run firings for failed Release runs — there's
+    # nothing to publish, and the worker image would 404 on the
+    # release-hosted vmlinux anyway.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [scheduler, worker]
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # workflow_run starts from the default branch by default;
+          # check out the commit the Release ran against so the
+          # dockerfile and the release tag match.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Resolve release tag
+        # For workflow_run events, github.ref points at the default
+        # branch — we want the tag the Release workflow processed.
+        # Derive it from the head commit. For other triggers, leave
+        # empty and let metadata-action use the natural ref.
+        id: release
+        if: ${{ github.event_name == 'workflow_run' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag="$(gh api "repos/${{ github.repository }}/commits/${{ github.event.workflow_run.head_sha }}/tags" \
+                   --jq '.[0].name' 2>/dev/null || true)"
+          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+            echo "No tag found at ${{ github.event.workflow_run.head_sha }}; skipping." >&2
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stop if no release tag
+        if: ${{ steps.release.outputs.skip == 'true' }}
+        run: exit 0
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/hpcc-${{ matrix.component }}
+          # On workflow_run we feed the resolved tag in explicitly; on
+          # branch/dispatch we let metadata-action read from github.ref.
+          tags: |
+            type=raw,value=${{ steps.release.outputs.tag }},enable=${{ steps.release.outputs.tag != '' }}
+            type=semver,pattern={{version}},value=${{ steps.release.outputs.tag }},enable=${{ steps.release.outputs.tag != '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release.outputs.tag }},enable=${{ steps.release.outputs.tag != '' }}
+            type=raw,value=latest,enable=${{ steps.release.outputs.tag != '' && !contains(steps.release.outputs.tag, '-') }}
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+            type=raw,value=manual-${{ github.run_id }},enable=${{ github.event_name == 'workflow_dispatch' }}
+
+      - name: Resolve HPCC_VERSION build-arg
+        # The worker image pulls vmlinux from a github release; default
+        # to the most recent published tag so main-branch snapshots
+        # still build. On release-driven runs, use the matching tag.
+        id: hpccver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          if [ -n "${{ steps.release.outputs.tag }}" ]; then
+            echo "value=${{ steps.release.outputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            latest="$(gh release view --repo ${{ github.repository }} --json tagName -q .tagName 2>/dev/null || echo v0.1.0-alpha)"
+            echo "value=$latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/${{ matrix.component }}.dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            HPCC_VERSION=${{ steps.hpccver.outputs.value }}
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,scope=${{ matrix.component }},mode=max

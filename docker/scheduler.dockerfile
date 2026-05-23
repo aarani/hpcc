@@ -12,16 +12,19 @@
 #     ghcr.io/aarani/hpcc-scheduler:latest
 
 FROM cgr.dev/chainguard/go:latest-dev AS builder
+ARG TARGETARCH
 ADD . /app
 WORKDIR /app
-# dist-linux-amd64 is the narrowest cross-compile target — the full `make
-# dist` matrix would also build windows/darwin and arm64 binaries we'd
-# throw away.
-RUN make dist-linux-amd64
+# dist-linux-${TARGETARCH} is the narrowest cross-compile target —
+# the full `make dist` matrix would also build windows/darwin and
+# the off-platform arch we'd throw away. TARGETARCH is buildx-supplied
+# and lines up with the make matrix (amd64/arm64).
+RUN make dist-linux-${TARGETARCH}
 
 FROM cgr.dev/chainguard/wolfi-base:latest AS final
+ARG TARGETARCH
 USER nonroot
-COPY --chown=nonroot:nonroot --from=builder /app/dist/linux-amd64/hpcc /usr/local/bin/hpcc
+COPY --chown=nonroot:nonroot --from=builder /app/dist/linux-${TARGETARCH}/hpcc /usr/local/bin/hpcc
 
 # gRPC (clients + workers) and Prometheus /metrics. Defaults match
 # docs/scheduler.toml; if you change `listen` / `metrics_listen` in the
