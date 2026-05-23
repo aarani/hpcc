@@ -23,11 +23,19 @@ directly against your existing platform.
 ## Install
 
 ```bash
-# 1. Pull the external chart dependencies.
-helm dependency update ./deploy/helm/hpcc-stack
+# 1. Register the external chart repos (one-time per machine).
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo add grafana               https://grafana.github.io/helm-charts
+helm repo add open-telemetry        https://open-telemetry.github.io/opentelemetry-helm-charts
+helm repo add bitnami               https://charts.bitnami.com/bitnami
+helm repo update
 
-# 2. Install. Self-signed TLS + a random worker_token are generated
-#    at template time and persisted in Secrets with helm.sh/resource-policy: keep.
+# 2. Pull the dependencies pinned by Chart.lock. (Use `dependency update`
+#    instead to ignore the lock and resolve fresh — useful for bumping.)
+helm dependency build ./deploy/helm/hpcc-stack
+
+# 3. Install. Self-signed TLS + a random worker_token are generated at
+#    template time and persisted in Secrets across upgrades.
 helm install demo ./deploy/helm/hpcc-stack \
   --namespace hpcc --create-namespace
 ```
