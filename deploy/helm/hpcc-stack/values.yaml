@@ -210,6 +210,16 @@ loki:
     replicas: 1
     persistence:
       enabled: false
+    # With persistence off the chart doesn't mount /var/loki, but the
+    # loki container ships with readOnlyRootFilesystem: true, so the
+    # first mkdir crashes the pod. Layer an emptyDir at the data dir
+    # for the demo — pod restart drops the logs, as documented above.
+    extraVolumes:
+      - name: loki-data
+        emptyDir: {}
+    extraVolumeMounts:
+      - name: loki-data
+        mountPath: /var/loki
   # Disable the auxiliary components — SingleBinary mode doesn't use them.
   read: { replicas: 0 }
   write: { replicas: 0 }
