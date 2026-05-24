@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/aarani/hpcc/internal/protocol/gen"
@@ -40,7 +41,7 @@ func workerStateFromRegistration(in *gen.RegisterWorkerRequest) *WorkerState {
 
 func (w *WorkerState) applyHeartbeat(in *gen.WorkerHeartbeat) {
 	w.AvailableVCPUs = in.AvailableVcpus
-	w.CurrentLoad = in.CurrentLoad
+	atomic.StoreInt32(&w.CurrentLoad, in.CurrentLoad)
 	w.LastHeartbeat = time.Now()
 
 	w.ActiveVMs = make([]VMInfo, len(in.ActiveVms))

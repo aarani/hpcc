@@ -611,17 +611,18 @@ func TestPickWorker_StickyTenantWins(t *testing.T) {
 	s := newTestScheduler(t)
 	s.config.Routing.StickyTenants = true
 
-	// "sticky" already has a VM for this tenant+image even though it is
-	// more loaded; sticky bonus (-1000) should overpower the load gap.
+	// "sticky" already has a VM for this tenant+image at a slightly
+	// higher load; the sticky bonus should still tip the score in its
+	// favor when the load gap is within the bonus margin.
 	s.workerStates.Store("sticky", &WorkerState{
-		WorkerID: "sticky", AvailableVCPUs: 4, CurrentLoad: 50,
+		WorkerID: "sticky", AvailableVCPUs: 4, CurrentLoad: 1,
 		ImageDigests: []string{"img-a"},
 		ActiveVMs: []VMInfo{{
 			TenantID: "t1", ImageDigest: "img-a", VMID: "vm1",
 		}},
 	})
 	s.workerStates.Store("fresh", &WorkerState{
-		WorkerID: "fresh", AvailableVCPUs: 4, CurrentLoad: 1,
+		WorkerID: "fresh", AvailableVCPUs: 4, CurrentLoad: 0,
 		ImageDigests: []string{"img-a"},
 	})
 
@@ -631,6 +632,35 @@ func TestPickWorker_StickyTenantWins(t *testing.T) {
 	}
 	if w.WorkerID != "sticky" {
 		t.Fatalf("expected sticky worker, got %q", w.WorkerID)
+	}
+}
+
+// TestPickWorker_StickyLosesToIdlePeer confirms the sticky bonus is a
+// soft tie-breaker, not an absolute pin: once the warm worker is more
+// than `stickyTenantBonus` jobs deep, an idle peer wins. This is the
+// property that lets parallel builds spread across the cluster.
+func TestPickWorker_StickyLosesToIdlePeer(t *testing.T) {
+	s := newTestScheduler(t)
+	s.config.Routing.StickyTenants = true
+
+	s.workerStates.Store("sticky", &WorkerState{
+		WorkerID: "sticky", AvailableVCPUs: 4, CurrentLoad: 5,
+		ImageDigests: []string{"img-a"},
+		ActiveVMs: []VMInfo{{
+			TenantID: "t1", ImageDigest: "img-a", VMID: "vm1",
+		}},
+	})
+	s.workerStates.Store("fresh", &WorkerState{
+		WorkerID: "fresh", AvailableVCPUs: 4, CurrentLoad: 0,
+		ImageDigests: []string{"img-a"},
+	})
+
+	w, err := s.pickWorker("t1", "img-a")
+	if err != nil {
+		t.Fatalf("pickWorker: %v", err)
+	}
+	if w.WorkerID != "fresh" {
+		t.Fatalf("expected fresh (sticky load exceeds bonus), got %q", w.WorkerID)
 	}
 }
 
@@ -682,6 +712,39 @@ func TestPickWorker_StickyOnlyForSameTenantImage(t *testing.T) {
 	}
 	if w.WorkerID != "fresh" {
 		t.Fatalf("expected fresh (no sticky match for tenant), got %q", w.WorkerID)
+	}
+}
+
+// TestPickWorker_BumpsLoadOnDispatch confirms a burst of Route() calls
+// within one heartbeat window spreads across workers: the optimistic
+// CurrentLoad bump on the chosen worker makes its score lose to an
+// equally-warm peer on the next call.
+func TestPickWorker_BumpsLoadOnDispatch(t *testing.T) {
+	s := newTestScheduler(t)
+	s.config.Routing.StickyTenants = false
+
+	s.workerStates.Store("a", &WorkerState{
+		WorkerID: "a", AvailableVCPUs: 4, CurrentLoad: 0,
+		ImageDigests: []string{"img-a"},
+	})
+	s.workerStates.Store("b", &WorkerState{
+		WorkerID: "b", AvailableVCPUs: 4, CurrentLoad: 0,
+		ImageDigests: []string{"img-a"},
+	})
+
+	picks := map[string]int{}
+	for i := 0; i < 6; i++ {
+		w, err := s.pickWorker("t1", "img-a")
+		if err != nil {
+			t.Fatalf("pickWorker[%d]: %v", i, err)
+		}
+		picks[w.WorkerID]++
+	}
+	if picks["a"] == 0 || picks["b"] == 0 {
+		t.Fatalf("expected burst to spread across both workers, got %v", picks)
+	}
+	if diff := picks["a"] - picks["b"]; diff < -1 || diff > 1 {
+		t.Fatalf("expected balanced split, got %v", picks)
 	}
 }
 

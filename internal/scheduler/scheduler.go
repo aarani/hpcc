@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MicahParks/keyfunc/v3"
@@ -303,6 +304,16 @@ func (s *Scheduler) signTaskToken(tenantID, imageDigest, workerID string) (strin
 // cold worker still wins over a saturated warm one.
 const coldPullPenalty = 100
 
+// stickyTenantBonus is subtracted from the score of a worker that
+// already hosts an active VM for the requested (tenant, image_digest).
+// Sized as a soft tie-breaker — a sticky worker beats an equally-loaded
+// peer and stays preferred while only a couple of in-flight jobs deep,
+// but loses to an idle peer once it accumulates more than `bonus`
+// concurrent dispatches. Combined with the per-dispatch CurrentLoad
+// bump in pickWorker, this spreads parallel builds (e.g. `make -jN`)
+// across the cluster instead of pinning them to one worker.
+const stickyTenantBonus = 2
+
 func (s *Scheduler) pickWorker(tenantID, imageDigest string) (*WorkerState, error) {
 	var best *WorkerState
 	bestScore := math.MaxFloat64
@@ -314,7 +325,7 @@ func (s *Scheduler) pickWorker(tenantID, imageDigest string) (*WorkerState, erro
 			return true
 		}
 
-		score := float64(w.CurrentLoad)
+		score := float64(atomic.LoadInt32(&w.CurrentLoad))
 
 		hasImage := false
 		for _, d := range w.ImageDigests {
@@ -331,7 +342,7 @@ func (s *Scheduler) pickWorker(tenantID, imageDigest string) (*WorkerState, erro
 		if s.config.Routing.StickyTenants {
 			for _, vm := range w.ActiveVMs {
 				if vm.TenantID == tenantID && vm.ImageDigest == imageDigest {
-					score -= 1000
+					score -= stickyTenantBonus
 					break
 				}
 			}
@@ -347,6 +358,11 @@ func (s *Scheduler) pickWorker(tenantID, imageDigest string) (*WorkerState, erro
 	if best == nil {
 		return nil, fmt.Errorf("no available worker (no registered worker has free capacity)")
 	}
+	// Optimistically reflect the dispatch in CurrentLoad so subsequent
+	// Route() calls within the same heartbeat window (10s) see the
+	// updated picture. The next heartbeat overwrites this with the
+	// worker's authoritative count.
+	atomic.AddInt32(&best.CurrentLoad, 1)
 	return best, nil
 }
 

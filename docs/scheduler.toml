@@ -80,11 +80,15 @@ scope     = "hpcc"             # both optional; sent on the password grant when 
 # Routing knobs.
 #
 # - `sticky_tenants` biases routing so identical (tenant, image_digest)
-#   pairs land on the worker that already has a warm VM for them.
-#   Turning this off spreads load more evenly at the cost of cold-start
-#   latency on every dispatch.
+#   pairs land on the worker that already has a warm VM for them. The
+#   bias is a soft tie-breaker: a sticky worker wins at comparable load,
+#   but once it's more than a couple of jobs deeper than an idle peer
+#   the peer wins. Bursts of parallel dispatches (e.g. `make -jN`) still
+#   spread across the cluster because each dispatch optimistically bumps
+#   the chosen worker's load before the next pick. Turn off to disable
+#   the bias entirely.
 [routing]
-sticky_tenants = true
+sticky_tenants = false
 
 # Paranoid mode (§4.13). Only meaningful as a deployment-wide flag —
 # both scheduler and workers must agree. When set, clients never carry
