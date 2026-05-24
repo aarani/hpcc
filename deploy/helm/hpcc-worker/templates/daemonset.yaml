@@ -84,6 +84,10 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
             {{- end }}
+            - name: MAX_ACTIVE_RAW
+              value: {{ .Values.config.runtime.firecracker.pool.maxActive | quote }}
+            - name: VCPUS
+              value: {{ .Values.config.runtime.firecracker.vm.vcpus | quote }}
           command:
             - sh
             - -c
@@ -98,7 +102,20 @@ spec:
                 NODE_IP="$EXTERNAL_IP"
               fi
               {{- end }}
-              sed "s|\${NODE_IP}|${NODE_IP}|g" /template/worker.toml.tmpl > /etc/hpcc/worker.toml
+              # max_active = max(1, nproc / vcpus) when the value is 0
+              # (auto); otherwise honour the operator-pinned setting.
+              # Worker capacity is max_active * vcpus, so dividing keeps
+              # the upper bound aligned with host core count.
+              if [ "$MAX_ACTIVE_RAW" -gt 0 ]; then
+                MAX_ACTIVE="$MAX_ACTIVE_RAW"
+              else
+                CORES="$(nproc)"
+                MAX_ACTIVE=$((CORES / VCPUS))
+                [ "$MAX_ACTIVE" -lt 1 ] && MAX_ACTIVE=1
+              fi
+              sed -e "s|\${NODE_IP}|${NODE_IP}|g" \
+                  -e "s|\${MAX_ACTIVE}|${MAX_ACTIVE}|g" \
+                  /template/worker.toml.tmpl > /etc/hpcc/worker.toml
               chmod 0644 /etc/hpcc/worker.toml
           volumeMounts:
             - name: config-tmpl

@@ -55,7 +55,7 @@ data:
     session_timeout = {{ .Values.config.runtime.firecracker.vm.sessionTimeout | quote }}
 
     [pool]
-    max_active = {{ .Values.config.runtime.firecracker.pool.maxActive }}
+    max_active = ${MAX_ACTIVE}
     {{- if .Values.config.cache.enabled }}
 
     # Disk cache required for CAS-mode dispatch — without a

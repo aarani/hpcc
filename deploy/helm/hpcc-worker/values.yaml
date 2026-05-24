@@ -103,7 +103,17 @@ config:
         idleTimeout: "10m"
         sessionTimeout: "8h"
       pool:
-        maxActive: 32
+        # Upper bound on concurrent per-tenant microvms. Worker-wide
+        # compile capacity is maxActive * vm.vcpus (see
+        # internal/worker/worker.go capacitySnapshot), so this should
+        # track the node's CPU count to avoid oversubscription.
+        #
+        # 0 (default) → auto-size at pod start: max_active = max(1,
+        # nproc / vm.vcpus). The pod is privileged with no CPU limits,
+        # so nproc reflects the host's CPU count. Set a positive
+        # integer to pin a specific value when reserving cores for the
+        # host or co-tenant workloads.
+        maxActive: 0
 
 # --- /dev/kvm handling -----------------------------------------------
 # Most nodes ship /dev/kvm as root:kvm 0660 with kvm at an arbitrary

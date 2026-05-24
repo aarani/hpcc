@@ -76,10 +76,14 @@ work:
 ## Customising the runtime
 
 `values.yaml` exposes the firecracker block (`memory`, `vcpus`,
-`pool.maxActive`, etc.). For anything richer than the rendered template
-covers, set `config.existingConfigMap` and ship your own ConfigMap with
-a key `worker.toml.tmpl` (the init container will still envsubst
-`$NODE_IP`).
+`pool.maxActive`, etc.). `pool.maxActive` defaults to `0`, which means
+"auto-size at pod start to `max(1, nproc / vm.vcpus)`" — worker capacity
+is `maxActive * vcpus`, so this keeps the upper bound aligned with the
+node's CPU count. Pin a positive integer to override (e.g. when
+reserving cores for the host). For anything richer than the rendered
+template covers, set `config.existingConfigMap` and ship your own
+ConfigMap with a key `worker.toml.tmpl` (the init container will still
+envsubst `$NODE_IP` and `$MAX_ACTIVE`).
 
 ## Multi-arch nodes
 
