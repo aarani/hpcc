@@ -10,15 +10,25 @@ import (
 	"sort"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/aarani/hpcc/internal/config"
 )
 
 // DiskCacheStore is a content-addressable on-disk store. Each key maps
 // to a directory `<dir>/<hh>/<full-hex-key>/` that holds one file per
 // named blob (output, stdout, stderr, exit_code, metadata, ...).
+//
+// writes is shared across the root and every Namespace-derived store so
+// that concurrent Put calls for the same destination path dedup to a
+// single filesystem write. Callers like the worker's CAS receiver build
+// a fresh Namespace wrapper per request (see internal/worker/cas.go),
+// so a per-struct group would never coordinate — the singleflight.Group
+// must travel with the namespaced clones.
 type DiskCacheStore struct {
 	dir     string
 	maxSize int64 // bytes; 0 means unlimited
+	writes  *singleflight.Group
 }
 
 func NewDiskCacheStore(dir string, maxSize string) (*DiskCacheStore, error) {
@@ -29,7 +39,7 @@ func NewDiskCacheStore(dir string, maxSize string) (*DiskCacheStore, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create cache dir %q: %w", dir, err)
 	}
-	return &DiskCacheStore{dir: dir, maxSize: sz}, nil
+	return &DiskCacheStore{dir: dir, maxSize: sz, writes: &singleflight.Group{}}, nil
 }
 
 func (d *DiskCacheStore) Get(key []byte, name string) ([]byte, error) {
@@ -52,16 +62,26 @@ func (d *DiskCacheStore) Put(key []byte, name string, value []byte) error {
 		return err
 	}
 	dir := d.entryDir(key)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create cache subdir: %w", err)
-	}
-	if err := writeAtomic(filepath.Join(dir, name), value); err != nil {
-		return err
-	}
-	if d.maxSize > 0 {
-		return d.evict()
-	}
-	return nil
+	dst := filepath.Join(dir, name)
+
+	// Dedup concurrent writers targeting the same destination. Cache
+	// values are deterministic by construction (content-addressed source
+	// blobs; deterministic compile outputs keyed by build inputs), so
+	// the second caller piggybacking on the first's result is
+	// semantically equivalent to running its own write.
+	_, err, _ := d.writes.Do(dst, func() (any, error) {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("create cache subdir: %w", err)
+		}
+		if err := writeAtomic(dst, value); err != nil {
+			return nil, err
+		}
+		if d.maxSize > 0 {
+			return nil, d.evict()
+		}
+		return nil, nil
+	})
+	return err
 }
 
 func (d *DiskCacheStore) Has(key []byte) (bool, error) {
@@ -90,7 +110,7 @@ func (d *DiskCacheStore) Namespace(prefix string) Store {
 	sub := filepath.Join(d.dir, prefix)
 	// Lazy MkdirAll on first Put avoids creating empty namespace
 	// dirs that the caller may never use.
-	return &DiskCacheStore{dir: sub, maxSize: 0}
+	return &DiskCacheStore{dir: sub, maxSize: 0, writes: d.writes}
 }
 
 // validateNamespace rejects prefixes that would escape the parent
