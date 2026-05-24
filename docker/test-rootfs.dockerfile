@@ -19,15 +19,28 @@
 # Triggers a rebuild via .github/workflows/test-image.yml on every
 # push that touches this file.
 
-FROM debian:bookworm-slim
+# trixie ships gcc 14 as the default. Bookworm's gcc 12 lacks flags
+# the upstream kernel's Kbuild probes for on recent gccs
+# (-fmin-function-alignment, -fstrict-flex-arrays=3, ...); when the
+# daemon's local gcc supports them and the worker's doesn't, every
+# affected TU fails remotely with "unrecognized command-line option".
+# Keeping daemon and worker on the same major version is the bar.
+FROM debian:trixie-slim
 
 # Single RUN keeps the layer count down and the apt cache out of the
 # final image. --no-install-recommends prunes documentation and
 # weak-dep pulls that would balloon the rootfs without helping a
 # kernel build.
+#
+# gcc-14 is installed explicitly (rather than the unversioned `gcc`
+# meta-package) so the image's compiler identity is obvious from the
+# dockerfile alone — important for the hpcc invariant that the
+# daemon's gcc and the worker's gcc agree. A future kernel that needs
+# gcc-15 means bumping this line, not a silent transitive default
+# change at apt-update time.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      gcc \
+      gcc-14 \
       binutils \
       make \
       bison \
@@ -41,6 +54,8 @@ RUN apt-get update \
       perl \
       python3 \
       ca-certificates \
+ && ln -sf /usr/bin/gcc-14 /usr/bin/gcc \
+ && ln -sf /usr/bin/gcc-14 /usr/bin/cc \
  && rm -rf /var/lib/apt/lists/*
 
 # No ENTRYPOINT — hpcc-agent execs the user's compiler argv directly,
