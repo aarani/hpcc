@@ -168,6 +168,23 @@ func (c *CompileCache) Store(inv *compiler.Invocation, res *compiler.InvocationR
 	if len(c.stores) == 0 || res == nil {
 		return nil
 	}
+	// Skip caching failed compiles. A non-zero exit may be a
+	// deterministic compiler diagnostic (broken source, missing
+	// header), an ephemeral failure (OOM kill, signal death, vsock
+	// disconnect mid-compile surfaced as exit=-1), or a transient
+	// worker-environment problem (missing toolchain package on the
+	// rootfs that gets fixed by re-rolling the image). All three
+	// look identical at this layer, and persisting any of them
+	// poisons the entry until the cache is manually cleaned —
+	// every subsequent build of the same TU replays the failure
+	// without re-running the compiler. The tradeoff against ccache-
+	// style "fast replay of deterministic errors" is intentional:
+	// re-dispatching a known-bad TU to a worker is cheap, but
+	// shipping a one-off bad result to every developer that hits
+	// the shared cache is expensive to recover from.
+	if res.ExitCode != 0 {
+		return nil
+	}
 	if tenantID == "" {
 		return fmt.Errorf("CompileCache.Store: tenantID is required")
 	}
