@@ -225,6 +225,14 @@ func runCompiler(stream agentpb.AgentService_ExecServer, hdr *agentpb.ExecHeader
 	cmd.Stdout = &stdioForwarder{stream: stream, kind: agentpb.StdioChunk_STDOUT}
 	cmd.Stderr = &stdioForwarder{stream: stream, kind: agentpb.StdioChunk_STDERR}
 
+	// Put gcc and its helpers in their own process group, kill the
+	// whole group on ctx cancel, then sweep any leftover helper
+	// zombies after Wait — the agent is PID 1 inside the microVM and
+	// nothing else will reap them.
+	setProcessGroup(cmd)
+	cmd.Cancel = func() error { return killProcessGroup(cmd) }
+	defer reapProcessGroup(cmd)
+
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {

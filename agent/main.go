@@ -3,12 +3,13 @@
 // everything writable (tmpfs at /tmp, /run, /dev/shm, plus the
 // per-Exec staging tree under /run/hpcc), so this binary has to act
 // as a minimal Linux init: bring kernel filesystems up, set up
-// scratch tmpfses, then sit on a signal loop reaping zombies the way
-// any well-behaved init does.
+// scratch tmpfses, then serve the vsock RPC.
 //
-// The vsock RPC server that dispatches compiles into the guest is
-// intentionally NOT here yet. This file is the bootstrap; downstream
-// work plugs the RPC handler in alongside reapLoop.
+// There is no zombie-reaping signal loop here: compiles run in their
+// own process group (see exec_linux.go) so cmd.Wait reaps the gcc
+// driver and runCompiler's defer sweeps any helpers gcc didn't reap
+// before exiting. Nothing else can reparent to us, so PID 1 has no
+// orphans to collect.
 package main
 
 import (
@@ -40,8 +41,6 @@ func main() {
 	if os.Getenv("PATH") == "" {
 		_ = os.Setenv("PATH", defaultPath)
 	}
-
-	go reapLoop()
 
 	// Run the gRPC server on a goroutine and surface its errors via
 	// errCh; a Serve return is fatal — the VMM will reap us and the
