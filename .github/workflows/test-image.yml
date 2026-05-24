@@ -1,0 +1,73 @@
+name: Test rootfs image
+
+# Builds the kernel-build-capable test rootfs and publishes it to
+# ghcr.io/<owner>/hpcc-test-rootfs. Distinct from images.yml (which
+# builds the scheduler/worker control-plane images) because this is
+# a *user-side* toolchain image — what the daemon hands to the worker
+# as image_ref. Lives in this repo for convenience; ops teams that
+# want their own pinned toolchain should fork the dockerfile and
+# publish under their own registry.
+#
+# Triggers:
+#   - push to main touching the dockerfile/workflow → :main, :sha-<short>
+#   - pull_request touching the dockerfile/workflow → build-only, no push
+#   - workflow_dispatch                              → :manual-<run-id>
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docker/test-rootfs.dockerfile
+      - .github/workflows/test-image.yml
+  pull_request:
+    paths:
+      - docker/test-rootfs.dockerfile
+      - .github/workflows/test-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # PRs from forks can't push to ghcr; the login step is skipped
+      # and build-push-action's push: false branch handles that case.
+      - uses: docker/login-action@v3
+        if: ${{ github.event_name != 'pull_request' }}
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/hpcc-test-rootfs
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+            type=raw,value=manual-${{ github.run_id }},enable=${{ github.event_name == 'workflow_dispatch' }}
+
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/test-rootfs.dockerfile
+          # amd64 + arm64 keeps parity with images.yml. Drop arm64 if
+          # arm64 builds become flaky on the QEMU runner — kernel
+          # devs targeting x86_64 only won't notice.
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=test-rootfs
+          cache-to: type=gha,scope=test-rootfs,mode=max
