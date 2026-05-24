@@ -64,7 +64,18 @@ const (
 	agentVsockPort   = 17727
 	agentVsockCID    = int64(3)
 	agentVsockUDS    = "/run/vsock.sock"
-	agentDialTimeout = 10 * time.Second
+	// agentDialTimeout is the total budget for the host to reach the
+	// in-VM agent after firecracker reports the VM started. It covers
+	// kernel boot + agent init + vsock.Listen, all of which slow down
+	// under host contention when multiple VMs come up at once.
+	agentDialTimeout = 30 * time.Second
+	// vsockAttemptTimeout caps a single CONNECT handshake. Firecracker's
+	// vsock proxy holds the conn open silently waiting for the guest to
+	// bind the port, so without a per-attempt bound the first probe
+	// would block for the entire agentDialTimeout and waitForAgent's
+	// retry loop would never fire. Sized to be much shorter than a
+	// typical boot so we get several real retries per second.
+	vsockAttemptTimeout = 750 * time.Millisecond
 )
 
 // inputChunkSize bounds one InputFile.chunk frame the runner sends
@@ -705,6 +716,13 @@ func dialAgent(ctx context.Context, udsPath string, port uint32, exited <-chan s
 // when the agent panics on a missing /proc and the kernel hits
 // init-died, firecracker exits, and we see "guest exited before
 // agent answered" instead of an opaque vsock-dial timeout.
+//
+// Each probe gets its own short deadline (vsockAttemptTimeout) rather
+// than inheriting ctx's full remaining budget. Firecracker's vsock
+// proxy silently holds CONNECT open until the guest binds the port,
+// so a probe that inherited the full budget would block for the
+// entire window and starve the retry loop — the very symptom this
+// loop is meant to avoid.
 func waitForAgent(ctx context.Context, udsPath string, port uint32, exited <-chan struct{}) error {
 	var lastErr error
 	for {
@@ -722,7 +740,9 @@ func waitForAgent(ctx context.Context, udsPath string, port uint32, exited <-cha
 			}
 			return ctx.Err()
 		}
-		c, err := dialVsockUDS(ctx, udsPath, port)
+		attemptCtx, cancel := context.WithTimeout(ctx, vsockAttemptTimeout)
+		c, err := dialVsockUDS(attemptCtx, udsPath, port)
+		cancel()
 		if err == nil {
 			_ = c.Close()
 			return nil
