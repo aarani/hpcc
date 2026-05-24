@@ -817,6 +817,55 @@ func TestHeartbeat_UpdatesState(t *testing.T) {
 	}
 }
 
+func TestReapStaleWorkers(t *testing.T) {
+	s := newTestScheduler(t)
+
+	freshSession := "session-fresh"
+	staleSession := "session-stale"
+	s.workerSessions.Store(freshSession, "w-fresh")
+	s.workerSessions.Store(staleSession, "w-stale")
+	now := time.Now()
+	s.workerStates.Store("w-fresh", &WorkerState{
+		WorkerID:       "w-fresh",
+		AvailableVCPUs: 4,
+		LastHeartbeat:  now,
+	})
+	s.workerStates.Store("w-stale", &WorkerState{
+		WorkerID:       "w-stale",
+		AvailableVCPUs: 4,
+		LastHeartbeat:  now.Add(-5 * time.Minute),
+	})
+
+	s.reapStaleWorkers(30 * time.Second)
+
+	if _, ok := s.workerStates.Load("w-stale"); ok {
+		t.Fatalf("stale worker state not evicted")
+	}
+	if _, ok := s.workerSessions.Load(staleSession); ok {
+		t.Fatalf("stale worker session not evicted")
+	}
+	if _, ok := s.workerStates.Load("w-fresh"); !ok {
+		t.Fatalf("fresh worker state evicted")
+	}
+	if _, ok := s.workerSessions.Load(freshSession); !ok {
+		t.Fatalf("fresh worker session evicted")
+	}
+}
+
+// Pre-registration sessions (workerSessions value is bool, not a
+// worker_id string) must survive a reap pass — the worker hasn't
+// claimed an ID yet, so there's nothing to correlate against.
+func TestReapStaleWorkers_LeavesUnregisteredSessions(t *testing.T) {
+	s := newTestScheduler(t)
+	s.workerSessions.Store("pending-session", true)
+
+	s.reapStaleWorkers(30 * time.Second)
+
+	if _, ok := s.workerSessions.Load("pending-session"); !ok {
+		t.Fatalf("unregistered worker session was evicted")
+	}
+}
+
 // Confirm the auth → register → heartbeat happy path can be threaded with
 // the same session token end-to-end.
 func TestEndToEndWorkerLifecycle(t *testing.T) {

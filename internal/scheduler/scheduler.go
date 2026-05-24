@@ -409,8 +409,8 @@ func (s *Scheduler) Heartbeat(ctx context.Context, in *gen.WorkerHeartbeat) (*ge
 
 // RegisteredWorkers returns the current count of workers in the
 // registration table. Exposed for the metrics observable gauge;
-// snapshot only — does not distinguish healthy from stale (the
-// scheduler does not yet evict stale registrations).
+// stale registrations are evicted by StartReaper when
+// routing.worker_timeout is set.
 func (s *Scheduler) RegisteredWorkers() int {
 	n := 0
 	s.workerStates.Range(func(_, _ any) bool {
@@ -418,4 +418,76 @@ func (s *Scheduler) RegisteredWorkers() int {
 		return true
 	})
 	return n
+}
+
+// StartReaper launches a background goroutine that evicts workers
+// whose last heartbeat is older than routing.worker_timeout. A
+// timeout of zero (the default when worker_timeout is empty)
+// disables the reaper. The goroutine exits when ctx is cancelled.
+//
+// Reap interval is one third of the timeout, floored at one second,
+// so a freshly-dead worker is removed before the third missed beat.
+func (s *Scheduler) StartReaper(ctx context.Context) {
+	timeout, err := s.config.Routing.WorkerTimeoutDur()
+	if err != nil || timeout <= 0 {
+		return
+	}
+	interval := timeout / 3
+	if interval < time.Second {
+		interval = time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.reapStaleWorkers(timeout)
+			}
+		}
+	}()
+}
+
+// reapStaleWorkers walks workerStates and evicts any entry whose
+// LastHeartbeat is older than timeout, then drops the matching
+// workerSessions entry so the worker has to re-authenticate before
+// it can register again. Safe to call concurrently with RPCs;
+// sync.Map permits Delete during Range.
+func (s *Scheduler) reapStaleWorkers(timeout time.Duration) {
+	cutoff := time.Now().Add(-timeout)
+	stale := make([]string, 0)
+	s.workerStates.Range(func(key, val any) bool {
+		w := val.(*WorkerState)
+		if w.LastHeartbeat.Before(cutoff) {
+			stale = append(stale, key.(string))
+		}
+		return true
+	})
+	if len(stale) == 0 {
+		return
+	}
+	staleSet := make(map[string]struct{}, len(stale))
+	for _, id := range stale {
+		staleSet[id] = struct{}{}
+		s.workerStates.Delete(id)
+	}
+	s.workerSessions.Range(func(key, val any) bool {
+		workerID, ok := val.(string)
+		if !ok {
+			return true
+		}
+		if _, evict := staleSet[workerID]; evict {
+			s.workerSessions.Delete(key)
+		}
+		return true
+	})
+	for _, id := range stale {
+		logging.Security("scheduler-worker-evicted",
+			"scheduler evicted worker after missed heartbeats",
+			zap.String("worker_id", id),
+			zap.Duration("timeout", timeout),
+		)
+	}
 }

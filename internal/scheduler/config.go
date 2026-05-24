@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/aarani/hpcc/internal/secret"
@@ -55,6 +56,20 @@ type Tenant struct {
 
 type Routing struct {
 	StickyTenants bool `toml:"sticky_tenants"`
+	// WorkerTimeout is how long a worker can go without a heartbeat
+	// before its registration (and matching session token) is evicted.
+	// Workers heartbeat every 10s; the default of 30s tolerates two
+	// dropped beats. Empty disables eviction.
+	WorkerTimeout string `toml:"worker_timeout"`
+}
+
+// WorkerTimeoutDur parses Routing.WorkerTimeout. An empty string
+// returns 0, which the reaper treats as "disabled".
+func (r Routing) WorkerTimeoutDur() (time.Duration, error) {
+	if r.WorkerTimeout == "" {
+		return 0, nil
+	}
+	return time.ParseDuration(r.WorkerTimeout)
 }
 
 func DefaultConfig() Config {
@@ -63,6 +78,7 @@ func DefaultConfig() Config {
 		Auth:   Auth{},
 		Routing: Routing{
 			StickyTenants: true,
+			WorkerTimeout: "30s",
 		},
 	}
 }
@@ -124,6 +140,9 @@ func (c Config) Validate() error {
 	}
 	if len(c.Tenants) == 0 {
 		return fmt.Errorf("at least one [[tenant]] entry is required (see docs/plan/multi-tenant.md)")
+	}
+	if _, err := c.Routing.WorkerTimeoutDur(); err != nil {
+		return fmt.Errorf("routing.worker_timeout: %w", err)
 	}
 	seen := make(map[string]struct{}, len(c.Tenants))
 	for i, t := range c.Tenants {

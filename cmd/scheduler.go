@@ -77,6 +77,7 @@ Requires TLS (cert_file, key_file) and at least one auth method
 		if err != nil {
 			return err
 		}
+		s.StartReaper(ctx)
 
 		metrics.SetComponent("scheduler")
 		metricsResult, err := metrics.Init(ctx, metrics.Options{
