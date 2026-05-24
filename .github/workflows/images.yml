@@ -49,23 +49,21 @@ jobs:
 
       - name: Resolve release tag
         # For workflow_run events, github.ref points at the default
-        # branch — we want the tag the Release workflow processed.
-        # Derive it from the head commit. For other triggers, leave
-        # empty and let metadata-action use the natural ref.
+        # branch — but Release only runs on `tags: ['v*']`, so the
+        # triggering run's head_branch is the tag name itself.
         id: release
         if: ${{ github.event_name == 'workflow_run' }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -eu
-          tag="$(gh api "repos/${{ github.repository }}/commits/${{ github.event.workflow_run.head_sha }}/tags" \
-                   --jq '.[0].name' 2>/dev/null || true)"
-          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
-            echo "No tag found at ${{ github.event.workflow_run.head_sha }}; skipping." >&2
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          fi
+          case "$HEAD_BRANCH" in
+            v*) echo "tag=$HEAD_BRANCH" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "Triggering Release run was not on a vX.Y.Z tag (head_branch=$HEAD_BRANCH); skipping." >&2
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
 
       - name: Stop if no release tag
         if: ${{ steps.release.outputs.skip == 'true' }}
