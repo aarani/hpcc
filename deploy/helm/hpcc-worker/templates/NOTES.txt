@@ -25,8 +25,16 @@ tls.existingSecret at it.
 {{- end }}
 {{- if not .Values.nodeSelector }}
 
-NOTE: nodeSelector is empty — pods will schedule on every node in the
-cluster. Nodes without /dev/kvm will CrashLoopBackOff. Label your
-KVM-capable nodes (e.g. `kubectl label node <name> hpcc.io/kvm=true`)
-and set values.nodeSelector accordingly.
+NOTE: nodeSelector is empty — pods will be scheduled onto whichever
+nodes the K8s scheduler picks, one per node (anti-affinity). Nodes
+without /dev/kvm will CrashLoopBackOff. Label your KVM-capable nodes
+(e.g. `kubectl label node <name> hpcc.io/kvm=true`) and set
+values.nodeSelector accordingly.
+{{- end }}
+
+Replica count: {{ .Values.replicaCount }} (cap = number of eligible
+nodes; raise via cluster-autoscaler if KEDA wants to scale higher).
+{{- if .Values.autoscaling.enabled }}
+Autoscaling: enabled — KEDA ScaledObject manages replicas between
+{{ .Values.autoscaling.minReplicas }} and {{ .Values.autoscaling.maxReplicas }}.
 {{- end }}

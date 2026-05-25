@@ -1,15 +1,22 @@
 {{- $listenPort := .Values.config.listen | trimAll "[]" | splitList ":" | last | int -}}
 {{- $metricsPort := .Values.config.metricsListen | trimAll "[]" | splitList ":" | last | int -}}
 apiVersion: apps/v1
-kind: DaemonSet
+kind: StatefulSet
 metadata:
   name: {{ include "hpcc-worker.fullname" . }}
   labels:
     {{- include "hpcc-worker.labels" . | nindent 4 }}
 spec:
+  # serviceName must reference an existing headless Service — rendered
+  # by templates/service.yaml. StatefulSet does no traffic through it,
+  # but the field is required and the Service doubles as the scrape
+  # target for the ServiceMonitor below.
+  serviceName: {{ include "hpcc-worker.fullname" . }}-headless
+  replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
       {{- include "hpcc-worker.selectorLabels" . | nindent 6 }}
+  podManagementPolicy: Parallel
   {{- with .Values.updateStrategy }}
   updateStrategy:
     {{- toYaml . | nindent 4 }}
@@ -39,6 +46,22 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      # One worker pod per node. hostNetwork + fixed hostPort makes
+      # multi-pod-per-node a port collision, so this isn't a preference —
+      # it's a hard constraint. Replica count is therefore capped at the
+      # number of nodes matching nodeSelector/tolerations. Beyond that
+      # cap, cluster-autoscaler must add nodes for KEDA's scale-up to
+      # land.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "hpcc-worker.selectorLabels" . | nindent 18 }}
+              topologyKey: kubernetes.io/hostname
+        {{- with .Values.affinity }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       initContainers:
         {{- if .Values.kvm.fixOwnership }}
         - name: kvm-perms
@@ -102,14 +125,41 @@ spec:
                 NODE_IP="$EXTERNAL_IP"
               fi
               {{- end }}
-              # max_active = max(1, nproc / vcpus) when the value is 0
-              # (auto); otherwise honour the operator-pinned setting.
-              # Worker capacity is max_active * vcpus, so dividing keeps
-              # the upper bound aligned with host core count.
+              # max_active = max(1, cpu_allotment / vcpus) when the
+              # value is 0 (auto); otherwise honour the operator-pinned
+              # setting. Reads the pod's cgroup CPU quota so the result
+              # reflects the container's actual allotment, not the
+              # host's core count — important now that the chart runs
+              # as a StatefulSet (multiple pods may share a node in
+              # principle, though one-per-node anti-affinity prevents
+              # it today; this also makes a future per-pod CPU limit
+              # the right knob without breaking auto-sizing).
+              #
+              # Falls back to nproc when the cgroup file is missing or
+              # reports "unlimited" — preserves behaviour for clusters
+              # without CPU limits set.
               if [ "$MAX_ACTIVE_RAW" -gt 0 ]; then
                 MAX_ACTIVE="$MAX_ACTIVE_RAW"
               else
-                CORES="$(nproc)"
+                CORES=""
+                if [ -r /sys/fs/cgroup/cpu.max ]; then
+                  # cgroup v2: "<quota> <period>" or "max <period>"
+                  read -r Q P < /sys/fs/cgroup/cpu.max
+                  if [ "$Q" != "max" ]; then
+                    CORES=$(( (Q + P - 1) / P ))
+                  fi
+                elif [ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us ] \
+                  && [ -r /sys/fs/cgroup/cpu/cpu.cfs_period_us ]; then
+                  # cgroup v1: quota is -1 when unlimited
+                  Q=$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us)
+                  P=$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us)
+                  if [ "$Q" -gt 0 ] && [ "$P" -gt 0 ]; then
+                    CORES=$(( (Q + P - 1) / P ))
+                  fi
+                fi
+                if [ -z "$CORES" ] || [ "$CORES" -lt 1 ]; then
+                  CORES="$(nproc)"
+                fi
                 MAX_ACTIVE=$((CORES / VCPUS))
                 [ "$MAX_ACTIVE" -lt 1 ] && MAX_ACTIVE=1
               fi
@@ -247,28 +297,7 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
 {{- if .Values.serviceMonitor.enabled }}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ printf "%s-metrics" (include "hpcc-worker.fullname" .) }}
-  labels:
-    {{- include "hpcc-worker.labels" . | nindent 4 }}
-spec:
-  type: ClusterIP
-  clusterIP: None
-  ports:
-    - name: metrics
-      port: {{ $metricsPort }}
-      targetPort: metrics
-      protocol: TCP
-  selector:
-    {{- include "hpcc-worker.selectorLabels" . | nindent 4 }}
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor

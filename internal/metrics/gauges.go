@@ -111,3 +111,41 @@ func RegisterSchedulerWorkers(count func() int) error {
 	)
 	return err
 }
+
+// RegisterSchedulerClusterVCPUs registers callbacks that report the
+// scheduler's cluster-wide vCPU totals: total capacity advertised by
+// registered workers and the in-flight load summed across them.
+// Both gauges share one callback so they observe a consistent
+// snapshot — an autoscaler computing inuse/total in PromQL would
+// otherwise sample the two on different collection cycles and see a
+// torn ratio. Intended as the primary scaling signal for an external
+// scaler (KEDA Prometheus trigger, HPA custom metric) sized against
+// the worker StatefulSet.
+func RegisterSchedulerClusterVCPUs(snapshot func() (total, inuse int64)) error {
+	total, err := Meter("github.com/aarani/hpcc").Int64ObservableGauge(
+		"hpcc.scheduler.cluster_vcpus_total",
+		metric.WithDescription("Sum of vCPUs advertised by all registered workers"),
+		metric.WithUnit("{vcpu}"),
+	)
+	if err != nil {
+		return err
+	}
+	inuse, err := Meter("github.com/aarani/hpcc").Int64ObservableGauge(
+		"hpcc.scheduler.cluster_vcpus_inuse",
+		metric.WithDescription("Sum of in-flight load across all registered workers"),
+		metric.WithUnit("{vcpu}"),
+	)
+	if err != nil {
+		return err
+	}
+	_, err = Meter("github.com/aarani/hpcc").RegisterCallback(
+		func(_ context.Context, o metric.Observer) error {
+			t, i := snapshot()
+			o.ObserveInt64(total, t)
+			o.ObserveInt64(inuse, i)
+			return nil
+		},
+		total, inuse,
+	)
+	return err
+}

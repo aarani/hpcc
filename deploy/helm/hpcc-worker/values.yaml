@@ -1,14 +1,25 @@
 # Default values for hpcc-worker.
 #
-# This chart runs the worker as a DaemonSet on nodes that have /dev/kvm.
-# Each pod runs privileged with hostNetwork enabled so jailer/firecracker
-# can manipulate cgroups and so the worker can advertise the node's IP
-# as its public address (clients dial workers directly after scheduler
-# routing).
+# This chart runs the worker as a StatefulSet on nodes that have
+# /dev/kvm. Each pod runs privileged with hostNetwork enabled so
+# jailer/firecracker can manipulate cgroups and so the worker can
+# advertise the node's IP as its public address (clients dial workers
+# directly after scheduler routing).
+#
+# Replica count is capped at the number of nodes matching the
+# nodeSelector/tolerations — one-worker-per-node anti-affinity is
+# enforced by the template because hostNetwork+hostPort makes two
+# pods on the same node a port collision, not a degraded mode. Set
+# replicaCount manually for a fixed pool, or enable autoscaling
+# below to let KEDA vary it from cluster-pressure metrics.
 #
 # Target only KVM-capable nodes by setting nodeSelector or tolerations
 # below — running on a node without /dev/kvm will leave the pod stuck
 # in CrashLoopBackOff.
+
+# Number of worker pods. Capped by the number of eligible nodes (see
+# above). Override per environment or let .Values.autoscaling manage it.
+replicaCount: 1
 
 image:
   repository: ghcr.io/aarani/hpcc-worker
@@ -60,9 +71,10 @@ config:
   listen: ":30092"
   metricsListen: ":30192"   # set to "" to disable
 
-  # public_addr is built at pod start from $NODE_IP so every DaemonSet
-  # pod advertises the IP of the node it runs on. Keep this in sync
-  # with `listen`.
+  # public_addr is built at pod start from $NODE_IP so every pod
+  # advertises the IP of the node it runs on (one pod per node;
+  # see anti-affinity in templates/statefulset.yaml). Keep this in
+  # sync with `listen`.
   publicAddrPort: 30092
 
   # How to discover that node IP. Options:
@@ -109,10 +121,13 @@ config:
         # track the node's CPU count to avoid oversubscription.
         #
         # 0 (default) → auto-size at pod start: max_active = max(1,
-        # nproc / vm.vcpus). The pod is privileged with no CPU limits,
-        # so nproc reflects the host's CPU count. Set a positive
-        # integer to pin a specific value when reserving cores for the
-        # host or co-tenant workloads.
+        # cpu_allotment / vm.vcpus), where cpu_allotment is derived
+        # from the pod's cgroup CPU quota (cgroup v2: /sys/fs/cgroup/
+        # cpu.max; v1: cpu.cfs_quota_us / cpu.cfs_period_us). Falls
+        # back to nproc when the cgroup reports "unlimited" — typical
+        # when no resources.limits.cpu is set on the pod. Set a
+        # positive integer to pin a specific value when reserving
+        # cores for the host or co-tenant workloads.
         maxActive: 0
 
 # --- /dev/kvm handling -----------------------------------------------
@@ -195,6 +210,48 @@ serviceMonitor:
   interval: 30s
   scrapeTimeout: 10s
   labels: {}
+
+# --- Autoscaling -----------------------------------------------------
+# When enabled, renders a KEDA ScaledObject that varies the StatefulSet
+# replica count from a Prometheus trigger reading the scheduler's
+# cluster-vCPU gauges. The scaling signal is utilization:
+#
+#   sum(hpcc_scheduler_cluster_vcpus_inuse)
+#   ÷ sum(hpcc_scheduler_cluster_vcpus_total)
+#
+# computed in PromQL inside the trigger. KEDA aims to keep that ratio
+# at targetUtilization (0.7 ≈ "scale up when 70% loaded"). With one
+# pod per node, maxReplicas should not exceed the number of eligible
+# nodes — cluster-autoscaler must add nodes for the cap to grow.
+#
+# Requires:
+#   - KEDA installed in the cluster (the operator watches ScaledObject CRDs)
+#   - A Prometheus reachable from KEDA at prometheusServerAddress, with
+#     the OTel metric naming convention (dots → underscores) — i.e.
+#     the OTel→Prom remap leaves the gauges as
+#     hpcc_scheduler_cluster_vcpus_{total,inuse}.
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  # Target value for the inuse/total ratio. KEDA's metricType is
+  # AverageValue, so the trigger fires when current/replicas > target.
+  # 0.7 is a common starting point; lower → more aggressive scale-up.
+  targetUtilization: "0.7"
+  # In-cluster URL of a Prometheus that scrapes the scheduler. Required.
+  prometheusServerAddress: ""
+  # Optional label-selector fragment scoping the scheduler instance the
+  # metric is sourced from — useful when multiple scheduler releases
+  # share a Prometheus. Empty selects all scheduler instances.
+  schedulerSelector: ""
+  # KEDA cooldown after scale-down (seconds). Conservative default: a
+  # freshly-deleted worker pod still has in-flight compiles draining;
+  # scaling back up after a brief load dip is cheap, but flapping is
+  # expensive.
+  cooldownPeriod: 300
+  # Optional extra fields merged into the spec — advanced HPA tuning
+  # (behavior.scaleDown.policies, fallback, etc.) goes here.
+  advanced: {}
 
 # Update strategy. RollingUpdate w/ maxUnavailable=1 by default — bump
 # to a percentage on larger fleets.

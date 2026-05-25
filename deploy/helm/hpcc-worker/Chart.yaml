@@ -1,6 +1,6 @@
 apiVersion: v2
 name: hpcc-worker
-description: hpcc worker — privileged DaemonSet that runs Firecracker microvms for tenant compile jobs.
+description: hpcc worker — privileged StatefulSet that runs Firecracker microvms for tenant compile jobs.
 type: application
 version: 0.1.0
 appVersion: "v0.1.0-alpha"

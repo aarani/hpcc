@@ -1,0 +1,57 @@
+{{- if .Values.autoscaling.enabled }}
+{{- if not .Values.autoscaling.prometheusServerAddress }}
+{{- fail "autoscaling.enabled requires autoscaling.prometheusServerAddress to be set" }}
+{{- end }}
+{{- $sel := "" -}}
+{{- with .Values.autoscaling.schedulerSelector -}}
+{{- $sel = printf "{%s}" . -}}
+{{- end -}}
+# KEDA scales the StatefulSet by querying the scheduler's cluster
+# vCPU gauges. The Prometheus trigger's default metricType is
+# AverageValue, so KEDA compares (query_result / current_replicas)
+# against threshold. The query returns a cluster-wide utilization
+# ratio (inuse/total); the per-replica AverageValue interpretation
+# keeps each replica's "share of pressure" bounded by threshold.
+#
+# Why query the cluster aggregate rather than per-worker averages:
+# the scheduler is the single observer of registration churn (a
+# freshly-evicted worker leaves stale CurrentLoad until the reaper
+# runs). Aggregating at the source dodges per-pod scrape skew.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "hpcc-worker.fullname" . }}
+  labels:
+    {{- include "hpcc-worker.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: {{ include "hpcc-worker.fullname" . }}
+  minReplicaCount: {{ .Values.autoscaling.minReplicas }}
+  maxReplicaCount: {{ .Values.autoscaling.maxReplicas }}
+  cooldownPeriod: {{ .Values.autoscaling.cooldownPeriod }}
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: {{ .Values.autoscaling.prometheusServerAddress | quote }}
+        # OTel exporter remaps `.` → `_` in metric names, so the
+        # gauges registered in internal/metrics/gauges.go land as
+        # hpcc_scheduler_cluster_vcpus_{total,inuse}. clamp_min on
+        # the denominator avoids divide-by-zero when no workers are
+        # registered (the scaler will read 0; minReplicas keeps the
+        # set warm).
+        query: |
+          sum(hpcc_scheduler_cluster_vcpus_inuse{{ $sel }})
+          /
+          clamp_min(sum(hpcc_scheduler_cluster_vcpus_total{{ $sel }}), 1)
+        threshold: {{ .Values.autoscaling.targetUtilization | quote }}
+        # activationThreshold gates the scale-from-zero transition
+        # when minReplicas=0. Half of target is a sensible default;
+        # tune if minReplicas=0 ever becomes the operating mode.
+        activationThreshold: "0.05"
+  {{- with .Values.autoscaling.advanced }}
+  advanced:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

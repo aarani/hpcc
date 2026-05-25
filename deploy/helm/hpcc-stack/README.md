@@ -14,7 +14,7 @@ Grafana-flavoured observability stack in a single `helm install`:
 
 Plus the two in-tree hpcc charts as sub-dependencies:
 - `hpcc-scheduler` (Deployment + Service)
-- `hpcc-worker` (privileged DaemonSet, `/dev/kvm`)
+- `hpcc-worker` (privileged StatefulSet, one pod per node, `/dev/kvm`)
 
 Not for production. Use it to evaluate hpcc end-to-end in a single
 cluster. For production, run `hpcc-scheduler` and `hpcc-worker`

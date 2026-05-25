@@ -1,0 +1,32 @@
+{{- $metricsPort := .Values.config.metricsListen | trimAll "[]" | splitList ":" | last | int -}}
+# Headless Service. Two roles:
+#
+#  1. StatefulSet.spec.serviceName — required field; the StatefulSet
+#     controller wants a Service to exist even though no client traffic
+#     flows through it (workers are dialled at their node IPs by an
+#     off-cluster scheduler).
+#
+#  2. Scrape target for the ServiceMonitor — Prometheus discovers pods
+#     via the Service selector and scrapes the metrics port.
+#
+# clusterIP: None keeps this DNS-only; the StatefulSet rolls out pod-N
+# A records but they're not used in the data path under hostNetwork.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hpcc-worker.fullname" . }}-headless
+  labels:
+    {{- include "hpcc-worker.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "hpcc-worker.selectorLabels" . | nindent 4 }}
+  ports:
+    {{- if .Values.config.metricsListen }}
+    - name: metrics
+      port: {{ $metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}

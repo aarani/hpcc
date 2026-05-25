@@ -436,6 +436,24 @@ func (s *Scheduler) RegisteredWorkers() int {
 	return n
 }
 
+// ClusterCapacity sums advertised vCPUs and current in-flight load
+// across every registered worker. Returned as (total, inuse) so the
+// caller can derive utilization without a second pass. Used by the
+// observable gauges that drive external autoscalers — the pair feeds
+// a Prometheus/KEDA scaler that varies worker replica count by
+// cluster pressure. CurrentLoad is loaded atomically to match the
+// optimistic bump in pickWorker; AvailableVCPUs follows the same
+// naked-read convention as pickWorker.
+func (s *Scheduler) ClusterCapacity() (total, inuse int64) {
+	s.workerStates.Range(func(_, val any) bool {
+		w := val.(*WorkerState)
+		total += int64(w.AvailableVCPUs)
+		inuse += int64(atomic.LoadInt32(&w.CurrentLoad))
+		return true
+	})
+	return
+}
+
 // StartReaper launches a background goroutine that evicts workers
 // whose last heartbeat is older than routing.worker_timeout. A
 // timeout of zero (the default when worker_timeout is empty)

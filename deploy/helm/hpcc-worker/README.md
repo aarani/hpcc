@@ -1,8 +1,11 @@
 # hpcc-worker
 
 Helm chart for the [hpcc](https://github.com/aarani/hpcc) worker — a
-privileged DaemonSet that spawns Firecracker microvms for tenant compile
-jobs.
+privileged StatefulSet that spawns Firecracker microvms for tenant
+compile jobs. Replicas are pinned one-per-node by pod anti-affinity
+(hostNetwork+hostPort makes co-tenancy a port collision) and the count
+is capped at the number of eligible nodes. Enable `autoscaling` to let
+KEDA vary the count from scheduler cluster-pressure metrics.
 
 ## Prerequisites
 
@@ -77,13 +80,16 @@ work:
 
 `values.yaml` exposes the firecracker block (`memory`, `vcpus`,
 `pool.maxActive`, etc.). `pool.maxActive` defaults to `0`, which means
-"auto-size at pod start to `max(1, nproc / vm.vcpus)`" — worker capacity
-is `maxActive * vcpus`, so this keeps the upper bound aligned with the
-node's CPU count. Pin a positive integer to override (e.g. when
-reserving cores for the host). For anything richer than the rendered
-template covers, set `config.existingConfigMap` and ship your own
-ConfigMap with a key `worker.toml.tmpl` (the init container will still
-envsubst `$NODE_IP` and `$MAX_ACTIVE`).
+"auto-size at pod start to `max(1, cpu_allotment / vm.vcpus)`" — worker
+capacity is `maxActive * vcpus`, so this keeps the upper bound aligned
+with the pod's CPU allotment. `cpu_allotment` is read from the pod's
+cgroup CPU quota (`/sys/fs/cgroup/cpu.max` on v2, the `cfs_quota_us` /
+`cfs_period_us` pair on v1) and falls back to `nproc` when no quota is
+set. Pin a positive integer to override (e.g. when reserving cores for
+the host). For anything richer than the rendered template covers, set
+`config.existingConfigMap` and ship your own ConfigMap with a key
+`worker.toml.tmpl` (the init container will still envsubst `$NODE_IP`
+and `$MAX_ACTIVE`).
 
 ## Multi-arch nodes
 
