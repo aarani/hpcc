@@ -25,10 +25,13 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
+	"go.uber.org/zap"
+
 	"github.com/aarani/hpcc/internal/auth"
 	"github.com/aarani/hpcc/internal/compiler"
 	"github.com/aarani/hpcc/internal/config"
 	"github.com/aarani/hpcc/internal/enum"
+	"github.com/aarani/hpcc/internal/metrics"
 	"github.com/aarani/hpcc/internal/protocol/gen"
 )
 
@@ -166,7 +169,10 @@ func (d *Dispatcher) Dispatch(ctx context.Context, c compiler.Compiler, inv *com
 // ship preprocessed bytes inline in CompileRequest. Pre-existing code
 // preserved verbatim; the CAS branch is additive.
 func (d *Dispatcher) dispatchPreprocessed(ctx context.Context, c compiler.Compiler, inv *compiler.Invocation) (*compiler.InvocationResult, error) {
+	preprocessStart := time.Now()
 	pp, err := c.Preprocess(inv)
+	preprocessDur := time.Since(preprocessStart)
+	metrics.DaemonPhase(ctx, metrics.ModePreprocessed, metrics.PhasePreprocess, preprocessDur)
 	if err != nil {
 		return nil, fmt.Errorf("preprocess: %w", err)
 	}
@@ -200,7 +206,10 @@ func (d *Dispatcher) dispatchPreprocessed(ctx context.Context, c compiler.Compil
 		return nil, fmt.Errorf("authenticate: %w", err)
 	}
 
+	routeStart := time.Now()
 	route, err := d.route(ctx)
+	routeDur := time.Since(routeStart)
+	metrics.DaemonPhase(ctx, metrics.ModePreprocessed, metrics.PhaseRoute, routeDur)
 	if err != nil {
 		// Most likely the session is stale (scheduler restart). Drop
 		// it; the next compile will re-authenticate.
@@ -229,9 +238,35 @@ func (d *Dispatcher) dispatchPreprocessed(ctx context.Context, c compiler.Compil
 		},
 	}
 
+	uploadBytes := int64(len(pp.Source))
+	metrics.DaemonBytes(ctx, metrics.ModePreprocessed, metrics.DirectionUpload, uploadBytes)
+
+	rpcStart := time.Now()
 	resp, err := workerClient.Compile(ctx, req)
+	rpcDur := time.Since(rpcStart)
+	metrics.DaemonPhase(ctx, metrics.ModePreprocessed, metrics.PhaseWorkerRPC, rpcDur)
 	if err != nil {
 		return nil, fmt.Errorf("worker Compile RPC: %w", err)
+	}
+	downloadBytes := int64(len(resp.OutputArtifact)) + int64(len(resp.Stdout)) + int64(len(resp.Stderr))
+	metrics.DaemonBytes(ctx, metrics.ModePreprocessed, metrics.DirectionDownload, downloadBytes)
+
+	// One structured line per TU at DEBUG. Gated by HPCC_LOG_LEVEL=debug
+	// in production, so this is zero-cost when off (zap's level check
+	// short-circuits before field allocation). Kept on the dispatch
+	// path — not in handleRequest — so cache-hit TUs don't emit a
+	// remote-dispatch breakdown that would confuse the trace.
+	if ce := zap.L().Check(zap.DebugLevel, "dispatch.preprocessed"); ce != nil {
+		ce.Write(
+			zap.String("output", inv.Output),
+			zap.String("worker", route.WorkerAddress),
+			zap.Duration("preprocess", preprocessDur),
+			zap.Duration("route", routeDur),
+			zap.Duration("worker_rpc", rpcDur),
+			zap.Int64("upload_bytes", uploadBytes),
+			zap.Int64("download_bytes", downloadBytes),
+			zap.Int32("exit_code", resp.ExitCode),
+		)
 	}
 
 	result := &compiler.InvocationResult{
@@ -276,8 +311,27 @@ func (d *Dispatcher) dispatchPreprocessed(ctx context.Context, c compiler.Compil
 // the headline incremental-build + cross-developer win). On miss,
 // streams missing blobs and runs the full CAS compile.
 func (d *Dispatcher) dispatchCAS(ctx context.Context, c compiler.Compiler, inv *compiler.Invocation) (*compiler.InvocationResult, error) {
-	cctx := &compiler.Context{Compiler: c}
+	// Capture BuildManifest's internal phase split (find_deps,
+	// hash_blobs) via the Context callback so the metrics package
+	// doesn't have to be referenced from inside compiler/.
+	var findDepsDur, hashBlobsDur time.Duration
+	cctx := &compiler.Context{
+		Compiler: c,
+		OnPhase: func(phase string, dur time.Duration) {
+			switch phase {
+			case compiler.PhaseFindDeps:
+				findDepsDur = dur
+				metrics.DaemonPhase(ctx, metrics.ModeCAS, metrics.PhaseFindDeps, dur)
+			case compiler.PhaseHashBlobs:
+				hashBlobsDur = dur
+				metrics.DaemonPhase(ctx, metrics.ModeCAS, metrics.PhaseHashBlobs, dur)
+			}
+		},
+	}
+	manifestStart := time.Now()
 	manifest, err := compiler.BuildManifest(inv, cctx)
+	manifestDur := time.Since(manifestStart)
+	metrics.DaemonPhase(ctx, metrics.ModeCAS, metrics.PhaseManifest, manifestDur)
 	if err != nil {
 		return nil, fmt.Errorf("build manifest: %w", err)
 	}
@@ -286,7 +340,10 @@ func (d *Dispatcher) dispatchCAS(ctx context.Context, c compiler.Compiler, inv *
 		return nil, fmt.Errorf("authenticate: %w", err)
 	}
 
+	routeStart := time.Now()
 	route, err := d.route(ctx)
+	routeDur := time.Since(routeStart)
+	metrics.DaemonPhase(ctx, metrics.ModeCAS, metrics.PhaseRoute, routeDur)
 	if err != nil {
 		d.dropSession()
 		return nil, fmt.Errorf("route: %w", err)
@@ -305,16 +362,39 @@ func (d *Dispatcher) dispatchCAS(ctx context.Context, c compiler.Compiler, inv *
 		ImageDigest:    d.cfg.ImageDigest,
 		SchedulerToken: route.Token,
 	}
+	probeStart := time.Now()
 	resp, err := workerClient.ProbeCompileCache(ctx, probe)
+	probeDur := time.Since(probeStart)
+	metrics.DaemonPhase(ctx, metrics.ModeCAS, metrics.PhaseProbe, probeDur)
 	if err != nil {
 		return nil, fmt.Errorf("worker ProbeCompileCache RPC: %w", err)
 	}
 	if hit := resp.GetHit(); hit != nil {
+		hitBytes := int64(len(hit.OutputArtifact)) + int64(len(hit.Stdout)) + int64(len(hit.Stderr))
+		metrics.DaemonBytes(ctx, metrics.ModeCAS, metrics.DirectionDownload, hitBytes)
+		if ce := zap.L().Check(zap.DebugLevel, "dispatch.cas"); ce != nil {
+			ce.Write(
+				zap.String("output", inv.Output),
+				zap.String("worker", route.WorkerAddress),
+				zap.Bool("probe_hit", true),
+				zap.Duration("find_deps", findDepsDur),
+				zap.Duration("hash_blobs", hashBlobsDur),
+				zap.Duration("manifest", manifestDur),
+				zap.Duration("route", routeDur),
+				zap.Duration("probe", probeDur),
+				zap.Int("blob_count", len(manifest.Blobs)),
+				zap.Int64("download_bytes", hitBytes),
+			)
+		}
 		return compileResponseToResult(hit), nil
 	}
 
 	// Probe miss: run the upload dance, then Compile.
-	if err := d.casUpload(ctx, workerClient, manifest, inv, route.Token); err != nil {
+	uploadBytes, missingBlobsDur, uploadDur, err := d.casUpload(ctx, workerClient, manifest, inv, route.Token)
+	metrics.DaemonPhase(ctx, metrics.ModeCAS, metrics.PhaseFindMissingBlobs, missingBlobsDur)
+	metrics.DaemonPhase(ctx, metrics.ModeCAS, metrics.PhaseUploadBlobs, uploadDur)
+	metrics.DaemonBytes(ctx, metrics.ModeCAS, metrics.DirectionUpload, uploadBytes)
+	if err != nil {
 		return nil, fmt.Errorf("cas upload: %w", err)
 	}
 
@@ -363,9 +443,36 @@ func (d *Dispatcher) dispatchCAS(ctx context.Context, c compiler.Compiler, inv *
 		},
 	}
 
+	rpcStart := time.Now()
 	compileResp, err := workerClient.Compile(ctx, req)
+	rpcDur := time.Since(rpcStart)
+	metrics.DaemonPhase(ctx, metrics.ModeCAS, metrics.PhaseWorkerRPC, rpcDur)
 	if err != nil {
 		return nil, fmt.Errorf("worker Compile RPC: %w", err)
+	}
+	downloadBytes := int64(len(compileResp.OutputArtifact)) + int64(len(compileResp.Stdout)) + int64(len(compileResp.Stderr))
+	for _, b := range compileResp.ExtraOutputs {
+		downloadBytes += int64(len(b))
+	}
+	metrics.DaemonBytes(ctx, metrics.ModeCAS, metrics.DirectionDownload, downloadBytes)
+	if ce := zap.L().Check(zap.DebugLevel, "dispatch.cas"); ce != nil {
+		ce.Write(
+			zap.String("output", inv.Output),
+			zap.String("worker", route.WorkerAddress),
+			zap.Bool("probe_hit", false),
+			zap.Duration("find_deps", findDepsDur),
+			zap.Duration("hash_blobs", hashBlobsDur),
+			zap.Duration("manifest", manifestDur),
+			zap.Duration("route", routeDur),
+			zap.Duration("probe", probeDur),
+			zap.Duration("find_missing_blobs", missingBlobsDur),
+			zap.Duration("upload_blobs", uploadDur),
+			zap.Duration("worker_rpc", rpcDur),
+			zap.Int("blob_count", len(manifest.Blobs)),
+			zap.Int64("upload_bytes", uploadBytes),
+			zap.Int64("download_bytes", downloadBytes),
+			zap.Int32("exit_code", compileResp.ExitCode),
+		)
 	}
 
 	result := compileResponseToResult(compileResp)
@@ -394,19 +501,32 @@ func (d *Dispatcher) dispatchCAS(ctx context.Context, c compiler.Compiler, inv *
 // project-relative slice of the manifest's blob list. System (absolute)
 // paths are skipped — those files live in the toolchain image, not in
 // the source closure the worker materialises.
-func (d *Dispatcher) casUpload(ctx context.Context, workerClient gen.WorkerServiceClient, manifest *compiler.Manifest, inv *compiler.Invocation, schedulerToken string) error {
+//
+// Returns:
+//   - uploadBytes:   the size in bytes summed across blobs actually
+//                    shipped (zero if FindMissingBlobs reported all hits)
+//   - findMissingDur: wall time spent in the FindMissingBlobs RPC
+//   - uploadDur:      wall time spent in the UploadBlobs RPC (zero if
+//                    no blobs were missing)
+//
+// Returning the timing breakdown separately lets the caller attribute
+// CAS-mode RPC overhead to the right phase histogram without re-timing
+// outside the function and double-counting the boundary nanoseconds.
+func (d *Dispatcher) casUpload(ctx context.Context, workerClient gen.WorkerServiceClient, manifest *compiler.Manifest, inv *compiler.Invocation, schedulerToken string) (uploadBytes int64, findMissingDur, uploadDur time.Duration, err error) {
 	projectBlobs := projectBlobs(manifest.Blobs)
 	if len(projectBlobs) == 0 {
-		return nil
+		return 0, 0, 0, nil
 	}
 
 	// FindMissingBlobs: stream the digests we'd like to ship; collect
 	// the subset the worker doesn't already have. Every header carries
 	// the route's scheduler_token so the worker can authenticate the
 	// stream — see docs/plan/multi-tenant.md "Worker enforcement".
+	findStart := time.Now()
 	probeStream, err := workerClient.FindMissingBlobs(ctx)
 	if err != nil {
-		return fmt.Errorf("open FindMissingBlobs: %w", err)
+		findMissingDur = time.Since(findStart)
+		return 0, findMissingDur, 0, fmt.Errorf("open FindMissingBlobs: %w", err)
 	}
 	sendDone := make(chan error, 1)
 	go func() {
@@ -430,26 +550,31 @@ func (d *Dispatcher) casUpload(ctx context.Context, workerClient gen.WorkerServi
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("recv probe: %w", err)
+			findMissingDur = time.Since(findStart)
+			return 0, findMissingDur, 0, fmt.Errorf("recv probe: %w", err)
 		}
 		var d [32]byte
 		copy(d[:], m.Digest)
 		missing[d] = struct{}{}
 	}
 	if err := <-sendDone; err != nil {
-		return err
+		findMissingDur = time.Since(findStart)
+		return 0, findMissingDur, 0, err
 	}
+	findMissingDur = time.Since(findStart)
 
 	if len(missing) == 0 {
-		return nil
+		return 0, findMissingDur, 0, nil
 	}
 
 	// UploadBlobs: stream header+data for each missing blob. Path-by-
 	// disk content; we re-resolve from the BlobRef's path against the
 	// project root.
+	uploadStart := time.Now()
 	upStream, err := workerClient.UploadBlobs(ctx)
 	if err != nil {
-		return fmt.Errorf("open UploadBlobs: %w", err)
+		uploadDur = time.Since(uploadStart)
+		return 0, findMissingDur, uploadDur, fmt.Errorf("open UploadBlobs: %w", err)
 	}
 	projectRoot := compiler.FindProjectRoot(inv.Cwd)
 	for _, b := range projectBlobs {
@@ -458,17 +583,20 @@ func (d *Dispatcher) casUpload(ctx context.Context, workerClient gen.WorkerServi
 		}
 		full := filepath.Join(projectRoot, filepath.FromSlash(b.Path))
 		if err := streamUpload(upStream, b, full, d.cfg.TenantID, schedulerToken); err != nil {
-			return err
+			uploadDur = time.Since(uploadStart)
+			return uploadBytes, findMissingDur, uploadDur, err
 		}
+		uploadBytes += b.Size
 	}
 	result, err := upStream.CloseAndRecv()
+	uploadDur = time.Since(uploadStart)
 	if err != nil {
-		return fmt.Errorf("close UploadBlobs: %w", err)
+		return uploadBytes, findMissingDur, uploadDur, fmt.Errorf("close UploadBlobs: %w", err)
 	}
 	if len(result.RejectedDigests) > 0 {
-		return fmt.Errorf("worker rejected %d uploaded blob(s)", len(result.RejectedDigests))
+		return uploadBytes, findMissingDur, uploadDur, fmt.Errorf("worker rejected %d uploaded blob(s)", len(result.RejectedDigests))
 	}
-	return nil
+	return uploadBytes, findMissingDur, uploadDur, nil
 }
 
 // streamUpload sends one blob over the UploadBlobs stream: a header

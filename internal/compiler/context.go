@@ -1,6 +1,8 @@
 package compiler
 
 import (
+	"time"
+
 	"github.com/aarani/hpcc/internal/config"
 )
 
@@ -29,4 +31,16 @@ type Context struct {
 	// and the image digest is what actually pins the toolchain version
 	// for cache-key purposes anyway.
 	IdentityOverride []byte
+
+	// OnPhase, when non-nil, is invoked for each internal phase of a
+	// long-running compiler-package operation that's worth attributing
+	// separately (currently: BuildManifest emits "find_deps" and
+	// "hash_blobs"). The callback runs synchronously on the calling
+	// goroutine — keep it cheap; the dispatch layer wires it to a
+	// metric Record.
+	//
+	// Kept here rather than passed as a parameter so existing call
+	// sites (cache-key derivation, tests) stay unchanged when they
+	// don't care about timing.
+	OnPhase func(phase string, dur time.Duration)
 }

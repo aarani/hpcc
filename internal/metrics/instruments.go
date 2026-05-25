@@ -32,6 +32,46 @@ const (
 	DirectionDownload = "download"
 )
 
+// Mode values for daemon-side per-phase instrumentation. Distinguishes
+// the two dispatch paths so a single phase histogram can be sliced by
+// which code path produced the sample.
+const (
+	ModePreprocessed = "preprocessed"
+	ModeCAS          = "cas"
+)
+
+// Phase values for hpcc.daemon.dispatch_phase_seconds. Each label names
+// a discrete stretch of work inside one daemon-handled compile so the
+// existing end-to-end histogram can be attributed to its components.
+//
+// Preprocess-mode phases: PhasePreprocess, PhaseRoute, PhaseWorkerRPC.
+// CAS-mode phases:        PhaseFindDeps, PhaseHashBlobs, PhaseManifest,
+//                         PhaseRoute, PhaseProbe, PhaseFindMissingBlobs,
+//                         PhaseUploadBlobs, PhaseWorkerRPC.
+//
+// PhaseManifest is the wall sum of FindDeps + HashBlobs (plus a few µs
+// of bookkeeping). Recorded separately so dashboards can plot the
+// composite without re-aggregating.
+const (
+	PhasePreprocess       = "preprocess"
+	PhaseFindDeps         = "find_deps"
+	PhaseHashBlobs        = "hash_blobs"
+	PhaseManifest         = "manifest"
+	PhaseRoute            = "route"
+	PhaseProbe            = "probe"
+	PhaseFindMissingBlobs = "find_missing_blobs"
+	PhaseUploadBlobs      = "upload_blobs"
+	PhaseWorkerRPC        = "worker_rpc"
+)
+
+// Direction values for the daemon's per-TU bytes counter. Upload is
+// what the daemon ships toward the worker (preprocessed source or CAS
+// blob bytes); Download is what comes back (object + extras).
+//
+// Reuses the CAS direction constants for consistency, but the daemon
+// counter exists separately so it can be sliced by mode without
+// conflating with the worker's CAS RPC counters.
+
 // instruments lazily backs every counter/histogram below. Resolved on
 // first use against whatever the global MeterProvider is at that
 // point — Init swaps in a real provider; tests and the
@@ -41,6 +81,8 @@ type instruments struct {
 
 	daemonCompiles    metric.Int64Counter
 	daemonDuration    metric.Float64Histogram
+	daemonPhase       metric.Float64Histogram
+	daemonBytes       metric.Int64Counter
 	workerCompiles    metric.Int64Counter
 	workerDuration    metric.Float64Histogram
 	workerCASBytes    metric.Int64Counter
@@ -61,6 +103,14 @@ func (i *instruments) init() {
 	i.daemonDuration, _ = m.Float64Histogram("hpcc.daemon.compile_duration_seconds",
 		metric.WithDescription("End-to-end duration of one daemon-handled compile"),
 		metric.WithUnit("s"),
+	)
+	i.daemonPhase, _ = m.Float64Histogram("hpcc.daemon.dispatch_phase_seconds",
+		metric.WithDescription("Per-phase duration inside one daemon-handled remote dispatch, sliced by mode and phase"),
+		metric.WithUnit("s"),
+	)
+	i.daemonBytes, _ = m.Int64Counter("hpcc.daemon.dispatch_bytes_total",
+		metric.WithDescription("Bytes shipped to/from the worker per remote dispatch, sliced by mode and direction"),
+		metric.WithUnit("By"),
 	)
 	i.workerCompiles, _ = m.Int64Counter("hpcc.worker.compiles_total",
 		metric.WithDescription("Compile RPCs served by this worker, by tenant and outcome"),
@@ -108,6 +158,43 @@ func DaemonCompile(ctx context.Context, result string, duration time.Duration) {
 	if i.daemonDuration != nil {
 		i.daemonDuration.Record(ctx, duration.Seconds(), attrs)
 	}
+}
+
+// DaemonPhase records one slice of a daemon-handled remote dispatch.
+// mode is ModePreprocessed or ModeCAS; phase is one of the Phase*
+// constants. Zero or negative durations are dropped to keep noise out
+// of the histogram (a cache-hit short-circuit can produce a 0-ns
+// phase that didn't actually run).
+func DaemonPhase(ctx context.Context, mode, phase string, duration time.Duration) {
+	if duration <= 0 {
+		return
+	}
+	i := get()
+	if i.daemonPhase == nil {
+		return
+	}
+	i.daemonPhase.Record(ctx, duration.Seconds(), metric.WithAttributes(
+		attribute.String("mode", mode),
+		attribute.String("phase", phase),
+	))
+}
+
+// DaemonBytes records bytes moved during one remote dispatch leg.
+// direction is DirectionUpload or DirectionDownload; mode is the
+// dispatch path. Zero is dropped — it isn't informative and inflates
+// label cardinality without adding signal.
+func DaemonBytes(ctx context.Context, mode, direction string, bytes int64) {
+	if bytes <= 0 {
+		return
+	}
+	i := get()
+	if i.daemonBytes == nil {
+		return
+	}
+	i.daemonBytes.Add(ctx, bytes, metric.WithAttributes(
+		attribute.String("mode", mode),
+		attribute.String("direction", direction),
+	))
 }
 
 // WorkerCompile records one worker-served Compile RPC. tenantID is

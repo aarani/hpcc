@@ -9,8 +9,19 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/zeebo/blake3"
+)
+
+// PhaseFindDeps and PhaseHashBlobs name the two heavy sub-stages of
+// BuildManifest. They're emitted via Context.OnPhase when the caller
+// has wired one up; otherwise BuildManifest does nothing extra. Kept
+// as string literals (not metric package constants) to avoid a layered
+// import from compiler → metrics.
+const (
+	PhaseFindDeps  = "find_deps"
+	PhaseHashBlobs = "hash_blobs"
 )
 
 // projectMarkerFile is the filename `FindProjectRoot` walks up to
@@ -201,7 +212,20 @@ func BuildManifest(inv *Invocation, ctx *Context) (*Manifest, error) {
 		return nil, fmt.Errorf("no input files in invocation")
 	}
 
+	// Instrument FindDependencies and the per-blob hash loop as the two
+	// suspected hot spots on a coordinator with limited vCPU: `gcc -M`
+	// is a full preprocess pass under the hood, and the hash loop is
+	// O(#headers) disk reads + BLAKE3. Callers without an OnPhase set
+	// pay only a `time.Now()` per phase, which is negligible.
+	emit := func(phase string, start time.Time) {
+		if ctx != nil && ctx.OnPhase != nil {
+			ctx.OnPhase(phase, time.Since(start))
+		}
+	}
+
+	findStart := time.Now()
 	deps, err := ctx.Compiler.FindDependencies(inv)
+	emit(PhaseFindDeps, findStart)
 	if err != nil {
 		return nil, fmt.Errorf("find dependencies: %w", err)
 	}
@@ -256,6 +280,7 @@ func BuildManifest(inv *Invocation, ctx *Context) (*Manifest, error) {
 		projectRoot = FindProjectRoot(inv.Cwd)
 	}
 
+	hashStart := time.Now()
 	blobs := make([]BlobRef, 0, len(paths))
 	for _, p := range paths {
 		// FindDependencies (gcc -M) returns paths AS-WRITTEN: kernel-
@@ -293,6 +318,10 @@ func BuildManifest(inv *Invocation, ctx *Context) (*Manifest, error) {
 		}
 		return 0
 	})
+	// Hash phase includes the sort because the sort is dependent on
+	// hash-loop output and the two together are what "blob preparation"
+	// costs the coordinator. Sort itself is sub-ms for kernel-TU sizes.
+	emit(PhaseHashBlobs, hashStart)
 
 	return &Manifest{Digest: AggregateManifestDigest(blobs), Blobs: blobs}, nil
 }
