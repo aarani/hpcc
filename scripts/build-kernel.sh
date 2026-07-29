@@ -4,7 +4,7 @@
 #
 # Usage: scripts/build-kernel.sh <version> <arch> [out-dir]
 #
-#   version : 5.10 | 6.1     (mapped to an amazonlinux/linux branch)
+#   version : 5.10 | 6.18    (mapped to an amazonlinux/linux branch)
 #   arch    : amd64 | arm64  (matches Go's GOARCH naming)
 #   out-dir : where to copy the resulting vmlinux (default: dist/kernel)
 #
@@ -35,9 +35,9 @@ OUT_DIR="${3:-dist/kernel}"
 
 case "$VERSION" in
   5.10) TAG="microvm-kernel-5.10.257-293.1015.amzn2" ;;
-  6.1)  TAG="microvm-kernel-6.1.172-36.328.amzn2023" ;;
+  6.18) TAG="microvm-kernel-6.18.25-57.115.amzn2023" ;;
   *)
-    echo "unknown version $VERSION (want 5.10 or 6.1)" >&2
+    echo "unknown version $VERSION (want 5.10 or 6.18)" >&2
     exit 64
     ;;
 esac

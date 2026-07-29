@@ -1,7 +1,7 @@
 name: Kernel tag bump
 
 # Nightly check: look at amazonlinux/linux for newer microvm-kernel-*
-# tags on the 5.10 and 6.1 lines and, if either has moved past what
+# tags on the 5.10 and 6.18 lines and, if either has moved past what
 # scripts/build-kernel.sh currently pins, open a PR with the bump.
 #
 # The PR has to be merged by hand — we don't want a nightly cron
@@ -41,33 +41,33 @@ jobs:
               | awk '{print $2}' | sed 's|refs/tags/||' | sort -V | tail -1
           }
           new_510=$(latest_for 5.10)
-          new_61=$(latest_for 6.1)
+          new_618=$(latest_for 6.18)
 
-          if [ -z "$new_510" ] || [ -z "$new_61" ]; then
-            echo "could not resolve latest tags (5.10='$new_510', 6.1='$new_61')" >&2
+          if [ -z "$new_510" ] || [ -z "$new_618" ]; then
+            echo "could not resolve latest tags (5.10='$new_510', 6.18='$new_618')" >&2
             exit 1
           fi
 
           cur_510=$(awk -F'"' '/5\.10\)[[:space:]]+TAG=/ {print $2}' scripts/build-kernel.sh)
-          cur_61=$(awk -F'"'  '/6\.1\)[[:space:]]+TAG=/  {print $2}' scripts/build-kernel.sh)
+          cur_618=$(awk -F'"' '/6\.18\)[[:space:]]+TAG=/ {print $2}' scripts/build-kernel.sh)
 
-          if [ -z "$cur_510" ] || [ -z "$cur_61" ]; then
+          if [ -z "$cur_510" ] || [ -z "$cur_618" ]; then
             echo "could not parse current pins from scripts/build-kernel.sh" >&2
-            echo "(got cur_510='$cur_510' cur_61='$cur_61')" >&2
+            echo "(got cur_510='$cur_510' cur_618='$cur_618')" >&2
             exit 1
           fi
 
           {
             echo "new_510=$new_510"
-            echo "new_61=$new_61"
+            echo "new_618=$new_618"
             echo "cur_510=$cur_510"
-            echo "cur_61=$cur_61"
+            echo "cur_618=$cur_618"
           } >> "$GITHUB_OUTPUT"
 
-          echo "Current: 5.10=$cur_510  6.1=$cur_61"
-          echo "Latest:  5.10=$new_510  6.1=$new_61"
+          echo "Current: 5.10=$cur_510  6.18=$cur_618"
+          echo "Latest:  5.10=$new_510  6.18=$new_618"
 
-          if [ "$new_510" = "$cur_510" ] && [ "$new_61" = "$cur_61" ]; then
+          if [ "$new_510" = "$cur_510" ] && [ "$new_618" = "$cur_618" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -88,7 +88,7 @@ jobs:
         run: |
           set -eu
           sed -i -E 's|(5\.10\)[[:space:]]+TAG=)"[^"]+"|\1"${{ steps.tags.outputs.new_510 }}"|' scripts/build-kernel.sh
-          sed -i -E 's|(6\.1\)[[:space:]]+TAG=)"[^"]+"|\1"${{ steps.tags.outputs.new_61 }}"|'  scripts/build-kernel.sh
+          sed -i -E 's|(6\.18\)[[:space:]]+TAG=)"[^"]+"|\1"${{ steps.tags.outputs.new_618 }}"|' scripts/build-kernel.sh
           git diff scripts/build-kernel.sh
 
       - name: Open or refresh PR
@@ -96,22 +96,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           NEW_510: ${{ steps.tags.outputs.new_510 }}
-          NEW_61:  ${{ steps.tags.outputs.new_61 }}
+          NEW_618: ${{ steps.tags.outputs.new_618 }}
           CUR_510: ${{ steps.tags.outputs.cur_510 }}
-          CUR_61:  ${{ steps.tags.outputs.cur_61 }}
+          CUR_618: ${{ steps.tags.outputs.cur_618 }}
         run: |
           set -eu
           branch=auto/kernel-bump
 
           # If an open PR on this branch already proposes the same
-          # NEW_510 + NEW_61, do nothing — re-pushing identical
+          # NEW_510 + NEW_618, do nothing — re-pushing identical
           # content would just churn the PR's commit list with
           # timestamp-only new commits.
           open_body=$(gh pr list --head "$branch" --state open --json body -q '.[0].body // ""')
           if [ -n "$open_body" ] \
               && printf '%s' "$open_body" | grep -qF "$NEW_510" \
-              && printf '%s' "$open_body" | grep -qF "$NEW_61"; then
-            echo "Open PR on $branch already proposes 5.10→$NEW_510 and 6.1→$NEW_61; skipping."
+              && printf '%s' "$open_body" | grep -qF "$NEW_618"; then
+            echo "Open PR on $branch already proposes 5.10→$NEW_510 and 6.18→$NEW_618; skipping."
             exit 0
           fi
 
@@ -122,18 +122,18 @@ jobs:
           git commit -m "ci: bump amazonlinux/linux kernel tags
 
           5.10: ${CUR_510} → ${NEW_510}
-          6.1:  ${CUR_61}  → ${NEW_61}"
+          6.18: ${CUR_618} → ${NEW_618}"
           git push -f origin "$branch"
 
           # Write the body to a file so YAML indentation doesn't
           # accidentally end up in the rendered Markdown.
           cat > /tmp/pr-body.md <<EOF
-          Nightly check found newer amazonlinux/linux tags on the 5.10 and 6.1 microvm-kernel lines.
+          Nightly check found newer amazonlinux/linux tags on the 5.10 and 6.18 microvm-kernel lines.
 
           | line | from | to |
           |------|------|----|
           | 5.10 | \`${CUR_510}\` | \`${NEW_510}\` |
-          | 6.1  | \`${CUR_61}\`  | \`${NEW_61}\` |
+          | 6.18 | \`${CUR_618}\` | \`${NEW_618}\` |
 
           On merge, the next \`v*\` tag publishes kernels built from the new sources.
           EOF

@@ -15,7 +15,7 @@
 #   HPCC_VERSION    — pin a specific release tag (default: latest)
 #   HPCC_PREFIX     — install dir (default: /usr/local/bin, falls back
 #                     to ~/.local/bin if not writable and no sudo)
-#   HPCC_KERNEL     — worker only: kernel version (5.10|6.1, default 6.1)
+#   HPCC_KERNEL     — worker only: kernel version (5.10|6.18, default 6.18)
 #   HPCC_FC_VERSION — worker only: firecracker tag (default v1.15.1)
 
 set -euo pipefail
@@ -23,7 +23,7 @@ set -euo pipefail
 REPO="${HPCC_REPO:-aarani/hpcc}"
 VERSION="${HPCC_VERSION:-latest}"
 PREFIX="${HPCC_PREFIX:-}"
-KERNEL="${HPCC_KERNEL:-6.1}"
+KERNEL="${HPCC_KERNEL:-6.18}"
 FC_VERSION="${HPCC_FC_VERSION:-v1.15.1}"
 
 # ---- TTY plumbing ----------------------------------------------------
@@ -338,8 +338,8 @@ EOF
     rt=$(ask "Runtime [firecracker | really_really_dangerous]" "firecracker")
 
     if [ "$rt" = "firecracker" ]; then
-      KERNEL=$(ask "Kernel version [5.10 | 6.1]" "$KERNEL")
-      case "$KERNEL" in 5.10|6.1) ;; *) die "unknown kernel version: $KERNEL" ;; esac
+      KERNEL=$(ask "Kernel version [5.10 | 6.18]" "$KERNEL")
+      case "$KERNEL" in 5.10|6.18) ;; *) die "unknown kernel version: $KERNEL" ;; esac
 
       # firecracker uses x86_64/aarch64 in its asset names; hpcc uses
       # amd64/arm64. Map across once.

@@ -90,9 +90,9 @@ hpcc init worker \
 #   sudo install /tmp/release-${FC}-x86_64/jailer-${FC}-x86_64      /usr/bin/jailer
 #
 #   # microvm kernel + agent ship with every hpcc release. Pin HPCC
-#   # to whichever release you installed; K=6.1 is the recommended
+#   # to whichever release you installed; K=6.18 is the recommended
 #   # kernel (5.10 ships as the alternative); A=amd64 or arm64.
-#   HPCC=v0.1.0-alpha; K=6.1; A=amd64
+#   HPCC=v0.1.0-alpha; K=6.18; A=amd64
 #   sudo mkdir -p /var/lib/hpcc
 #   sudo curl -fsSL -o /var/lib/hpcc/vmlinux \
 #     https://github.com/aarani/hpcc/releases/download/${HPCC}/vmlinux-${K}-${A}

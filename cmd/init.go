@@ -297,7 +297,7 @@ func runInitWorker(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(out, "  /usr/bin/firecracker and /usr/bin/jailer    (no distro package; download\n")
 		fmt.Fprintf(out, "                                               the upstream tarball)\n")
 		fmt.Fprintf(out, "  /var/lib/hpcc/vmlinux                       (microvm kernel — ships as\n")
-		fmt.Fprintf(out, "                                               vmlinux-<6.1|5.10>-<arch> in\n")
+		fmt.Fprintf(out, "                                               vmlinux-<6.18|5.10>-<arch> in\n")
 		fmt.Fprintf(out, "                                               every hpcc release)\n")
 		fmt.Fprintf(out, "  /var/lib/hpcc/hpcc-agent-linux-amd64        (ships as a standalone\n")
 		fmt.Fprintf(out, "                                               release artifact)\n")

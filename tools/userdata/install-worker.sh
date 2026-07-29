@@ -14,7 +14,7 @@ set -euo pipefail
 HPCC_VERSION="v0.1.0-alpha"     # hpcc release tag to install
 HPCC_REPO="aarani/hpcc"
 ARCH="amd64"                    # amd64 | arm64
-KERNEL="6.1"                    # 5.10 | 6.1  (both ship per release)
+KERNEL="6.18"                   # 5.10 | 6.18  (both ship per release)
 FC_VERSION="v1.15.1"            # firecracker release tag
 
 # Scheduler pairing — paste the worker_token printed by

@@ -31,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false   # one broken config shouldn't hide the others
       matrix:
-        version: ['5.10', '6.1']
+        version: ['5.10', '6.18']
         arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v4
@@ -152,7 +152,7 @@ jobs:
           Linux kernels (GPL-2.0) built from
           [amazonlinux/linux](https://github.com/amazonlinux/linux)
           with the matching firecracker reference config — use one
-          as the worker's `kernel_image`. 6.1 is the default
+          as the worker's `kernel_image`. 6.18 is the default
           recommendation; 5.10 ships as the alternative for shops
           stuck on it.
 
