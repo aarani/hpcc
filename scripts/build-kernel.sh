@@ -34,7 +34,7 @@ ARCH_IN="$2"
 OUT_DIR="${3:-dist/kernel}"
 
 case "$VERSION" in
-  5.10) TAG="microvm-kernel-5.10.257-293.1015.amzn2" ;;
+  5.10) TAG="microvm-kernel-5.10.260-301.1061.amzn2" ;;
   6.18) TAG="microvm-kernel-6.18.25-57.115.amzn2023" ;;
   *)
     echo "unknown version $VERSION (want 5.10 or 6.18)" >&2
